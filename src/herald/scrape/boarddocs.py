@@ -154,6 +154,28 @@ def _filename_of(url: str) -> str:
     return tail.split("?")[0] or "attachment"
 
 
+def select_committees(
+    committees: list[Committee],
+    *,
+    match: str | None = None,
+    explicit_ids: list[str] | None = None,
+) -> list[Committee]:
+    """Pick which committees to crawl.
+
+    Explicit ids win if given; otherwise ``match`` is a case-insensitive
+    regex tested against the committee name (e.g. ``"board|polic"`` to grab
+    the board-meeting library and the policy manual). ``None`` match returns
+    all committees.
+    """
+    if explicit_ids:
+        want = set(explicit_ids)
+        return [c for c in committees if c.unique in want]
+    if match:
+        rx = re.compile(match, re.IGNORECASE)
+        return [c for c in committees if rx.search(c.name)]
+    return list(committees)
+
+
 def classify_filename(name: str) -> DocType:
     low = name.lower()
     if "minute" in low:

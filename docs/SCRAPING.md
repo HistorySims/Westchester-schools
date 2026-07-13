@@ -65,6 +65,33 @@ district returns a different shape, the fix lives in the **pure parsers**
 those, not the plumbing. Start with `herald-scrape committees …`; if it
 prints your committees, the contract holds for that district.
 
+## Batch-crawling a set of districts
+
+To crawl many districts at once, list them in a targets JSON file and use
+`crawl`. A starter set of Port Chester demographic/socioeconomic peers ships
+at `data/targets/port_chester_peers.json`.
+
+```bash
+# dry-run: confirms each slug (lists committees) and shows what WOULD download
+herald-scrape crawl --targets data/targets/port_chester_peers.json \
+    --since 2023-01-01 --limit 12 --dry-run
+
+# real crawl of the board-meeting + policy libraries across all peers
+herald-scrape crawl --targets data/targets/port_chester_peers.json \
+    --since 2023-01-01
+```
+
+`--committee-match` (default `board|polic`) is a case-insensitive regex over
+committee names, so one pass grabs both the board-meeting library (minutes)
+and the policy manual. If a district's slug is wrong or it is not on
+BoardDocs, that district is reported `skipped` and the crawl continues.
+
+> **The shipped slugs are unverified guesses.** They were written without
+> network access and must be confirmed. Run the `--dry-run` above first: any
+> district that reports `skipped` needs its real slug (open the district's
+> BoardDocs page and read `go.boarddocs.com/<state>/<slug>/…`) or a note that
+> it uses a different platform. Fix the entry in the targets file and re-run.
+
 ## Adding another source
 
 Write a new adapter module exposing an `iter_documents(...) -> Iterable[

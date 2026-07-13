@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
+from herald.scrape.boarddocs import (
+    BoardDocsClient,
+    iter_documents,
+    select_committees,
+)
 from herald.scrape.core import (
     Fetcher,
     Manifest,
@@ -17,6 +24,35 @@ from herald.scrape.core import (
 from herald.scrape.models import ScrapedDoc
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Target:
+    """One district to crawl, as listed in a targets JSON file."""
+
+    district: str
+    name: str
+    state: str
+    slug: str
+    committees: list[str] | None = None  # explicit committee ids, if known
+    note: str = ""
+
+
+def load_targets(path: str | Path) -> list[Target]:
+    """Read a targets JSON file (see data/targets/port_chester_peers.json)."""
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    rows = raw["targets"] if isinstance(raw, dict) else raw
+    return [
+        Target(
+            district=r["district"],
+            name=r.get("name", r["district"]),
+            state=r["state"],
+            slug=r["slug"],
+            committees=r.get("committees"),
+            note=r.get("note", ""),
+        )
+        for r in rows
+    ]
 
 
 @dataclass
@@ -111,3 +147,40 @@ def download_docs(
             on_event("downloaded", doc)
 
     return stats
+
+
+def crawl_target(
+    client: BoardDocsClient,
+    target: Target,
+    *,
+    store: RawStore,
+    manifest: Manifest,
+    committee_match: str | None = None,
+    since: date | None = None,
+    limit: int | None = None,
+    dry_run: bool = False,
+) -> dict[str, ScrapeStats]:
+    """Crawl one district's selected committees. Returns stats per committee.
+
+    Committee selection: the target's explicit ``committees`` if set, else the
+    ``committee_match`` regex against committee names. Discovery + download use
+    the same tested primitives as the single-committee path.
+    """
+    committees = client.list_committees()
+    selected = select_committees(
+        committees, match=committee_match, explicit_ids=target.committees
+    )
+    out: dict[str, ScrapeStats] = {}
+    for c in selected:
+        docs = iter_documents(
+            client,
+            district=target.district,
+            committee=c.unique,
+            committee_name=c.name,
+            since=since,
+            limit=limit,
+        )
+        out[c.name] = download_docs(
+            docs, fetcher=client.fetcher, store=store, manifest=manifest, dry_run=dry_run
+        )
+    return out

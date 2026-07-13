@@ -37,11 +37,12 @@ out/
 .DS_Store
 Thumbs.db
 
-# Local data / scratch — but the frozen recovery-eval set is
-# version-controlled on purpose (labels reviewed at Gate 2; tuning
-# must run against exactly these files).
+# Local data / scratch (scraped raw files + manifest live here and are NOT
+# committed) — but curated crawl targets under data/targets/ are config and
+# ARE version-controlled.
 /data/*
-!/data/recovery_eval/
+!/data/targets/
+!/data/targets/**
 /tmp/
 *.sqlite
 *.db

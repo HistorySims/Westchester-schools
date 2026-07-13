@@ -27,7 +27,7 @@ from rich.table import Table
 
 from herald.scrape.boarddocs import BoardDocsClient, iter_documents
 from herald.scrape.core import DEFAULT_USER_AGENT, Fetcher, Manifest, RawStore
-from herald.scrape.runner import download_docs
+from herald.scrape.runner import crawl_target, download_docs, load_targets
 
 app = typer.Typer(help="Scrape district sources into raw files + a manifest.", no_args_is_help=True)
 console = Console()
@@ -122,6 +122,60 @@ def fetch(
         console.print("by type: " + ", ".join(f"{k}={v}" for k, v in sorted(stats.by_type.items())))
     if not dry_run:
         console.print(f"manifest: {mpath}")
+
+
+@app.command()
+def crawl(
+    targets: str = typer.Option(..., help="Path to a targets JSON file."),
+    committee_match: str = typer.Option(
+        "board|polic", help="Regex matched (case-insensitive) against committee names."
+    ),
+    since: str | None = typer.Option(None, help="Only meetings on/after this date (YYYY-MM-DD)."),
+    limit: int | None = typer.Option(None, help="Cap meetings walked per committee."),
+    out: str = typer.Option("data/raw", help="Root dir for downloaded files."),
+    dry_run: bool = typer.Option(False, help="Discover + list only; download nothing."),
+    user_agent: str = typer.Option(DEFAULT_USER_AGENT),
+    min_interval: float = typer.Option(1.0),
+) -> None:
+    """Batch-crawl every district in a targets file (e.g. Port Chester peers).
+
+    Each district's slug is confirmed as it goes: if BoardDocs rejects it, the
+    district is reported as failed and the crawl moves on.
+    """
+    since_date = date.fromisoformat(since) if since else None
+    out_dir = Path(out)
+    manifest = Manifest(out_dir / "manifest.jsonl")
+    target_list = load_targets(targets)
+
+    for t in target_list:
+        console.rule(f"{t.name}  ({t.state}/{t.slug})")
+        try:
+            with _fetcher(user_agent, min_interval) as fetcher:
+                client = BoardDocsClient(state=t.state, slug=t.slug, fetcher=fetcher)
+                per_committee = crawl_target(
+                    client,
+                    t,
+                    store=RawStore(out_dir),
+                    manifest=manifest,
+                    committee_match=committee_match,
+                    since=since_date,
+                    limit=limit,
+                    dry_run=dry_run,
+                )
+        except Exception as exc:  # bad slug / not BoardDocs / network
+            console.print(f"  [red]skipped[/red]: {type(exc).__name__}: {exc}")
+            console.print("  (verify the slug with `herald-scrape committees`)")
+            continue
+        if not per_committee:
+            console.print("  [yellow]no committees matched[/yellow] — check --committee-match")
+        for name, s in per_committee.items():
+            verb = "would download" if dry_run else "downloaded"
+            console.print(
+                f"  {name}: {verb} {s.downloaded} "
+                f"(discovered {s.discovered}, skipped {s.skipped_seen}, failed {s.failed})"
+            )
+    if not dry_run:
+        console.print(f"\nmanifest: {out_dir / 'manifest.jsonl'}")
 
 
 if __name__ == "__main__":
