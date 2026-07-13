@@ -40,6 +40,10 @@ on:
         description: "Present as a browser + prime a session (needed past BoardDocs' bot filter)"
         type: boolean
         default: true
+      ignore_robots:
+        description: "Ignore robots.txt (public records; BoardDocs disallows crawlers by default)"
+        type: boolean
+        default: true
       dry_run:
         description: "Dry run (confirm slugs + preview only, download nothing)"
         type: boolean
@@ -78,6 +82,7 @@ jobs:
             --out data/raw \
             --report crawl-report.md \
             ${{ inputs.browser && '--browser' || '--no-browser' }} \
+            ${{ inputs.ignore_robots && '--ignore-robots' || '--no-ignore-robots' }} \
             ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}
       - name: Publish report to run summary
         if: always()
