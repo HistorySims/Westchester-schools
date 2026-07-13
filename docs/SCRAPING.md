@@ -65,6 +65,25 @@ district returns a different shape, the fix lives in the **pure parsers**
 those, not the plumbing. Start with `herald-scrape committees …`; if it
 prints your committees, the contract holds for that district.
 
+## Running from GitHub Actions (no local machine needed)
+
+The crawl needs open internet, which the build/dev environment does not
+have. The simplest way to run it — including from a phone — is the
+**`scrape` workflow** (`.github/workflows/scrape.yml`), which runs on
+GitHub's runners:
+
+1. GitHub → **Actions** → **scrape** → **Run workflow**.
+2. Leave **dry_run** checked for the first run: it confirms each district's
+   slug and previews counts without downloading anything.
+3. Read the **run summary** — a table of every district plus a "Needs
+   attention" list of slugs to fix.
+4. Fix flagged slugs in the targets JSON, commit, and re-run with **dry_run**
+   unchecked. Downloaded files + the manifest are saved as a run
+   **artifact** (`data/raw/**`), downloadable from the run page.
+
+No secrets are required (public records). Uncomment the `schedule:` block in
+the workflow to auto-refresh monthly once the slugs are verified.
+
 ## Batch-crawling a set of districts
 
 To crawl many districts at once, list them in a targets JSON file and use

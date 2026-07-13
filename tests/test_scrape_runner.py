@@ -6,7 +6,13 @@ from pathlib import Path
 
 from herald.scrape.boarddocs import BoardDocsClient, Committee, select_committees
 from herald.scrape.core import Fetcher, Manifest, RawStore
-from herald.scrape.runner import crawl_target, load_targets
+from herald.scrape.runner import (
+    DistrictResult,
+    ScrapeStats,
+    crawl_target,
+    load_targets,
+    render_report,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "boarddocs"
 REPO = Path(__file__).resolve().parents[1]
@@ -82,6 +88,30 @@ def _mock_district(httpx_mock) -> None:
             headers={"Content-Type": "application/pdf"},
             is_reusable=True,
         )
+
+
+def test_render_report_covers_ok_skipped_and_no_match():
+    results = [
+        DistrictResult(
+            name="Ossining", state="ny", slug="ossining", status="ok",
+            committees={
+                "Board of Education": ScrapeStats(discovered=5, downloaded=3, skipped_seen=2)
+            },
+        ),
+        DistrictResult(
+            name="Yonkers", state="ny", slug="yonkers", status="skipped",
+            error="ProxyError: 403",
+        ),
+        DistrictResult(name="Elmsford", state="ny", slug="elmsford", status="no-match"),
+    ]
+    md = render_report(results, dry_run=True)
+    # header reflects dry-run, table has a row per committee, attention section
+    # calls out the two problem districts with the right remedy.
+    assert "dry run" in md
+    assert "| Ossining | ok | Board of Education | 5 | 3 | 2 | 0 |" in md
+    assert "### Needs attention" in md
+    assert "Yonkers" in md and "ProxyError" in md
+    assert "no committee names matched" in md  # Elmsford's remedy differs
 
 
 def test_crawl_target_selects_committees_and_downloads(httpx_mock, tmp_path):

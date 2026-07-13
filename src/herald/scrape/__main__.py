@@ -27,7 +27,13 @@ from rich.table import Table
 
 from herald.scrape.boarddocs import BoardDocsClient, iter_documents
 from herald.scrape.core import DEFAULT_USER_AGENT, Fetcher, Manifest, RawStore
-from herald.scrape.runner import crawl_target, download_docs, load_targets
+from herald.scrape.runner import (
+    DistrictResult,
+    crawl_target,
+    download_docs,
+    load_targets,
+    render_report,
+)
 
 app = typer.Typer(help="Scrape district sources into raw files + a manifest.", no_args_is_help=True)
 console = Console()
@@ -133,6 +139,7 @@ def crawl(
     since: str | None = typer.Option(None, help="Only meetings on/after this date (YYYY-MM-DD)."),
     limit: int | None = typer.Option(None, help="Cap meetings walked per committee."),
     out: str = typer.Option("data/raw", help="Root dir for downloaded files."),
+    report: str | None = typer.Option(None, help="Write a markdown summary to this path."),
     dry_run: bool = typer.Option(False, help="Discover + list only; download nothing."),
     user_agent: str = typer.Option(DEFAULT_USER_AGENT),
     min_interval: float = typer.Option(1.0),
@@ -140,12 +147,13 @@ def crawl(
     """Batch-crawl every district in a targets file (e.g. Port Chester peers).
 
     Each district's slug is confirmed as it goes: if BoardDocs rejects it, the
-    district is reported as failed and the crawl moves on.
+    district is reported as skipped and the crawl moves on.
     """
     since_date = date.fromisoformat(since) if since else None
     out_dir = Path(out)
     manifest = Manifest(out_dir / "manifest.jsonl")
     target_list = load_targets(targets)
+    results: list[DistrictResult] = []
 
     for t in target_list:
         console.rule(f"{t.name}  ({t.state}/{t.slug})")
@@ -165,7 +173,20 @@ def crawl(
         except Exception as exc:  # bad slug / not BoardDocs / network
             console.print(f"  [red]skipped[/red]: {type(exc).__name__}: {exc}")
             console.print("  (verify the slug with `herald-scrape committees`)")
+            results.append(
+                DistrictResult(
+                    name=t.name, state=t.state, slug=t.slug, status="skipped",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            )
             continue
+        status = "ok" if per_committee else "no-match"
+        results.append(
+            DistrictResult(
+                name=t.name, state=t.state, slug=t.slug, status=status,
+                committees=per_committee,
+            )
+        )
         if not per_committee:
             console.print("  [yellow]no committees matched[/yellow] — check --committee-match")
         for name, s in per_committee.items():
@@ -174,8 +195,12 @@ def crawl(
                 f"  {name}: {verb} {s.downloaded} "
                 f"(discovered {s.discovered}, skipped {s.skipped_seen}, failed {s.failed})"
             )
+
+    if report:
+        Path(report).write_text(render_report(results, dry_run=dry_run), encoding="utf-8")
+        console.print(f"\nreport: {report}")
     if not dry_run:
-        console.print(f"\nmanifest: {out_dir / 'manifest.jsonl'}")
+        console.print(f"manifest: {out_dir / 'manifest.jsonl'}")
 
 
 if __name__ == "__main__":
