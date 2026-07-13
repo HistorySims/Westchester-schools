@@ -1,0 +1,89 @@
+name: scrape
+
+# Crawl district BoardDocs sites for board minutes + policy docs.
+#
+# Runs entirely on GitHub's runners (which have open internet), so it works
+# without a local machine — trigger it from the GitHub mobile app:
+#   Actions -> scrape -> Run workflow.
+#
+# The first run defaults to dry_run=true: it only CONFIRMS each district's
+# slug and reports what WOULD download (nothing is fetched). Read the run
+# summary; fix any slugs flagged under "Needs attention" in
+# data/targets/*.json; then run again with dry_run unchecked to download.
+#
+# No secrets are required — these are public records.
+
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "Targets JSON file"
+        type: string
+        default: "data/targets/port_chester_peers.json"
+      since:
+        description: "Only meetings on/after this date (YYYY-MM-DD)"
+        type: string
+        default: "2023-01-01"
+      limit:
+        description: "Max meetings walked per committee"
+        type: string
+        default: "12"
+      committee_match:
+        description: "Regex matched (case-insensitive) against committee names"
+        type: string
+        default: "board|polic"
+      min_interval:
+        description: "Minimum seconds between requests (politeness)"
+        type: string
+        default: "2"
+      dry_run:
+        description: "Dry run (confirm slugs + preview only, download nothing)"
+        type: boolean
+        default: true
+  # Uncomment to auto-refresh monthly once the slugs are verified:
+  # schedule:
+  #   - cron: "0 7 1 * *"   # 07:00 UTC on the 1st of each month
+
+concurrency:
+  group: scrape-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Crawl
+        run: |
+          uv run herald-scrape crawl \
+            --targets "${{ inputs.targets }}" \
+            --since "${{ inputs.since }}" \
+            --limit "${{ inputs.limit }}" \
+            --committee-match "${{ inputs.committee_match }}" \
+            --min-interval "${{ inputs.min_interval }}" \
+            --out data/raw \
+            --report crawl-report.md \
+            ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}
+      - name: Publish report to run summary
+        if: always()
+        run: cat crawl-report.md >> "$GITHUB_STEP_SUMMARY" || echo "(no report produced)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload downloads + manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrape-${{ github.run_id }}
+          path: |
+            data/raw/**
+            crawl-report.md
+          if-no-files-found: warn
+          retention-days: 14

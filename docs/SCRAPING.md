@@ -65,6 +65,25 @@ district returns a different shape, the fix lives in the **pure parsers**
 those, not the plumbing. Start with `herald-scrape committees …`; if it
 prints your committees, the contract holds for that district.
 
+## Running from GitHub Actions (no local machine needed)
+
+The crawl needs open internet, which the build/dev environment does not
+have. The simplest way to run it — including from a phone — is the
+**`scrape` workflow** (`.github/workflows/scrape.yml`), which runs on
+GitHub's runners:
+
+1. GitHub → **Actions** → **scrape** → **Run workflow**.
+2. Leave **dry_run** checked for the first run: it confirms each district's
+   slug and previews counts without downloading anything.
+3. Read the **run summary** — a table of every district plus a "Needs
+   attention" list of slugs to fix.
+4. Fix flagged slugs in the targets JSON, commit, and re-run with **dry_run**
+   unchecked. Downloaded files + the manifest are saved as a run
+   **artifact** (`data/raw/**`), downloadable from the run page.
+
+No secrets are required (public records). Uncomment the `schedule:` block in
+the workflow to auto-refresh monthly once the slugs are verified.
+
 ## Batch-crawling a set of districts
 
 To crawl many districts at once, list them in a targets JSON file and use
@@ -91,6 +110,28 @@ BoardDocs, that district is reported `skipped` and the crawl continues.
 > district that reports `skipped` needs its real slug (open the district's
 > BoardDocs page and read `go.boarddocs.com/<state>/<slug>/…`) or a note that
 > it uses a different platform. Fix the entry in the targets file and re-run.
+
+## Politeness
+
+The `Fetcher` is conservative by default so we stay welcome on small
+district servers:
+
+- **Serial** — one request at a time, never concurrent.
+- **robots.txt** — Disallow rules are obeyed and any `Crawl-delay` is
+  adopted (whichever is larger, it or `--min-interval`, wins). A disallowed
+  file is skipped and counted, not fetched. Missing/unreachable robots.txt
+  is treated as allow-all. Override only for records you're entitled to with
+  `--ignore-robots`.
+- **Rate limit** — at least `--min-interval` seconds between requests
+  (default **2s**) plus a little random jitter, so we don't machine-gun at a
+  fixed cadence.
+- **Backpressure** — bounded retries with exponential backoff that honor a
+  `Retry-After` header on 429/503.
+- **Identity** — the User-Agent names the project and a contact email, so an
+  admin can reach out instead of silently blocking.
+
+To be gentler still, raise the interval: `--min-interval 5`. In the `scrape`
+workflow the same knob is the **min_interval** input.
 
 ## Adding another source
 

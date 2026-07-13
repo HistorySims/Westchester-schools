@@ -18,6 +18,7 @@ from herald.scrape.core import (
     Fetcher,
     Manifest,
     RawStore,
+    RobotsDisallowed,
     make_manifest_entry,
     sha256_bytes,
 )
@@ -61,6 +62,7 @@ class ScrapeStats:
     downloaded: int = 0
     skipped_seen: int = 0
     skipped_dup_content: int = 0
+    skipped_robots: int = 0
     failed: int = 0
     by_type: dict[str, int] = field(default_factory=dict)
 
@@ -113,6 +115,10 @@ def download_docs(
         try:
             resp = fetcher.get(doc.source_url)
             data = resp.content
+        except RobotsDisallowed:
+            stats.skipped_robots += 1
+            logger.info("robots.txt disallows %s; skipping", doc.source_url)
+            continue
         except Exception as exc:
             stats.failed += 1
             logger.warning("download failed %s: %s", doc.source_url, exc)
@@ -184,3 +190,54 @@ def crawl_target(
             docs, fetcher=client.fetcher, store=store, manifest=manifest, dry_run=dry_run
         )
     return out
+
+
+@dataclass
+class DistrictResult:
+    """Per-district outcome of a batch crawl, for reporting."""
+
+    name: str
+    state: str
+    slug: str
+    status: str  # "ok" | "skipped" | "no-match"
+    error: str | None = None
+    committees: dict[str, ScrapeStats] = field(default_factory=dict)
+
+
+def render_report(results: list[DistrictResult], *, dry_run: bool) -> str:
+    """Render a batch crawl as GitHub-flavored markdown (phone-readable)."""
+    verb = "Would DL" if dry_run else "Downloaded"
+    title = "Crawl report" + (" — dry run (nothing downloaded)" if dry_run else "")
+    lines = [f"## {title}", ""]
+    lines.append(f"| District | Status | Committee | Discovered | {verb} | Skipped | Failed |")
+    lines.append("|---|---|---|--:|--:|--:|--:|")
+    attention: list[DistrictResult] = []
+    for r in results:
+        if r.status != "ok":
+            lines.append(f"| {r.name} | **{r.status}** | — | — | — | — | — |")
+            attention.append(r)
+            continue
+        if not r.committees:
+            lines.append(f"| {r.name} | ok | _no committees matched_ | — | — | — | — |")
+            attention.append(r)
+            continue
+        for cname, s in r.committees.items():
+            lines.append(
+                f"| {r.name} | ok | {cname} | {s.discovered} | "
+                f"{s.downloaded} | {s.skipped_seen} | {s.failed} |"
+            )
+    if attention:
+        lines += ["", "### Needs attention", ""]
+        for r in attention:
+            if r.status == "no-match":
+                detail = (
+                    "slug resolved but no committee names matched `--committee-match`. "
+                    "Widen the pattern or set explicit committee ids in the targets file."
+                )
+            else:  # skipped: bad slug / not BoardDocs / network
+                detail = (
+                    f"{r.error or 'skipped'}. Confirm the slug at "
+                    "go.boarddocs.com/&lt;state&gt;/&lt;slug&gt; or note the real platform."
+                )
+            lines.append(f"- **{r.name}** (`{r.state}/{r.slug}`): {detail}")
+    return "\n".join(lines) + "\n"

@@ -11,6 +11,8 @@ from herald.scrape.core import (
     Fetcher,
     Manifest,
     RawStore,
+    RobotsDisallowed,
+    RobotsPolicy,
     make_manifest_entry,
     sha256_bytes,
     slugify,
@@ -103,6 +105,7 @@ def test_make_manifest_entry_captures_provenance():
 
 
 def _fast_fetcher(**kw) -> Fetcher:
+    kw.setdefault("respect_robots", False)
     return Fetcher(min_request_interval=0.0, retry_base_delay=0.0, **kw)
 
 
@@ -127,3 +130,39 @@ def test_fetcher_raises_on_client_error(httpx_mock):
     httpx_mock.add_response(url="https://x.test/missing", status_code=404)
     with _fast_fetcher() as f, pytest.raises(httpx.HTTPStatusError):
         f.get("https://x.test/missing")
+
+
+# ---- robots.txt politeness ------------------------------------------------
+
+
+def test_robots_policy_disallow_and_crawl_delay():
+    robots = "User-agent: *\nDisallow: /private/\nCrawl-delay: 5\n"
+    pol = RobotsPolicy(lambda url: robots, "herald-test")
+    assert pol.can_fetch("https://a.test/public/x") is True
+    assert pol.can_fetch("https://a.test/private/secret") is False
+    assert pol.crawl_delay("https://a.test/anything") == 5.0
+
+
+def test_robots_policy_missing_robots_allows():
+    pol = RobotsPolicy(lambda url: None, "herald-test")  # 404 / unreachable
+    assert pol.can_fetch("https://a.test/whatever") is True
+    assert pol.crawl_delay("https://a.test/whatever") is None
+
+
+def test_fetcher_respects_robots_disallow(httpx_mock):
+    httpx_mock.add_response(
+        url="https://x.test/robots.txt", text="User-agent: *\nDisallow: /blocked/\n"
+    )
+    httpx_mock.add_response(url="https://x.test/ok/page", text="hi")
+    # robots ON (the default)
+    with Fetcher(min_request_interval=0.0, retry_base_delay=0.0) as f:
+        with pytest.raises(RobotsDisallowed):
+            f.get("https://x.test/blocked/secret")  # never leaves the client
+        assert f.get("https://x.test/ok/page").text == "hi"
+
+
+def test_fetcher_allows_when_robots_absent(httpx_mock):
+    httpx_mock.add_response(url="https://y.test/robots.txt", status_code=404)
+    httpx_mock.add_response(url="https://y.test/thing", text="ok")
+    with Fetcher(min_request_interval=0.0, retry_base_delay=0.0) as f:
+        assert f.get("https://y.test/thing").text == "ok"

@@ -10,10 +10,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import random
 import re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
+from urllib.robotparser import RobotFileParser
 
 import httpx
 
@@ -42,27 +45,90 @@ def slugify(text: str, *, maxlen: int = 120) -> str:
     return text[:maxlen]
 
 
+class RobotsDisallowed(Exception):
+    """Raised when robots.txt forbids fetching a URL for our User-Agent."""
+
+    def __init__(self, url: str) -> None:
+        super().__init__(f"blocked by robots.txt: {url}")
+        self.url = url
+
+
+class RobotsPolicy:
+    """Per-host robots.txt cache answering can_fetch + crawl_delay.
+
+    robots.txt is fetched through the same client (so it carries our
+    User-Agent). Conventions: a 404 (no robots.txt) means allow-all; any
+    other fetch failure is treated as allow-all but logged, so a flaky
+    robots endpoint never silently blocks the whole crawl.
+    """
+
+    def __init__(self, fetch_text: object, user_agent: str) -> None:
+        self._fetch_text = fetch_text  # callable(url) -> str | None
+        self.user_agent = user_agent
+        self._cache: dict[str, RobotFileParser | None] = {}
+
+    @staticmethod
+    def _base(url: str) -> str:
+        p = urlsplit(url)
+        return f"{p.scheme}://{p.netloc}"
+
+    def _parser(self, url: str) -> RobotFileParser | None:
+        base = self._base(url)
+        if base not in self._cache:
+            text = self._fetch_text(base + "/robots.txt")  # type: ignore[operator]
+            if text is None:
+                self._cache[base] = None  # allow-all
+            else:
+                rp = RobotFileParser()
+                rp.parse(text.splitlines())
+                rp.modified()  # mark as read so can_fetch evaluates the rules
+                self._cache[base] = rp
+        return self._cache[base]
+
+    def can_fetch(self, url: str) -> bool:
+        rp = self._parser(url)
+        return True if rp is None else rp.can_fetch(self.user_agent, url)
+
+    def crawl_delay(self, url: str) -> float | None:
+        rp = self._parser(url)
+        if rp is None:
+            return None
+        delay = rp.crawl_delay(self.user_agent)
+        return float(delay) if delay is not None else None
+
+
 class Fetcher:
     """A polite synchronous HTTP client.
 
-    Mirrors the manners of the old LOC client: a single identifying
-    User-Agent, a minimum spacing between requests, and bounded retries with
-    exponential backoff that honor ``Retry-After`` on 429/503. Kept sync
-    because a locally-run crawler does not need the concurrency, and sync is
-    far easier to reason about (and stop with Ctrl-C).
+    Manners, in order of how much they matter:
+      * **serial** — one request at a time, never concurrent;
+      * **robots.txt** — obeys Disallow and adopts any Crawl-delay (unless
+        ``respect_robots=False``);
+      * **rate limit** — at least ``min_request_interval`` seconds between
+        requests, plus a little random jitter so we don't machine-gun at a
+        fixed cadence;
+      * **backpressure** — bounded retries with exponential backoff that
+        honor ``Retry-After`` on 429/503;
+      * **identity** — a User-Agent naming the project + a contact address.
+
+    Kept sync because a crawler does not need concurrency, and sync is far
+    easier to reason about (and to stop with Ctrl-C).
     """
 
     def __init__(
         self,
         *,
         user_agent: str = DEFAULT_USER_AGENT,
-        min_request_interval: float = 1.0,
+        min_request_interval: float = 2.0,
+        jitter: float = 0.5,
         max_retries: int = 4,
         retry_base_delay: float = 1.0,
         timeout: float = 30.0,
+        respect_robots: bool = True,
         client: httpx.Client | None = None,
     ) -> None:
         self.min_request_interval = min_request_interval
+        self.jitter = jitter
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
         self._last_request = 0.0
@@ -72,6 +138,20 @@ class Fetcher:
             timeout=timeout,
             follow_redirects=True,
         )
+        self.robots = RobotsPolicy(self._robots_text, user_agent) if respect_robots else None
+
+    def _robots_text(self, url: str) -> str | None:
+        """Low-level GET for robots.txt (bypasses throttle + robots check)."""
+        try:
+            resp = self._client.get(url)
+        except httpx.HTTPError as exc:
+            logger.warning("could not fetch %s (%s); assuming allow-all", url, exc)
+            return None
+        if resp.status_code == 200:
+            return resp.text
+        if resp.status_code != 404:
+            logger.warning("robots.txt at %s -> HTTP %d; assuming allow-all", url, resp.status_code)
+        return None
 
     def __enter__(self) -> Fetcher:
         return self
@@ -83,10 +163,11 @@ class Fetcher:
         if self._owns_client:
             self._client.close()
 
-    def _throttle(self) -> None:
-        if self.min_request_interval <= 0:
+    def _throttle(self, interval: float) -> None:
+        if interval <= 0:
             return
-        wait = self.min_request_interval - (time.monotonic() - self._last_request)
+        wait = interval - (time.monotonic() - self._last_request)
+        wait = max(wait, 0.0) + random.uniform(0.0, self.jitter)
         if wait > 0:
             time.sleep(wait)
 
@@ -99,10 +180,22 @@ class Fetcher:
         time.sleep(delay)
 
     def request(self, method: str, url: str, **kwargs: object) -> httpx.Response:
-        """Issue a request with throttle + retry. Raises on final failure."""
+        """Issue a request with robots check + throttle + retry.
+
+        Raises ``RobotsDisallowed`` if robots.txt forbids the URL, else the
+        final transport/HTTP error on exhausted retries.
+        """
+        interval = self.min_request_interval
+        if self.robots is not None:
+            if not self.robots.can_fetch(url):
+                raise RobotsDisallowed(url)
+            crawl_delay = self.robots.crawl_delay(url)
+            if crawl_delay is not None:
+                interval = max(interval, crawl_delay)
+
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
-            self._throttle()
+            self._throttle(interval)
             try:
                 resp = self._client.request(method, url, **kwargs)  # type: ignore[arg-type]
                 self._last_request = time.monotonic()
