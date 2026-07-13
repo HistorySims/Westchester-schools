@@ -1,3 +1,8 @@
+# ============================================================
+# FORK TODO (herald): rewrite persona/attribution prompt for district (not paper) attribution
+# Inherited from Herald; rewrite for this corpus before use.
+# See docs/ENGINE_EXTRACTION.md.
+# ============================================================
 """Claude-Sonnet synthesis over retrieved chunks.
 
 Given a question and a ranked list of ``RetrievedChunk``s from the

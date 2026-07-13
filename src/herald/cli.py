@@ -1,3 +1,8 @@
+# ============================================================
+# FORK TODO (herald): CLI: rework commands (ingest --lccn/--from/--to -> --district/--year)
+# Inherited from Herald; rewrite for this corpus before use.
+# See docs/ENGINE_EXTRACTION.md.
+# ============================================================
 """Herald CLI.
 
 Phase 1 surface:

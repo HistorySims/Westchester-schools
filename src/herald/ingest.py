@@ -1,3 +1,8 @@
+# ============================================================
+# FORK TODO (herald): ingest adapter: replace the loc.gov fetch with your PDF/transcript parser (MILESTONE 1)
+# Inherited from Herald; rewrite for this corpus before use.
+# See docs/ENGINE_EXTRACTION.md.
+# ============================================================
 """Ingest orchestrator: LOC → normalize → chunk → embed → write.
 
 The pipeline is async (LOC + Voyage are HTTP-bound) with synchronous

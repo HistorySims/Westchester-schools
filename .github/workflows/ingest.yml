@@ -1,3 +1,4 @@
+# FORK TODO (herald): inputs: lccn/date -> district/year for the new ingest adapter — see docs/ENGINE_EXTRACTION.md
 name: ingest
 
 # Manually triggered. Runs `herald ingest --no-dry-run` for a single LCCN

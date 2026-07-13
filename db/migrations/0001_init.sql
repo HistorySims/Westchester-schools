@@ -1,4 +1,9 @@
 -- ============================================================
+-- FORK TODO (herald): schema: papers/issues/pages -> districts/documents; drop LoC-specific columns
+-- Inherited from Herald; rewrite for this corpus before use.
+-- See docs/ENGINE_EXTRACTION.md.
+-- ============================================================
+-- ============================================================
 -- Herald — initial schema (Phase 1)
 --
 -- Tables: papers, users, issues, pages, chunks, credit_ledger, reocr_jobs

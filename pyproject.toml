@@ -1,7 +1,7 @@
 [project]
 name = "herald"
 version = "0.1.0"
-description = "Semantic research over historical American newspapers"
+description = "Westchester schools research"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
