@@ -35,7 +35,7 @@ import numpy as np
 import psycopg
 from pgvector.psycopg import register_vector
 
-from herald import settings
+from schoolsengine import settings
 
 
 def main() -> None:

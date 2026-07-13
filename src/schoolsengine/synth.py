@@ -1,3 +1,8 @@
+# ============================================================
+# FORK TODO (schoolsengine): rewrite persona/attribution prompt for district (not paper) attribution
+# Inherited from Herald; rewrite for this corpus before use.
+# See docs/ENGINE_EXTRACTION.md.
+# ============================================================
 """Claude-Sonnet synthesis over retrieved chunks.
 
 Given a question and a ranked list of ``RetrievedChunk``s from the
@@ -19,7 +24,7 @@ from uuid import UUID
 
 from anthropic import AsyncAnthropic
 
-from herald.retrieval import RetrievedChunk
+from schoolsengine.retrieval import RetrievedChunk
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 2500

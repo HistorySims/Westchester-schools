@@ -35,7 +35,7 @@ from uuid import UUID
 
 import psycopg
 
-from herald import settings
+from schoolsengine import settings
 
 
 TOP_TERMS_PER_WEEK = 5

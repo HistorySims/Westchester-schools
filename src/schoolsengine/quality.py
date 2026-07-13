@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 import psycopg
 
-from herald.classify import (
+from schoolsengine.classify import (
     QUARANTINE_DICT_RATIO,
     REASSIGNMENT_CANDIDATE_DICT_RATIO,
     classify_quality,

@@ -1,3 +1,8 @@
+-- ============================================================
+-- FORK TODO (schoolsengine): RPCs reference the schema — update table/column names to match 0001
+-- Inherited from Herald; rewrite for this corpus before use.
+-- See docs/ENGINE_EXTRACTION.md.
+-- ============================================================
 -- RPC functions for the /explore page.
 -- These do the joins in Postgres so the API can fetch everything in one call.
 

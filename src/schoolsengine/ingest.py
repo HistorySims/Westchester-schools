@@ -1,3 +1,8 @@
+# ============================================================
+# FORK TODO (schoolsengine): ingest adapter: replace the loc.gov fetch with your PDF/transcript parser (MILESTONE 1)
+# Inherited from Herald; rewrite for this corpus before use.
+# See docs/ENGINE_EXTRACTION.md.
+# ============================================================
 """Ingest orchestrator: LOC → normalize → chunk → embed → write.
 
 The pipeline is async (LOC + Voyage are HTTP-bound) with synchronous
@@ -23,11 +28,11 @@ from uuid import UUID
 
 import psycopg
 
-from herald import db
-from herald.chunker import ChunkSpan, chunk_text
-from herald.embed import VoyageEmbedder
-from herald.loc import LOCClient, PageRef
-from herald.normalize import normalize_ocr
+from schoolsengine import db
+from schoolsengine.chunker import ChunkSpan, chunk_text
+from schoolsengine.embed import VoyageEmbedder
+from schoolsengine.loc import LOCClient, PageRef
+from schoolsengine.normalize import normalize_ocr
 
 OnPage = Callable[[PageRef, str], None]
 

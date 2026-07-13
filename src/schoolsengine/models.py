@@ -1,3 +1,8 @@
+# ============================================================
+# FORK TODO (schoolsengine): schema: rename Paper/Issue/Page -> District/Document; decide collapse vs keep pages
+# Inherited from Herald; rewrite for this corpus before use.
+# See docs/ENGINE_EXTRACTION.md.
+# ============================================================
 from datetime import date
 from uuid import UUID
 

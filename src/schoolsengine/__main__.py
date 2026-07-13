@@ -1,4 +1,4 @@
-from herald.cli import app
+from schoolsengine.cli import app
 
 if __name__ == "__main__":
     app()

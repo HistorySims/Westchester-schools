@@ -1,3 +1,8 @@
+# ============================================================
+# FORK TODO (schoolsengine): CLI: rework commands (ingest --lccn/--from/--to -> --district/--year)
+# Inherited from Herald; rewrite for this corpus before use.
+# See docs/ENGINE_EXTRACTION.md.
+# ============================================================
 """Herald CLI.
 
 Phase 1 surface:
@@ -14,19 +19,19 @@ from datetime import date
 import typer
 from rich.console import Console
 
-from herald import db, normalize, settings
-from herald.cluster import ClusterParams, run_labels_only, run_pipeline
-from herald.embed import VoyageEmbedder
-from herald.eval import (
+from schoolsengine import db, normalize, settings
+from schoolsengine.cluster import ClusterParams, run_labels_only, run_pipeline
+from schoolsengine.embed import VoyageEmbedder
+from schoolsengine.eval import (
     EVAL_QUESTIONS,
     format_results_markdown,
     run_eval,
 )
-from herald.ingest import ingest_paper
-from herald.loc import LOCClient, PageRef
-from herald.rerank import VoyageReranker
-from herald.retrieval import HybridRetriever
-from herald.synth import Synthesizer
+from schoolsengine.ingest import ingest_paper
+from schoolsengine.loc import LOCClient, PageRef
+from schoolsengine.rerank import VoyageReranker
+from schoolsengine.retrieval import HybridRetriever
+from schoolsengine.synth import Synthesizer
 
 app = typer.Typer(
     add_completion=False,
@@ -520,7 +525,7 @@ def cluster(
     for tier in sorted(result.tier_counts):
         console.print(f"  tier {tier}: {result.tier_counts[tier]} clusters")
     console.print(f"  labels generated: {result.labels_generated}")
-    from herald.classify import LABELS
+    from schoolsengine.classify import LABELS
     for t, count in sorted(result.content_type_counts.items()):
         console.print(f"  {LABELS.get(t, f'type_{t}')}: {count}")
 

@@ -23,7 +23,7 @@ from uuid import UUID
 
 import psycopg
 
-from herald import settings
+from schoolsengine import settings
 
 
 SCRIPT_DIR = Path(__file__).parent

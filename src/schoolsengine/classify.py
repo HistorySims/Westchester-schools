@@ -1,3 +1,8 @@
+# ============================================================
+# FORK TODO (schoolsengine): keep quality sub-scores; DROP the ad/legal/bad-ocr newspaper content-type classifier
+# Inherited from Herald; rewrite for this corpus before use.
+# See docs/ENGINE_EXTRACTION.md.
+# ============================================================
 """Heuristic content-type classification for newspaper chunks.
 
 Categories:
