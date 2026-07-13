@@ -200,6 +200,7 @@ class BoardDocsClient:
         slug: str,
         fetcher: Fetcher,
         base_url: str | None = None,
+        prime_session: bool = True,
     ) -> None:
         self.state = state
         self.slug = slug
@@ -207,13 +208,38 @@ class BoardDocsClient:
         self.base_url = (base_url or f"https://go.boarddocs.com/{state}/{slug}/Board.nsf").rstrip(
             "/"
         )
+        m = re.match(r"(https?://[^/]+)", self.base_url)
+        self.origin = m.group(1) if m else self.base_url
+        self.public_url = f"{self.base_url}/Public"
+        self.prime_session = prime_session
+        self._primed = False
+
+    def _prime(self) -> None:
+        """Load the public board page once so the AJAX calls carry a session.
+
+        BoardDocs' bot filter 403s a cold XHR; a browser gets there by first
+        rendering the Public page (which sets cookies). Best-effort: a failed
+        prime shouldn't abort the crawl — the POST may still succeed.
+        """
+        if not self.prime_session or self._primed:
+            return
+        self._primed = True
+        try:
+            self.fetcher.get(self.public_url)
+        except Exception as exc:  # priming is advisory; a failure shouldn't abort
+            logger.debug("session prime for %s failed: %s", self.public_url, exc)
 
     def _post(self, endpoint: str, data: dict[str, str]) -> str:
+        self._prime()
         url = f"{self.base_url}/{endpoint}?open"
         resp = self.fetcher.post(
             url,
             data=data,
-            headers={"X-Requested-With": "XMLHttpRequest"},
+            headers={
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": self.public_url,
+                "Origin": self.origin,
+            },
         )
         return resp.text
 

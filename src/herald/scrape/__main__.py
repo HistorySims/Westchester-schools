@@ -26,7 +26,14 @@ from rich.console import Console
 from rich.table import Table
 
 from herald.scrape.boarddocs import BoardDocsClient, iter_documents
-from herald.scrape.core import DEFAULT_USER_AGENT, Fetcher, Manifest, RawStore
+from herald.scrape.core import (
+    BROWSER_HEADERS,
+    BROWSER_USER_AGENT,
+    DEFAULT_USER_AGENT,
+    Fetcher,
+    Manifest,
+    RawStore,
+)
 from herald.scrape.runner import (
     DistrictResult,
     crawl_target,
@@ -38,8 +45,24 @@ from herald.scrape.runner import (
 app = typer.Typer(help="Scrape district sources into raw files + a manifest.", no_args_is_help=True)
 console = Console()
 
+CONTACT_EMAIL = "timhartnett29@gmail.com"
 
-def _fetcher(user_agent: str, min_interval: float, respect_robots: bool = True) -> Fetcher:
+
+def _fetcher(
+    user_agent: str,
+    min_interval: float,
+    respect_robots: bool = True,
+    browser: bool = True,
+) -> Fetcher:
+    if browser:
+        # Present as a browser (some hosts 403 non-browser clients) while
+        # keeping an honest contact via the From header + polite rate limit.
+        return Fetcher(
+            user_agent=BROWSER_USER_AGENT,
+            headers={**BROWSER_HEADERS, "From": CONTACT_EMAIL},
+            min_request_interval=min_interval,
+            respect_robots=respect_robots,
+        )
     return Fetcher(
         user_agent=user_agent,
         min_request_interval=min_interval,
@@ -101,6 +124,9 @@ def fetch(
     ignore_robots: bool = typer.Option(
         False, help="Bypass robots.txt (only for public records you're entitled to)."
     ),
+    browser: bool = typer.Option(
+        True, help="Present as a browser + prime a session (needed past BoardDocs' bot filter)."
+    ),
     user_agent: str = typer.Option(DEFAULT_USER_AGENT),
     min_interval: float = typer.Option(2.0, help="Min seconds between requests."),
 ) -> None:
@@ -111,8 +137,10 @@ def fetch(
     store = RawStore(out_dir)
     manifest = Manifest(mpath)
 
-    with _fetcher(user_agent, min_interval, respect_robots=not ignore_robots) as fetcher:
-        client = BoardDocsClient(state=state, slug=slug, fetcher=fetcher)
+    with _fetcher(
+        user_agent, min_interval, respect_robots=not ignore_robots, browser=browser
+    ) as fetcher:
+        client = BoardDocsClient(state=state, slug=slug, fetcher=fetcher, prime_session=browser)
         docs = iter_documents(
             client,
             district=district,
@@ -151,6 +179,9 @@ def crawl(
     ignore_robots: bool = typer.Option(
         False, help="Bypass robots.txt (only for public records you're entitled to)."
     ),
+    browser: bool = typer.Option(
+        True, help="Present as a browser + prime a session (needed past BoardDocs' bot filter)."
+    ),
     user_agent: str = typer.Option(DEFAULT_USER_AGENT),
     min_interval: float = typer.Option(2.0, help="Min seconds between requests."),
 ) -> None:
@@ -168,8 +199,12 @@ def crawl(
     for t in target_list:
         console.rule(f"{t.name}  ({t.state}/{t.slug})")
         try:
-            with _fetcher(user_agent, min_interval, respect_robots=not ignore_robots) as fetcher:
-                client = BoardDocsClient(state=t.state, slug=t.slug, fetcher=fetcher)
+            with _fetcher(
+                user_agent, min_interval, respect_robots=not ignore_robots, browser=browser
+            ) as fetcher:
+                client = BoardDocsClient(
+                    state=t.state, slug=t.slug, fetcher=fetcher, prime_session=browser
+                )
                 per_committee = crawl_target(
                     client,
                     t,

@@ -88,11 +88,26 @@ def test_client_list_meetings(httpx_mock):
         url=f"{BASE}/BD-GetMeetingsList?open", text=_load("meetings.json")
     )
     with _fast_fetcher() as f:
-        client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f)
+        client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f, prime_session=False)
         meetings = client.list_meetings("AAAA1111")
     assert len(meetings) == 3
     req = httpx_mock.get_requests()[0]
     assert b"current_committee=AAAA1111" in req.content
+
+
+def test_client_primes_session_and_sends_referer(httpx_mock):
+    # With prime_session on (the default), the client loads the public page
+    # first (to pick up cookies) and the AJAX POST carries Referer + Origin.
+    httpx_mock.add_response(url=f"{BASE}/Public", text="<html>board</html>")
+    httpx_mock.add_response(url=f"{BASE}/BD-GetMeetingsList?open", text="[]")
+    with _fast_fetcher() as f:
+        client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f)  # prime_session=True
+        client.list_meetings("X")
+    reqs = httpx_mock.get_requests()
+    assert reqs[0].url.path.endswith("/Board.nsf/Public")  # primed before the POST
+    post = next(r for r in reqs if r.url.path.endswith("BD-GetMeetingsList"))
+    assert post.headers.get("Referer", "").endswith("/Board.nsf/Public")
+    assert post.headers.get("Origin") == "https://go.boarddocs.com"
 
 
 def test_iter_documents_end_to_end(httpx_mock):
@@ -103,7 +118,7 @@ def test_iter_documents_end_to_end(httpx_mock):
         url=f"{BASE}/BD-GetAgenda?open", text=_load("agenda.html"), is_reusable=True
     )
     with _fast_fetcher() as f:
-        client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f)
+        client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f, prime_session=False)
         docs = list(
             iter_documents(
                 client,
@@ -130,7 +145,7 @@ def test_iter_documents_since_filter(httpx_mock):
         url=f"{BASE}/BD-GetAgenda?open", text=_load("agenda.html"), is_reusable=True
     )
     with _fast_fetcher() as f:
-        client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f)
+        client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f, prime_session=False)
         list(
             iter_documents(
                 client,
@@ -175,7 +190,7 @@ def test_download_docs_writes_manifest_and_files(httpx_mock, tmp_path):
     store = RawStore(tmp_path / "raw")
     manifest = Manifest(tmp_path / "raw" / "manifest.jsonl")
     with _fast_fetcher() as f:
-        client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f)
+        client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f, prime_session=False)
         docs = iter_documents(client, district="scarsdale", committee="AAAA1111", limit=1)
         stats = download_docs(docs, fetcher=f, store=store, manifest=manifest)
 
@@ -195,7 +210,7 @@ def test_download_docs_is_idempotent(httpx_mock, tmp_path):
     mpath = tmp_path / "raw" / "manifest.jsonl"
 
     with _fast_fetcher() as f:
-        client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f)
+        client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f, prime_session=False)
         first = download_docs(
             iter_documents(client, district="scarsdale", committee="AAAA1111", limit=1),
             fetcher=f, store=store, manifest=Manifest(mpath),
@@ -204,7 +219,7 @@ def test_download_docs_is_idempotent(httpx_mock, tmp_path):
 
     # Second run with a fresh Manifest that reloads the prior state.
     with _fast_fetcher() as f:
-        client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f)
+        client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f, prime_session=False)
         second = download_docs(
             iter_documents(client, district="scarsdale", committee="AAAA1111", limit=1),
             fetcher=f, store=store, manifest=Manifest(mpath),

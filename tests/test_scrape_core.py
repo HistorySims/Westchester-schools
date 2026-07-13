@@ -8,6 +8,8 @@ import httpx
 import pytest
 
 from herald.scrape.core import (
+    BROWSER_HEADERS,
+    BROWSER_USER_AGENT,
     Fetcher,
     Manifest,
     RawStore,
@@ -115,6 +117,22 @@ def test_fetcher_sends_user_agent(httpx_mock):
         f.get("https://x.test/a")
     req = httpx_mock.get_requests()[0]
     assert req.headers["User-Agent"] == "herald-test/1.0"
+
+
+def test_fetcher_sends_browser_headers(httpx_mock):
+    httpx_mock.add_response(url="https://x.test/a", text="ok")
+    with Fetcher(
+        user_agent=BROWSER_USER_AGENT,
+        headers={**BROWSER_HEADERS, "From": "a@b.c"},
+        min_request_interval=0.0,
+        retry_base_delay=0.0,
+        respect_robots=False,
+    ) as f:
+        f.get("https://x.test/a")
+    req = httpx_mock.get_requests()[0]
+    assert "Chrome" in req.headers["User-Agent"]
+    assert req.headers["Accept-Language"].startswith("en-US")
+    assert req.headers["From"] == "a@b.c"
 
 
 def test_fetcher_retries_then_succeeds(httpx_mock):

@@ -30,6 +30,23 @@ DEFAULT_USER_AGENT = (
     "school-district public-records research crawler"
 )
 
+# A current Chrome UA + the headers a real browser sends. Some hosts (BoardDocs
+# among them) sit behind bot/WAF filters that 403 a non-browser client
+# outright; presenting as a browser is the price of reaching public records
+# there. We still identify a contact via the From header and keep the polite
+# rate limiting, so this is "look like a browser", not "hide who we are".
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+)
+BROWSER_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+}
+
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -119,6 +136,7 @@ class Fetcher:
         self,
         *,
         user_agent: str = DEFAULT_USER_AGENT,
+        headers: dict[str, str] | None = None,
         min_request_interval: float = 2.0,
         jitter: float = 0.5,
         max_retries: int = 4,
@@ -133,8 +151,9 @@ class Fetcher:
         self.retry_base_delay = retry_base_delay
         self._last_request = 0.0
         self._owns_client = client is None
+        base_headers = {"User-Agent": user_agent, **(headers or {})}
         self._client = client or httpx.Client(
-            headers={"User-Agent": user_agent},
+            headers=base_headers,
             timeout=timeout,
             follow_redirects=True,
         )
