@@ -32,6 +32,10 @@ on:
         description: "Regex matched (case-insensitive) against committee names"
         type: string
         default: "board|polic"
+      min_interval:
+        description: "Minimum seconds between requests (politeness)"
+        type: string
+        default: "2"
       dry_run:
         description: "Dry run (confirm slugs + preview only, download nothing)"
         type: boolean
@@ -66,6 +70,7 @@ jobs:
             --since "${{ inputs.since }}" \
             --limit "${{ inputs.limit }}" \
             --committee-match "${{ inputs.committee_match }}" \
+            --min-interval "${{ inputs.min_interval }}" \
             --out data/raw \
             --report crawl-report.md \
             ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}

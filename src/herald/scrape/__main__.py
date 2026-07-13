@@ -39,8 +39,12 @@ app = typer.Typer(help="Scrape district sources into raw files + a manifest.", n
 console = Console()
 
 
-def _fetcher(user_agent: str, min_interval: float) -> Fetcher:
-    return Fetcher(user_agent=user_agent, min_request_interval=min_interval)
+def _fetcher(user_agent: str, min_interval: float, respect_robots: bool = True) -> Fetcher:
+    return Fetcher(
+        user_agent=user_agent,
+        min_request_interval=min_interval,
+        respect_robots=respect_robots,
+    )
 
 
 @app.command()
@@ -48,7 +52,7 @@ def committees(
     state: str = typer.Option(..., help="BoardDocs state slug, e.g. 'ny'."),
     slug: str = typer.Option(..., help="District slug in the BoardDocs URL."),
     user_agent: str = typer.Option(DEFAULT_USER_AGENT, help="Identifying User-Agent."),
-    min_interval: float = typer.Option(1.0, help="Min seconds between requests."),
+    min_interval: float = typer.Option(2.0, help="Min seconds between requests."),
 ) -> None:
     """List a district's BoardDocs committees (find the id you want)."""
     with _fetcher(user_agent, min_interval) as fetcher:
@@ -66,7 +70,7 @@ def meetings(
     slug: str = typer.Option(...),
     committee: str = typer.Option(..., help="Committee 'unique' id from `committees`."),
     user_agent: str = typer.Option(DEFAULT_USER_AGENT),
-    min_interval: float = typer.Option(1.0),
+    min_interval: float = typer.Option(2.0, help="Min seconds between requests."),
 ) -> None:
     """List meetings for one committee."""
     with _fetcher(user_agent, min_interval) as fetcher:
@@ -94,8 +98,11 @@ def fetch(
         None, help="Manifest JSONL path (default: <out>/manifest.jsonl)."
     ),
     dry_run: bool = typer.Option(False, help="Discover + list only; download nothing."),
+    ignore_robots: bool = typer.Option(
+        False, help="Bypass robots.txt (only for public records you're entitled to)."
+    ),
     user_agent: str = typer.Option(DEFAULT_USER_AGENT),
-    min_interval: float = typer.Option(1.0),
+    min_interval: float = typer.Option(2.0, help="Min seconds between requests."),
 ) -> None:
     """Discover a committee's attachments and download them."""
     since_date = date.fromisoformat(since) if since else None
@@ -104,7 +111,7 @@ def fetch(
     store = RawStore(out_dir)
     manifest = Manifest(mpath)
 
-    with _fetcher(user_agent, min_interval) as fetcher:
+    with _fetcher(user_agent, min_interval, respect_robots=not ignore_robots) as fetcher:
         client = BoardDocsClient(state=state, slug=slug, fetcher=fetcher)
         docs = iter_documents(
             client,
@@ -141,8 +148,11 @@ def crawl(
     out: str = typer.Option("data/raw", help="Root dir for downloaded files."),
     report: str | None = typer.Option(None, help="Write a markdown summary to this path."),
     dry_run: bool = typer.Option(False, help="Discover + list only; download nothing."),
+    ignore_robots: bool = typer.Option(
+        False, help="Bypass robots.txt (only for public records you're entitled to)."
+    ),
     user_agent: str = typer.Option(DEFAULT_USER_AGENT),
-    min_interval: float = typer.Option(1.0),
+    min_interval: float = typer.Option(2.0, help="Min seconds between requests."),
 ) -> None:
     """Batch-crawl every district in a targets file (e.g. Port Chester peers).
 
@@ -158,7 +168,7 @@ def crawl(
     for t in target_list:
         console.rule(f"{t.name}  ({t.state}/{t.slug})")
         try:
-            with _fetcher(user_agent, min_interval) as fetcher:
+            with _fetcher(user_agent, min_interval, respect_robots=not ignore_robots) as fetcher:
                 client = BoardDocsClient(state=t.state, slug=t.slug, fetcher=fetcher)
                 per_committee = crawl_target(
                     client,

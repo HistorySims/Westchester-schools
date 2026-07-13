@@ -27,7 +27,7 @@ def _load(name: str) -> str:
 
 
 def _fast_fetcher() -> Fetcher:
-    return Fetcher(min_request_interval=0.0, retry_base_delay=0.0)
+    return Fetcher(min_request_interval=0.0, retry_base_delay=0.0, respect_robots=False)
 
 
 # ---- pure parsers ---------------------------------------------------------

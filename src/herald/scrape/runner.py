@@ -18,6 +18,7 @@ from herald.scrape.core import (
     Fetcher,
     Manifest,
     RawStore,
+    RobotsDisallowed,
     make_manifest_entry,
     sha256_bytes,
 )
@@ -61,6 +62,7 @@ class ScrapeStats:
     downloaded: int = 0
     skipped_seen: int = 0
     skipped_dup_content: int = 0
+    skipped_robots: int = 0
     failed: int = 0
     by_type: dict[str, int] = field(default_factory=dict)
 
@@ -113,6 +115,10 @@ def download_docs(
         try:
             resp = fetcher.get(doc.source_url)
             data = resp.content
+        except RobotsDisallowed:
+            stats.skipped_robots += 1
+            logger.info("robots.txt disallows %s; skipping", doc.source_url)
+            continue
         except Exception as exc:
             stats.failed += 1
             logger.warning("download failed %s: %s", doc.source_url, exc)

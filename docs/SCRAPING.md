@@ -111,6 +111,28 @@ BoardDocs, that district is reported `skipped` and the crawl continues.
 > BoardDocs page and read `go.boarddocs.com/<state>/<slug>/…`) or a note that
 > it uses a different platform. Fix the entry in the targets file and re-run.
 
+## Politeness
+
+The `Fetcher` is conservative by default so we stay welcome on small
+district servers:
+
+- **Serial** — one request at a time, never concurrent.
+- **robots.txt** — Disallow rules are obeyed and any `Crawl-delay` is
+  adopted (whichever is larger, it or `--min-interval`, wins). A disallowed
+  file is skipped and counted, not fetched. Missing/unreachable robots.txt
+  is treated as allow-all. Override only for records you're entitled to with
+  `--ignore-robots`.
+- **Rate limit** — at least `--min-interval` seconds between requests
+  (default **2s**) plus a little random jitter, so we don't machine-gun at a
+  fixed cadence.
+- **Backpressure** — bounded retries with exponential backoff that honor a
+  `Retry-After` header on 429/503.
+- **Identity** — the User-Agent names the project and a contact email, so an
+  admin can reach out instead of silently blocking.
+
+To be gentler still, raise the interval: `--min-interval 5`. In the `scrape`
+workflow the same knob is the **min_interval** input.
+
 ## Adding another source
 
 Write a new adapter module exposing an `iter_documents(...) -> Iterable[
