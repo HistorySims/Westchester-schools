@@ -154,6 +154,38 @@ def _filename_of(url: str) -> str:
     return tail.split("?")[0] or "attachment"
 
 
+@dataclass(frozen=True)
+class PublicPageInfo:
+    """What we can glean from a BoardDocs public page (for reverse-engineering)."""
+
+    status: int
+    length: int
+    script_srcs: list[str]
+    committee_hints: list[str]
+
+
+def analyze_public_html(html: str, *, status: int = 200) -> PublicPageInfo:
+    """Pull script URLs + any 'committee'-adjacent tokens out of a public page.
+
+    The public SPA embeds the committee id and loads a JS bundle that names
+    the real AJAX endpoints; this surfaces both so we can read the actual API.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    scripts = [s["src"] for s in soup.find_all("script", src=True)]
+    hints: list[str] = []
+    seen: set[str] = set()
+    for m in re.finditer(r".{0,30}committee.{0,50}", html, re.IGNORECASE):
+        frag = " ".join(m.group(0).split())
+        if frag not in seen:
+            seen.add(frag)
+            hints.append(frag)
+        if len(hints) >= 25:
+            break
+    return PublicPageInfo(
+        status=status, length=len(html), script_srcs=scripts, committee_hints=hints
+    )
+
+
 def select_committees(
     committees: list[Committee],
     *,
