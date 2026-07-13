@@ -130,6 +130,19 @@ district servers:
 - **Identity** — the User-Agent names the project and a contact email, so an
   admin can reach out instead of silently blocking.
 
+### Browser mode (BoardDocs bot filter)
+
+BoardDocs sits behind a bot/WAF filter that returns `403` to a plain
+non-browser client, even with a correct slug. `--browser` (on by default for
+`fetch`/`crawl`) works around it by presenting a real Chrome User-Agent + the
+headers a browser sends, priming a session (loading the public board page
+first to pick up cookies), and sending `Referer`/`Origin` on the AJAX calls.
+It still sends a `From:` contact header and keeps the polite rate limit, so
+we look like a browser without hiding who we are. Turn it off with
+`--no-browser` (or the workflow's **browser** input) if a source doesn't need
+it. If browser mode still 403s, the site likely uses a JavaScript challenge
+and would need a headless browser (Playwright) instead.
+
 To be gentler still, raise the interval: `--min-interval 5`. In the `scrape`
 workflow the same knob is the **min_interval** input.
 

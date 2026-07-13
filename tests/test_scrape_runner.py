@@ -123,7 +123,7 @@ def test_crawl_target_selects_committees_and_downloads(httpx_mock, tmp_path):
     target = Target(district="scarsdale", name="Scarsdale", state="ny", slug="scarsdale")
 
     with _fast_fetcher() as f:
-        client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f)
+        client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f, prime_session=False)
         per_committee = crawl_target(
             client, target, store=store, manifest=manifest,
             committee_match="board|polic", limit=1,
