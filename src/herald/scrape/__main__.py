@@ -248,5 +248,89 @@ def crawl(
         console.print(f"manifest: {out_dir / 'manifest.jsonl'}")
 
 
+@app.command()
+def probe(
+    targets: str = typer.Option("data/targets/port_chester_peers.json", help="Targets JSON."),
+    out: str = typer.Option("data/probe", help="Where to dump captured HTML/JS."),
+    scripts: int = typer.Option(5, help="How many same-origin scripts to save (anchor only)."),
+    browser: bool = typer.Option(True),
+    ignore_robots: bool = typer.Option(True),
+    user_agent: str = typer.Option(DEFAULT_USER_AGENT),
+    min_interval: float = typer.Option(2.0, help="Min seconds between requests."),
+) -> None:
+    """Capture the real BoardDocs public page + endpoint behavior.
+
+    For each target, saves the public-page HTML. For the first (anchor)
+    target it also saves its same-origin scripts and status-checks candidate
+    AJAX endpoints — enough to reverse-engineer the real API. Everything lands
+    under --out so the workflow can upload it as an artifact.
+    """
+    import httpx
+
+    from herald.scrape.boarddocs import analyze_public_html
+
+    out_dir = Path(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lines = ["## BoardDocs probe", ""]
+    target_list = load_targets(targets)
+
+    for i, t in enumerate(target_list):
+        base = f"https://go.boarddocs.com/{t.state}/{t.slug}/Board.nsf"
+        with _fetcher(
+            user_agent, min_interval, respect_robots=not ignore_robots, browser=browser
+        ) as f:
+            console.rule(f"{t.name} ({t.state}/{t.slug})")
+            try:
+                resp = f.get(f"{base}/Public")
+            except Exception as exc:
+                lines.append(f"### {t.name} (`{t.state}/{t.slug}`) — ERROR: {exc}")
+                console.print(f"  [red]{exc}[/red]")
+                continue
+
+            html = resp.text
+            (out_dir / f"{t.slug}-Public.html").write_text(html, encoding="utf-8")
+            info = analyze_public_html(html, status=resp.status_code)
+            lines.append(
+                f"### {t.name} (`{t.state}/{t.slug}`) — HTTP {info.status}, {info.length} bytes"
+            )
+            lines.append(f"- scripts: `{info.script_srcs[:8]}`")
+            lines.append(f"- committee hints: `{info.committee_hints[:6]}`")
+
+            if i == 0:  # deep-probe the anchor only
+                saved = 0
+                for src in info.script_srcs:
+                    url = src if src.startswith("http") else f"https://go.boarddocs.com{src}"
+                    if "go.boarddocs.com" not in url or saved >= scripts:
+                        continue
+                    try:
+                        js = f.get(url)
+                        name = url.rsplit("/", 1)[-1].split("?")[0] or f"script{saved}.js"
+                        (out_dir / f"{t.slug}-{name}").write_text(js.text, encoding="utf-8")
+                        saved += 1
+                    except Exception as exc:
+                        lines.append(f"  - script fetch failed {url}: {exc}")
+                lines.append(f"- saved {saved} script file(s) for endpoint discovery")
+
+                candidates = [
+                    "BD-GetMeetingsList", "BD-GetAgenda", "BD-GetCommittees",
+                    "BD-GetCommitteeList", "BD-GetActiveCommittees", "BD-GetMeeting",
+                    "BD-GetItem", "XX-GetMeetingsList",
+                ]
+                lines.append("- endpoint status scan:")
+                for ep in candidates:
+                    url = f"{base}/{ep}?open"
+                    try:
+                        r = f.post(url, data={}, headers={"X-Requested-With": "XMLHttpRequest"})
+                        code = r.status_code
+                    except httpx.HTTPStatusError as exc:
+                        code = exc.response.status_code
+                    except Exception as exc:  # record any transport error, keep scanning
+                        code = f"ERR {type(exc).__name__}"
+                    lines.append(f"    - `{ep}` -> {code}")
+
+    (out_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    console.print(f"\nwrote {out_dir}/summary.md and captured HTML/JS under {out_dir}/")
+
+
 if __name__ == "__main__":
     app()

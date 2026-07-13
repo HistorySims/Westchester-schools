@@ -8,6 +8,7 @@ from pathlib import Path
 
 from herald.scrape.boarddocs import (
     BoardDocsClient,
+    analyze_public_html,
     classify_filename,
     iter_documents,
     parse_agenda_files,
@@ -70,6 +71,23 @@ def test_parse_agenda_files_filters_and_resolves():
     # relative hrefs resolve against the site root
     assert all(u.startswith("https://go.boarddocs.com/") for u in urls)
     assert files[0].title == "January 2024 Meeting Minutes"
+
+
+def test_analyze_public_html_extracts_scripts_and_committee_hints():
+    html = """
+    <html><head>
+      <script src="/ny/scarsdale/Board.nsf/app.js"></script>
+      <script src="https://cdn.example/lib.js"></script>
+    </head><body>
+      <input id="current_committee" value="A1B2C3D4">
+      <div>Select a committee to view meetings</div>
+    </body></html>
+    """
+    info = analyze_public_html(html, status=200)
+    assert info.status == 200
+    assert "/ny/scarsdale/Board.nsf/app.js" in info.script_srcs
+    assert "https://cdn.example/lib.js" in info.script_srcs
+    assert any("committee" in h.lower() for h in info.committee_hints)
 
 
 def test_classify_filename():

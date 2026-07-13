@@ -1,0 +1,59 @@
+name: probe
+
+# One-off diagnostic: capture the REAL BoardDocs public page + endpoint
+# behavior so the API can be reverse-engineered (the crawler's endpoint
+# guesses were returning 404). Runs on GitHub's networked runners.
+#
+#   Actions -> probe -> Run workflow
+#
+# Saves the captured HTML/JS as an artifact and prints a summary to the run
+# page. No secrets required.
+
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "Targets JSON file"
+        type: string
+        default: "data/targets/port_chester_peers.json"
+      min_interval:
+        description: "Minimum seconds between requests (politeness)"
+        type: string
+        default: "2"
+
+concurrency:
+  group: probe-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Probe
+        run: |
+          uv run herald-scrape probe \
+            --targets "${{ inputs.targets }}" \
+            --min-interval "${{ inputs.min_interval }}" \
+            --out data/probe
+      - name: Publish summary to run page
+        if: always()
+        run: cat data/probe/summary.md >> "$GITHUB_STEP_SUMMARY" || echo "(no summary)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload captured HTML/JS
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-${{ github.run_id }}
+          path: data/probe/**
+          if-no-files-found: warn
+          retention-days: 14
