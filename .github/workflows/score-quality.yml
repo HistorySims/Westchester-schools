@@ -1,0 +1,34 @@
+name: Score chunk OCR quality
+
+# Backfills chunks.status / quality_score / quality_subscores using
+# the heuristic in src/herald/classify.py. Idempotent — safe to re-run
+# any time. Run after every ingest and after each Phase-3 re-OCR
+# (when that ships).
+#
+# Required secrets:
+#   SUPABASE_DB_URL  - Supabase Session-mode pooler connection string
+
+on:
+  workflow_dispatch:
+
+jobs:
+  score:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Sync deps
+        run: uv sync --frozen
+
+      - name: Score chunk quality
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: uv run scripts/score_chunk_quality.py

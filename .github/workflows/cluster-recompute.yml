@@ -1,0 +1,60 @@
+name: Recompute cluster geometry + relabel
+
+# Rebuilds every cluster aggregate (active_size, centroid, burstiness,
+# drift, date range) from status='active' AND content_type=0 chunks
+# only, then optionally re-runs Haiku labels over the now-clean rep
+# chunks. Idempotent. Run after each ingest, quality re-score, or
+# clustering run.
+#
+# Required secrets:
+#   SUPABASE_DB_URL    - Supabase connection string
+#   ANTHROPIC_API_KEY  - only needed when relabel=true
+
+on:
+  workflow_dispatch:
+    inputs:
+      relabel:
+        description: "Re-run Haiku labels (true|false)"
+        required: false
+        default: "true"
+
+jobs:
+  recompute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install runtime deps
+        run: uv sync --frozen
+
+      - name: Recompute cluster geometry
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: uv run scripts/cluster_recompute.py
+
+      - name: Populate cluster_weeks (dossier weekly aggregates)
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: uv run scripts/cluster_weeks.py
+
+      - name: Re-run Haiku cluster labels
+        if: ${{ inputs.relabel == 'true' }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          uv run python -c "
+          from herald.cluster import run_labels_only
+          from herald import settings
+          cfg = settings.load()
+          n = run_labels_only(cfg.supabase_db_url, on_progress=print)
+          print(f'wrote {n} labels')
+          "

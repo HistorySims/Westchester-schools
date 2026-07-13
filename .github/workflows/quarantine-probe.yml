@@ -1,0 +1,41 @@
+name: Quarantine probe (read-only)
+
+# Reports current quarantine distribution + projected counts under
+# candidate threshold revisions. NO database writes. Run before
+# rerunning Score chunk OCR quality with a new bar.
+#
+# Required secrets:
+#   SUPABASE_DB_URL  - Supabase connection string
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install runtime deps
+        run: uv sync --frozen
+
+      - name: Run probe
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: uv run scripts/quarantine_probe.py
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: quarantine-probe
+          path: scripts/quarantine_probe_report.md
+          if-no-files-found: error
+          retention-days: 30

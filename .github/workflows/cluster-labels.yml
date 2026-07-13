@@ -1,0 +1,42 @@
+name: Export cluster labels
+
+# One-off diagnostic — pulls Herald's own cluster labels for the
+# active cluster run from Supabase and uploads them as a Markdown
+# artifact you can download from the Actions UI for side-by-side
+# comparison with BERTopic's output.
+#
+# Required secrets:
+#   SUPABASE_DB_URL  - Supabase connection string
+
+on:
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install runtime deps
+        run: uv sync --frozen
+
+      - name: Export cluster labels
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: uv run scripts/export_cluster_labels.py
+
+      - name: Upload Markdown report
+        uses: actions/upload-artifact@v4
+        with:
+          name: herald-cluster-labels
+          path: scripts/cluster_labels_*.md
+          if-no-files-found: error
+          retention-days: 30

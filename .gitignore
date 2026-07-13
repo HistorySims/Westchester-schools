@@ -1,0 +1,52 @@
+# Secrets — never commit
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.uv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+build/
+dist/
+
+# Node / web (Phase 2)
+node_modules/
+.next/
+out/
+.turbo/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local data / scratch — but the frozen recovery-eval set is
+# version-controlled on purpose (labels reviewed at Gate 2; tuning
+# must run against exactly these files).
+/data/*
+!/data/recovery_eval/
+/tmp/
+*.sqlite
+*.db
+
+
+# One-off diagnostic outputs from scripts/
+scripts/bertopic_output_*.md
+scripts/cluster_labels_*.md

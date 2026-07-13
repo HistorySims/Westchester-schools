@@ -1,0 +1,38 @@
+name: Quarantine by cluster refusal
+
+# Corrective quarantine pass: any chunk in a tier-0 cluster whose
+# Haiku label is a refusal ("I cannot reliably identify a shared
+# topic — the text appears severely corrupted") gets flipped to
+# status='quarantined' with reason='cluster_refused'. RAG retrieval
+# already filters by status='active', so this immediately removes
+# them from /api/ask, /api/brief, and cluster-story.
+#
+# Idempotent; safe to re-run after each clustering / relabel pass.
+#
+# Required secrets:
+#   SUPABASE_DB_URL  - Supabase connection string
+
+on:
+  workflow_dispatch:
+
+jobs:
+  quarantine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install runtime deps
+        run: uv sync --frozen
+
+      - name: Quarantine chunks in refused clusters
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: uv run scripts/quarantine_by_cluster_refusal.py

@@ -1,0 +1,63 @@
+[project]
+name = "herald"
+version = "0.1.0"
+description = "Semantic research over historical American newspapers"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "anthropic>=0.40",
+    "hdbscan>=0.8.33",
+    "httpx>=0.27",
+    "numpy>=1.26",
+    "pgvector>=0.3",
+    "psycopg[binary]>=3.2",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "rich>=13.7",
+    "scikit-learn>=1.4",
+    "typer>=0.12",
+    "umap-learn>=0.5",
+]
+
+[project.scripts]
+herald = "herald.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/herald"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "pytest-httpx>=0.30",
+    "ruff>=0.5",
+    "pyright>=1.1.370",
+]
+# Analysis-only group: one-off diagnostic scripts under scripts/.
+# Do NOT promote these to runtime `dependencies`. Install with
+# `uv sync --group analysis` (or `uv pip install bertopic`).
+analysis = [
+    "bertopic>=0.16",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportMissingImports = "error"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

@@ -1,0 +1,60 @@
+name: Cluster semantic drift
+
+# Diagnostic — for the active cluster run, bin each cluster's member
+# chunks by ISO week, compute the centroid per week, then compute
+# cumulative and net cosine drift across consecutive weeks. Writes
+# drift_cumulative / drift_net / drift_weeks to clusters and uploads
+# a Markdown summary as an artifact.
+#
+# Required secrets:
+#   SUPABASE_DB_URL  - Supabase connection string
+
+on:
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "Restrict to a single tier (0-3). Leave blank for all tiers."
+        required: false
+        default: ""
+      write:
+        description: "Write metrics back to clusters table"
+        required: false
+        default: "true"
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install runtime deps
+        run: uv sync --frozen
+
+      - name: Compute cluster drift
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          ARGS=()
+          if [ -n "${{ inputs.tier }}" ]; then
+            ARGS+=(--tier "${{ inputs.tier }}")
+          fi
+          if [ "${{ inputs.write }}" != "true" ]; then
+            ARGS+=(--no-write)
+          fi
+          uv run scripts/cluster_drift.py "${ARGS[@]}"
+
+      - name: Upload Markdown report
+        uses: actions/upload-artifact@v4
+        with:
+          name: herald-cluster-drift
+          path: scripts/cluster_drift_*.md
+          if-no-files-found: error
+          retention-days: 30

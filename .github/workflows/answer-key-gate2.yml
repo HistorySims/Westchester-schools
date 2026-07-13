@@ -1,0 +1,57 @@
+name: Answer key Gate 2 (join + label + baseline)
+
+# GATE 2 of the recovery-heuristic optimization plan. Gate 1 confirmed
+# both papers are fully present in American Stories 1845. This gate:
+#   4. joins quarantined chunks to their clean AS page/region text
+#   5. labels each for the test theme "political violence" from the
+#      CLEAN text (lexicon first; Haiku hard-capped at 100 calls)
+#   6. splits tune 70 / holdout 30 with a fixed seed
+#   7. baselines the CURRENT heuristic (theme-scoped) with
+#      precision@15/@20 + recall on both splits
+#
+# Read-only against our database. Downloads only the AS 1845 subset.
+# Uploads baseline_eval.md + the tune/holdout JSONL files for review.
+# Phase 3 (tuning) does NOT run here — human review comes first.
+#
+# Required secrets:
+#   SUPABASE_DB_URL    - Supabase connection string
+#   ANTHROPIC_API_KEY  - optional; without it ambiguous labels stay
+#                        unresolved-negative and are reported as such
+
+on:
+  workflow_dispatch:
+
+jobs:
+  gate2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install runtime deps
+        run: uv sync --frozen
+
+      - name: Run Gate 2 (join + label + baseline)
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: uv run --with "datasets<3" python scripts/american_stories_gate2.py
+
+      - name: Upload Gate 2 report + eval set
+        uses: actions/upload-artifact@v4
+        with:
+          name: answer-key-gate2
+          path: |
+            scripts/baseline_eval.md
+            scripts/recovery_eval_tune.jsonl
+            scripts/recovery_eval_holdout.jsonl
+          if-no-files-found: error
+          retention-days: 30

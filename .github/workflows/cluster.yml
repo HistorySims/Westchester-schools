@@ -1,0 +1,52 @@
+name: Run Clustering
+
+on:
+  workflow_dispatch:
+    inputs:
+      min_cluster_size:
+        description: "HDBSCAN min_cluster_size (smaller = more granular)"
+        default: "15"
+        type: string
+      min_samples:
+        description: "HDBSCAN min_samples"
+        default: "5"
+        type: string
+      tier1_target:
+        description: "Tier 1 target cluster count"
+        default: "50"
+        type: string
+      tier2_target:
+        description: "Tier 2 target cluster count"
+        default: "15"
+        type: string
+      tier3_target:
+        description: "Tier 3 target cluster count"
+        default: "5"
+        type: string
+
+jobs:
+  cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Run clustering
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          herald cluster \
+            --min-cluster-size ${{ inputs.min_cluster_size }} \
+            --min-samples ${{ inputs.min_samples }} \
+            --tier1 ${{ inputs.tier1_target }} \
+            --tier2 ${{ inputs.tier2_target }} \
+            --tier3 ${{ inputs.tier3_target }}

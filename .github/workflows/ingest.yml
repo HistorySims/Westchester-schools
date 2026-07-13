@@ -1,0 +1,82 @@
+name: ingest
+
+# Manually triggered. Runs `herald ingest --no-dry-run` for a single LCCN
+# over the chosen date window, with secrets injected from the repo's
+# Settings → Secrets → Actions.
+#
+# Required secrets:
+#   SUPABASE_DB_URL  - Supabase Session-mode pooler connection string
+#   VOYAGE_API_KEY   - Voyage AI key (voyage-3.5)
+#
+# Free-tier runners get 6 hours per job; a full Tribune+Albany ingest
+# may need to be split into year-sized chunks.
+
+on:
+  workflow_dispatch:
+    inputs:
+      lccn:
+        description: "Chronicling America LCCN (e.g. sn83030213)"
+        required: true
+        type: string
+      date_from:
+        description: "Start date YYYY-MM-DD (inclusive)"
+        required: true
+        type: string
+      date_to:
+        description: "End date YYYY-MM-DD (inclusive)"
+        required: true
+        type: string
+      dry_run:
+        description: "Dry-run only (enumerate, no DB writes)"
+        required: false
+        type: boolean
+        default: false
+      sample_days:
+        description: "Sparse mode: comma-separated days-of-month (e.g. '1,15'). Empty = full range."
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  # Prevent two ingests touching the same paper from racing.
+  group: ingest-${{ inputs.lccn }}
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350  # just under the 6h job ceiling
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Sanity-check required secrets are present
+        run: |
+          [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
+          [ -n "$VOYAGE_API_KEY" ]  || { echo "VOYAGE_API_KEY secret is missing"; exit 1; }
+          echo "secrets present (lengths only): db=${#SUPABASE_DB_URL} voyage=${#VOYAGE_API_KEY}"
+      - name: Ingest
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            uv run herald ingest \
+              --lccn "${{ inputs.lccn }}" \
+              --from "${{ inputs.date_from }}" \
+              --to   "${{ inputs.date_to }}" \
+              --sample-days "${{ inputs.sample_days }}" \
+              --dry-run
+          else
+            uv run herald ingest \
+              --lccn "${{ inputs.lccn }}" \
+              --from "${{ inputs.date_from }}" \
+              --to   "${{ inputs.date_to }}" \
+              --sample-days "${{ inputs.sample_days }}" \
+              --no-dry-run
+          fi
