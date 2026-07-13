@@ -27,7 +27,7 @@ import numpy as np
 import psycopg
 from pgvector.psycopg import register_vector
 
-from schoolsengine.classify import classify_chunk
+from herald.classify import classify_chunk
 
 
 @dataclass

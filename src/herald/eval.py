@@ -16,8 +16,8 @@ from dataclasses import dataclass
 from datetime import date
 from io import StringIO
 
-from schoolsengine.retrieval import HybridRetriever, RetrievedChunk
-from schoolsengine.synth import SynthesizedAnswer, Synthesizer
+from herald.retrieval import HybridRetriever, RetrievedChunk
+from herald.synth import SynthesizedAnswer, Synthesizer
 
 
 @dataclass(frozen=True)

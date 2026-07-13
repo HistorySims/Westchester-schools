@@ -32,7 +32,7 @@ import numpy as np
 import psycopg
 from pgvector.psycopg import register_vector
 
-from schoolsengine import settings
+from herald import settings
 
 
 SCRIPT_DIR = Path(__file__).parent

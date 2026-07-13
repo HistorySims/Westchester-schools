@@ -1,5 +1,5 @@
 -- ============================================================
--- FORK TODO (schoolsengine): schema: papers/issues/pages -> districts/documents; drop LoC-specific columns
+-- FORK TODO (herald): schema: papers/issues/pages -> districts/documents; drop LoC-specific columns
 -- Inherited from Herald; rewrite for this corpus before use.
 -- See docs/ENGINE_EXTRACTION.md.
 -- ============================================================

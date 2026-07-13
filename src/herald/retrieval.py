@@ -22,9 +22,9 @@ from uuid import UUID
 
 import psycopg
 
-from schoolsengine import db
-from schoolsengine.embed import VoyageEmbedder
-from schoolsengine.rerank import VoyageReranker
+from herald import db
+from herald.embed import VoyageEmbedder
+from herald.rerank import VoyageReranker
 
 DEFAULT_K_SEM = 50
 DEFAULT_K_FTS = 50

@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import sys
 
-from schoolsengine import settings
-from schoolsengine.quality import score_all
+from herald import settings
+from herald.quality import score_all
 
 
 def main() -> None:
