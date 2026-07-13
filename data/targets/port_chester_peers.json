@@ -1,0 +1,14 @@
+{
+  "note": "Westchester County districts selected as demographic / socioeconomic peers of Port Chester-Rye UFSD (majority Hispanic/Latino, high ELL, high economically-disadvantaged, ~4k students). 'tier' groups closeness of match. 'slug'/'state' are the BoardDocs URL path (go.boarddocs.com/<state>/<slug>/Board.nsf). ALL slugs are UNVERIFIED best-guesses from the build environment (no network) — confirm each with `herald-scrape committees --state <state> --slug <slug>` before trusting a crawl. If a district is not on BoardDocs, list_committees will fail; record the real platform in 'note'.",
+  "targets": [
+    {"district": "port-chester-rye", "name": "Port Chester-Rye UFSD", "state": "ny", "slug": "portchester", "tier": "anchor", "verified": false, "note": "reference/subject district"},
+    {"district": "ossining", "name": "Ossining UFSD", "state": "ny", "slug": "ossining", "tier": "closest", "verified": false, "note": "~4k students, majority Hispanic, high ELL"},
+    {"district": "peekskill", "name": "Peekskill City SD", "state": "ny", "slug": "peekskill", "tier": "closest", "verified": false, "note": "urban, high poverty, Hispanic+Black"},
+    {"district": "tarrytowns", "name": "UFSD of the Tarrytowns (Sleepy Hollow)", "state": "ny", "slug": "tarrytown", "tier": "closest", "verified": false, "note": "high Hispanic %, high ELL"},
+    {"district": "elmsford", "name": "Elmsford UFSD", "state": "ny", "slug": "elmsford", "tier": "closest", "verified": false, "note": "small (~1k), diverse, high need"},
+    {"district": "mount-vernon", "name": "Mount Vernon City SD", "state": "ny", "slug": "mountvernon", "tier": "broader", "verified": false, "note": "larger (~7.5k), high poverty, predominantly Black + growing Hispanic"},
+    {"district": "greenburgh", "name": "Greenburgh Central SD", "state": "ny", "slug": "greenburgh", "tier": "broader", "verified": false, "note": "~1.8k, majority Black + Hispanic, high need"},
+    {"district": "white-plains", "name": "White Plains City SD", "state": "ny", "slug": "whiteplains", "tier": "broader", "verified": false, "note": "~7k, diverse but more mixed-income; partial peer"},
+    {"district": "yonkers", "name": "Yonkers City SD", "state": "ny", "slug": "yonkers", "tier": "broader", "verified": false, "note": "big-city (~27k), high poverty; SES peer but scale-different"}
+  ]
+}
