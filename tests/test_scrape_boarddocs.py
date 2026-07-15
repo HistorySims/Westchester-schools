@@ -12,7 +12,7 @@ from herald.scrape.boarddocs import (
     classify_filename,
     iter_documents,
     parse_agenda_files,
-    parse_committees,
+    parse_committee_id,
     parse_meetings,
 )
 from herald.scrape.core import Fetcher, Manifest, RawStore
@@ -34,14 +34,10 @@ def _fast_fetcher() -> Fetcher:
 # ---- pure parsers ---------------------------------------------------------
 
 
-def test_parse_committees():
-    committees = parse_committees(json.loads(_load("committees.json")))
-    assert [c.name for c in committees] == [
-        "Board of Education",
-        "Policies",
-        "Audit Committee",
-    ]
-    assert committees[0].unique == "AAAA1111"
+def test_parse_committee_id_from_public_html():
+    html = '<html><script> var current_committee_id = "A1B2C3D4E5"; </script></html>'
+    assert parse_committee_id(html) == "A1B2C3D4E5"
+    assert parse_committee_id("<html>no id here</html>") is None
 
 
 def test_parse_meetings_reads_numberdate():
@@ -57,6 +53,32 @@ def test_parse_meetings_accepts_string_payload():
     # BoardDocs occasionally hands back a JSON string, not parsed JSON.
     meetings = parse_meetings(_load("meetings.json"))
     assert len(meetings) == 3
+
+
+def test_parse_agenda_files_json():
+    # Current BoardDocs returns JSON: agenda items with a nested files array.
+    payload = json.dumps(
+        [
+            {
+                "unique": "ITEM1",
+                "name": "Approval of Minutes",  # an item, not a file (no ext)
+                "files": [
+                    {"unique": "FILE1", "name": "05-14-23_Minutes.pdf",
+                     "description": "Approved Minutes"},
+                ],
+            },
+            {"unique": "ITEM2", "name": "Policy 5030", "files": [
+                {"unique": "FILE2", "name": "Policy-5030.pdf"},
+            ]},
+        ]
+    )
+    files = parse_agenda_files(payload, base_url=BASE)
+    urls = {f.url for f in files}
+    assert f"{BASE}/files/FILE1/$file/05-14-23_Minutes.pdf" in urls
+    assert f"{BASE}/files/FILE2/$file/Policy-5030.pdf" in urls
+    # the agenda items themselves (no file extension) are not treated as files
+    assert len(files) == 2
+    assert any(f.title == "Approved Minutes" for f in files)
 
 
 def test_parse_agenda_files_filters_and_resolves():
@@ -110,7 +132,7 @@ def test_client_list_meetings(httpx_mock):
         meetings = client.list_meetings("AAAA1111")
     assert len(meetings) == 3
     req = httpx_mock.get_requests()[0]
-    assert b"current_committee=AAAA1111" in req.content
+    assert b"current_committee_id=AAAA1111" in req.content
 
 
 def test_client_primes_session_and_sends_referer(httpx_mock):

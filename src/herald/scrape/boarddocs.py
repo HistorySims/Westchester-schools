@@ -29,6 +29,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date
+from urllib.parse import quote
 
 from bs4 import BeautifulSoup
 
@@ -37,20 +38,21 @@ from herald.scrape.models import DocType, ScrapedDoc
 
 logger = logging.getLogger(__name__)
 
-# Endpoint path segments on Board.nsf. Overridable for districts that differ.
-EP_COMMITTEES = "BD-GetCommittees"
+# Endpoint path segments on Board.nsf. There is no public "list committees"
+# endpoint (BD-GetCommittees 404s); the committee id is embedded in the
+# /Public page HTML instead — see parse_committee_id.
 EP_MEETINGS = "BD-GetMeetingsList"
 EP_AGENDA = "BD-GetAgenda"
 
 _FILE_HREF = re.compile(r"/\$file/", re.IGNORECASE)
-_DOC_EXT = re.compile(r"\.(pdf|docx?|rtf|txt)(?:$|\?)", re.IGNORECASE)
+_DOC_EXT = re.compile(r"\.(pdf|docx?|rtf|txt|xlsx?|pptx?)(?:$|\?)", re.IGNORECASE)
 _NUMBERDATE = re.compile(r"(\d{4})(\d{2})(\d{2})")
+# BoardDocs' /Public page inlines: var current_committee_id = "A1B2C3D4E5";
+_COMMITTEE_ID_RE = re.compile(r"""current_committee_id\s*[:=]\s*["']([^"']+)["']""")
 
 
-@dataclass(frozen=True)
-class Committee:
-    unique: str
-    name: str
+class CommitteeNotFound(Exception):
+    """Raised when a district's committee id can't be provided or discovered."""
 
 
 @dataclass(frozen=True)
@@ -96,14 +98,15 @@ def _parse_numberdate(value: object) -> date | None:
         return None
 
 
-def parse_committees(payload: object) -> list[Committee]:
-    out: list[Committee] = []
-    for row in _coerce_list(payload):
-        uid = row.get("unique") or row.get("id")
-        name = row.get("name") or row.get("title") or ""
-        if uid:
-            out.append(Committee(unique=str(uid), name=str(name)))
-    return out
+def parse_committee_id(html: str) -> str | None:
+    """Extract ``current_committee_id`` inlined in the /Public page HTML.
+
+    BoardDocs' public SPA sets ``var current_committee_id = "…";`` in the page,
+    which is how it initializes the board's meeting library. That is the only
+    reliable source for the id (there is no list endpoint).
+    """
+    m = _COMMITTEE_ID_RE.search(html or "")
+    return m.group(1) if m else None
 
 
 def parse_meetings(payload: object) -> list[Meeting]:
@@ -118,12 +121,52 @@ def parse_meetings(payload: object) -> list[Meeting]:
     return out
 
 
-def parse_agenda_files(agenda_html: str, *, base_url: str) -> list[FileRef]:
-    """Extract downloadable attachments from an agenda HTML blob.
+def parse_agenda_files(agenda_body: object, *, base_url: str) -> list[FileRef]:
+    """Extract downloadable attachments from an agenda response.
 
-    Picks anchors that either point at a BoardDocs ``/$file/`` resource or end
-    in a document extension. Relative hrefs are resolved against ``base_url``.
+    BoardDocs' ``BD-GetAgenda`` returns JSON (agenda items with a ``files``
+    array of ``{unique, name, description}``) on current instances, but older
+    ones return HTML. Handle both: parse JSON if the body looks like JSON,
+    else scan HTML anchors.
     """
+    data: object | None = None
+    if isinstance(agenda_body, list | dict):
+        data = agenda_body
+    elif isinstance(agenda_body, str) and agenda_body.lstrip()[:1] in ("[", "{"):
+        try:
+            data = json.loads(agenda_body)
+        except ValueError:
+            data = None
+    if data is not None:
+        return _files_from_json(data, base_url=base_url)
+    return _files_from_html(str(agenda_body), base_url=base_url)
+
+
+def _files_from_json(data: object, *, base_url: str) -> list[FileRef]:
+    """Recursively collect file records (``unique`` + a filename-ish ``name``)."""
+    out: list[FileRef] = []
+    seen: set[str] = set()
+
+    def walk(obj: object) -> None:
+        if isinstance(obj, dict):
+            uid = obj.get("unique")
+            name = obj.get("name")
+            if uid and name and _DOC_EXT.search(str(name)):
+                url = f"{base_url}/files/{uid}/$file/{quote(str(name))}"
+                if url not in seen:
+                    seen.add(url)
+                    out.append(FileRef(url=url, title=str(obj.get("description") or name)))
+            for v in obj.values():
+                walk(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                walk(v)
+
+    walk(data)
+    return out
+
+
+def _files_from_html(agenda_html: str, *, base_url: str) -> list[FileRef]:
     soup = BeautifulSoup(agenda_html, "html.parser")
     seen: set[str] = set()
     out: list[FileRef] = []
@@ -186,28 +229,6 @@ def analyze_public_html(html: str, *, status: int = 200) -> PublicPageInfo:
     )
 
 
-def select_committees(
-    committees: list[Committee],
-    *,
-    match: str | None = None,
-    explicit_ids: list[str] | None = None,
-) -> list[Committee]:
-    """Pick which committees to crawl.
-
-    Explicit ids win if given; otherwise ``match`` is a case-insensitive
-    regex tested against the committee name (e.g. ``"board|polic"`` to grab
-    the board-meeting library and the policy manual). ``None`` match returns
-    all committees.
-    """
-    if explicit_ids:
-        want = set(explicit_ids)
-        return [c for c in committees if c.unique in want]
-    if match:
-        rx = re.compile(match, re.IGNORECASE)
-        return [c for c in committees if rx.search(c.name)]
-    return list(committees)
-
-
 def classify_filename(name: str) -> DocType:
     low = name.lower()
     if "minute" in low:
@@ -244,25 +265,33 @@ class BoardDocsClient:
         self.origin = m.group(1) if m else self.base_url
         self.public_url = f"{self.base_url}/Public"
         self.prime_session = prime_session
-        self._primed = False
+        self._public_html: str | None = None
+        self._committee_id: str | None = None
 
-    def _prime(self) -> None:
-        """Load the public board page once so the AJAX calls carry a session.
+    def _load_public(self) -> str:
+        """GET the /Public page once (sets the session cookie), cache the HTML.
 
-        BoardDocs' bot filter 403s a cold XHR; a browser gets there by first
-        rendering the Public page (which sets cookies). Best-effort: a failed
-        prime shouldn't abort the crawl — the POST may still succeed.
+        Serves double duty: priming the session past BoardDocs' bot filter and
+        supplying the HTML we scrape the committee id out of. Best-effort — a
+        failure returns "" rather than aborting.
         """
-        if not self.prime_session or self._primed:
-            return
-        self._primed = True
-        try:
-            self.fetcher.get(self.public_url)
-        except Exception as exc:  # priming is advisory; a failure shouldn't abort
-            logger.debug("session prime for %s failed: %s", self.public_url, exc)
+        if self._public_html is None:
+            try:
+                self._public_html = self.fetcher.get(self.public_url).text
+            except Exception as exc:  # advisory; the POST may still work
+                logger.debug("could not load %s: %s", self.public_url, exc)
+                self._public_html = ""
+        return self._public_html
+
+    def discover_committee_id(self) -> str | None:
+        """The board's committee id, scraped from the /Public page HTML."""
+        if self._committee_id is None:
+            self._committee_id = parse_committee_id(self._load_public())
+        return self._committee_id
 
     def _post(self, endpoint: str, data: dict[str, str]) -> str:
-        self._prime()
+        if self.prime_session:
+            self._load_public()
         url = f"{self.base_url}/{endpoint}?open"
         resp = self.fetcher.post(
             url,
@@ -275,15 +304,12 @@ class BoardDocsClient:
         )
         return resp.text
 
-    def list_committees(self) -> list[Committee]:
-        return parse_committees(self._post(EP_COMMITTEES, {}))
-
     def list_meetings(self, committee: str) -> list[Meeting]:
-        return parse_meetings(self._post(EP_MEETINGS, {"current_committee": committee}))
+        return parse_meetings(self._post(EP_MEETINGS, {"current_committee_id": committee}))
 
     def get_agenda_files(self, meeting: Meeting, committee: str) -> list[FileRef]:
-        html = self._post(EP_AGENDA, {"id": meeting.unique, "current_committee": committee})
-        return parse_agenda_files(html, base_url=self.base_url)
+        body = self._post(EP_AGENDA, {"id": meeting.unique, "current_committee_id": committee})
+        return parse_agenda_files(body, base_url=self.base_url)
 
 
 # ---- adapter: discover ScrapedDocs ------------------------------------
