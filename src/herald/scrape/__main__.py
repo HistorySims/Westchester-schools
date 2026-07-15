@@ -25,7 +25,12 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from herald.scrape.boarddocs import BoardDocsClient, iter_documents
+from herald.scrape.boarddocs import (
+    BoardDocsClient,
+    CommitteeNotFound,
+    analyze_public_html,
+    iter_documents,
+)
 from herald.scrape.core import (
     BROWSER_HEADERS,
     BROWSER_USER_AGENT,
@@ -212,11 +217,24 @@ def crawl(
                     dry_run=dry_run,
                 )
         except Exception as exc:  # bad slug / not BoardDocs / no committee id / network
-            console.print(f"  [red]skipped[/red]: {type(exc).__name__}: {exc}")
+            err = f"{type(exc).__name__}: {exc}"
+            console.print(f"  [red]skipped[/red]: {err}")
+            # Self-diagnose a committee-discovery miss: dump the /Public page
+            # into the artifact and surface status + committee hints, so the
+            # next run tells us why the id wasn't found (no separate probe).
+            cl = locals().get("client")
+            if isinstance(exc, CommitteeNotFound) and cl is not None:
+                ddir = out_dir / "diagnostics"
+                ddir.mkdir(parents=True, exist_ok=True)
+                (ddir / f"{t.slug}-Public.html").write_text(cl.public_html, encoding="utf-8")
+                info = analyze_public_html(cl.public_html, status=cl.public_status or 0)
+                err += (
+                    f" | /Public status={cl.public_status} err={cl.public_error} "
+                    f"bytes={info.length} hints={info.committee_hints[:3]}"
+                )
             results.append(
                 DistrictResult(
-                    name=t.name, state=t.state, slug=t.slug, status="skipped",
-                    error=f"{type(exc).__name__}: {exc}",
+                    name=t.name, state=t.state, slug=t.slug, status="skipped", error=err,
                 )
             )
             continue

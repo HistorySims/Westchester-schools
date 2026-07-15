@@ -47,8 +47,13 @@ EP_AGENDA = "BD-GetAgenda"
 _FILE_HREF = re.compile(r"/\$file/", re.IGNORECASE)
 _DOC_EXT = re.compile(r"\.(pdf|docx?|rtf|txt|xlsx?|pptx?)(?:$|\?)", re.IGNORECASE)
 _NUMBERDATE = re.compile(r"(\d{4})(\d{2})(\d{2})")
-# BoardDocs' /Public page inlines: var current_committee_id = "A1B2C3D4E5";
-_COMMITTEE_ID_RE = re.compile(r"""current_committee_id\s*[:=]\s*["']([^"']+)["']""")
+# BoardDocs' /Public page inlines the committee id in one of a few forms:
+#   var current_committee_id = "A1B2C3D4E5";      (JS var)
+#   "current_committee_id":"A1B2C3D4E5"           (JSON/config)
+#   ...&current_committee_id=A1B2C3D4E5           (a URL/deep-link param)
+_COMMITTEE_ID_RE = re.compile(
+    r"""current_committee_id["']?\s*[:=]\s*["']?([A-Za-z0-9]{6,})["'&]?"""
+)
 
 
 class CommitteeNotFound(Exception):
@@ -267,19 +272,29 @@ class BoardDocsClient:
         self.prime_session = prime_session
         self._public_html: str | None = None
         self._committee_id: str | None = None
+        self.public_status: int | None = None
+        self.public_error: str | None = None
+
+    @property
+    def public_html(self) -> str:
+        return self._public_html or ""
 
     def _load_public(self) -> str:
         """GET the /Public page once (sets the session cookie), cache the HTML.
 
         Serves double duty: priming the session past BoardDocs' bot filter and
         supplying the HTML we scrape the committee id out of. Best-effort — a
-        failure returns "" rather than aborting.
+        failure records status/error and returns "" rather than aborting, so
+        the caller can diagnose a discovery miss.
         """
         if self._public_html is None:
             try:
-                self._public_html = self.fetcher.get(self.public_url).text
+                resp = self.fetcher.get(self.public_url)
+                self.public_status = resp.status_code
+                self._public_html = resp.text
             except Exception as exc:  # advisory; the POST may still work
-                logger.debug("could not load %s: %s", self.public_url, exc)
+                self.public_error = f"{type(exc).__name__}: {exc}"
+                logger.warning("could not load %s: %s", self.public_url, exc)
                 self._public_html = ""
         return self._public_html
 
