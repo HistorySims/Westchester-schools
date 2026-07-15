@@ -61,6 +61,12 @@ class CommitteeNotFound(Exception):
 
 
 @dataclass(frozen=True)
+class Committee:
+    unique: str
+    name: str
+
+
+@dataclass(frozen=True)
 class Meeting:
     unique: str
     name: str
@@ -103,13 +109,35 @@ def _parse_numberdate(value: object) -> date | None:
         return None
 
 
-def parse_committee_id(html: str) -> str | None:
-    """Extract ``current_committee_id`` inlined in the /Public page HTML.
+def parse_committees(html: str) -> list[Committee]:
+    """Extract the committee id(s) + names from the /Public page.
 
-    BoardDocs' public SPA sets ``var current_committee_id = "…";`` in the page,
-    which is how it initializes the board's meeting library. That is the only
-    reliable source for the id (there is no list endpoint).
+    BoardDocs lists them in the board/committee menu, e.g.::
+
+        <a class="committee-trigger" committeeid="A4EP6J588C05"
+           aria-label="Board of Education">Board of Education</a>
+        <select name="committeeid"><option value="A4EP6J588C05">…</option></select>
+
+    (The ``bd.current_committee_id`` JS var is empty — "not used".) Returns one
+    ``Committee`` per distinct id, names preferred from the anchor's label.
     """
+    soup = BeautifulSoup(html or "", "html.parser")
+    found: dict[str, str] = {}
+    for a in soup.select("a.committee-trigger"):
+        cid = a.get("committeeid")
+        if cid:
+            label = a.get("aria-label") or a.get_text(strip=True) or str(cid)
+            found.setdefault(str(cid), str(label))
+    for sel in soup.find_all("select", attrs={"name": "committeeid"}):
+        for opt in sel.find_all("option"):
+            cid = opt.get("value")
+            if cid:
+                found.setdefault(str(cid), opt.get_text(strip=True) or str(cid))
+    return [Committee(unique=cid, name=name) for cid, name in found.items()]
+
+
+def parse_committee_id(html: str) -> str | None:
+    """Fallback: a bare ``current_committee_id = "…"`` var, if present."""
     m = _COMMITTEE_ID_RE.search(html or "")
     return m.group(1) if m else None
 
@@ -250,6 +278,21 @@ def classify_filename(name: str) -> DocType:
 # ---- network client ---------------------------------------------------
 
 
+def _committee_params(committee_id: str) -> dict[str, str]:
+    """The committee id under every field name BoardDocs variants have used.
+
+    The /Public form input is ``current_committee``, the selector is
+    ``committeeid``, and civic-scraper documents ``current_committee_id``.
+    Sending all three lets the backend read whichever it expects; extras are
+    ignored.
+    """
+    return {
+        "current_committee_id": committee_id,
+        "current_committee": committee_id,
+        "committeeid": committee_id,
+    }
+
+
 class BoardDocsClient:
     def __init__(
         self,
@@ -271,7 +314,7 @@ class BoardDocsClient:
         self.public_url = f"{self.base_url}/Public"
         self.prime_session = prime_session
         self._public_html: str | None = None
-        self._committee_id: str | None = None
+        self._committees: list[Committee] | None = None
         self.public_status: int | None = None
         self.public_error: str | None = None
 
@@ -298,11 +341,16 @@ class BoardDocsClient:
                 self._public_html = ""
         return self._public_html
 
-    def discover_committee_id(self) -> str | None:
-        """The board's committee id, scraped from the /Public page HTML."""
-        if self._committee_id is None:
-            self._committee_id = parse_committee_id(self._load_public())
-        return self._committee_id
+    def discover_committees(self) -> list[Committee]:
+        """The district's committees, scraped from the /Public page menu."""
+        if self._committees is None:
+            html = self._load_public()
+            found = parse_committees(html)
+            if not found:  # fall back to a bare current_committee_id var
+                cid = parse_committee_id(html)
+                found = [Committee(unique=cid, name=cid)] if cid else []
+            self._committees = found
+        return self._committees
 
     def _post(self, endpoint: str, data: dict[str, str]) -> str:
         if self.prime_session:
@@ -320,10 +368,10 @@ class BoardDocsClient:
         return resp.text
 
     def list_meetings(self, committee: str) -> list[Meeting]:
-        return parse_meetings(self._post(EP_MEETINGS, {"current_committee_id": committee}))
+        return parse_meetings(self._post(EP_MEETINGS, _committee_params(committee)))
 
     def get_agenda_files(self, meeting: Meeting, committee: str) -> list[FileRef]:
-        body = self._post(EP_AGENDA, {"id": meeting.unique, "current_committee_id": committee})
+        body = self._post(EP_AGENDA, {"id": meeting.unique, **_committee_params(committee)})
         return parse_agenda_files(body, base_url=self.base_url)
 
 

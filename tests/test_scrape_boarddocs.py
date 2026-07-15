@@ -13,6 +13,7 @@ from herald.scrape.boarddocs import (
     iter_documents,
     parse_agenda_files,
     parse_committee_id,
+    parse_committees,
     parse_meetings,
 )
 from herald.scrape.core import Fetcher, Manifest, RawStore
@@ -32,6 +33,27 @@ def _fast_fetcher() -> Fetcher:
 
 
 # ---- pure parsers ---------------------------------------------------------
+
+
+def test_parse_committees_from_public_html():
+    # Mirrors the real /Public menu markup (bd.current_committee_id is empty).
+    html = """
+    <html><body>
+      <script>bd.current_committee_id = ""; // not used</script>
+      <li><a href="#" class="dropdown-item committee-trigger" committeeid="A4EP6J588C05"
+             aria-label="Board of Education">Board of Education</a></li>
+      <div id="committee-select"><select name="committeeid">
+        <option value="A4EP6J588C05">Board of Education</option>
+        <option value="BEKQYV6A6369">Policy Committee</option>
+      </select></div>
+    </body></html>
+    """
+    committees = parse_committees(html)
+    by_id = {c.unique: c.name for c in committees}
+    assert by_id == {
+        "A4EP6J588C05": "Board of Education",
+        "BEKQYV6A6369": "Policy Committee",
+    }
 
 
 def test_parse_committee_id_from_public_html():
