@@ -1,0 +1,76 @@
+name: scrape-all
+
+# Overnight full crawl: one job PER DISTRICT, each on its own runner (its own
+# IP), so each IP only crawls one district — the way around BoardDocs' per-IP
+# rate-limit that throttles a single runner doing all 8. Each job downloads
+# real documents and uploads its own artifact (scrape-<slug>).
+#
+#   Actions -> scrape-all -> Run workflow
+#
+# Public records; browser mode + ignore-robots on. No secrets needed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Only meetings on/after this date (YYYY-MM-DD)"
+        type: string
+        default: "2023-01-01"
+      limit:
+        description: "Cap meetings per committee (blank = all in the window)"
+        type: string
+        default: ""
+      min_interval:
+        description: "Minimum seconds between requests (politeness)"
+        type: string
+        default: "3"
+
+concurrency:
+  group: scrape-all-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  crawl:
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        slug: [pcru, oufsd, pcsd, tufsd, elmsford, mvcsd, greenb, wpcsd]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Crawl ${{ matrix.slug }}
+        run: |
+          uv run herald-scrape crawl \
+            --targets data/targets/port_chester_peers.json \
+            --only "${{ matrix.slug }}" \
+            --since "${{ inputs.since }}" \
+            ${{ inputs.limit != '' && format('--limit {0}', inputs.limit) || '' }} \
+            --min-interval "${{ inputs.min_interval }}" \
+            --browser --ignore-robots \
+            --out data/raw \
+            --report "crawl-${{ matrix.slug }}.md" \
+            --no-dry-run
+      - name: Publish report to run summary
+        if: always()
+        run: cat "crawl-${{ matrix.slug }}.md" >> "$GITHUB_STEP_SUMMARY" || echo "(no report)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload documents + manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrape-${{ matrix.slug }}
+          path: |
+            data/raw/**
+            crawl-${{ matrix.slug }}.md
+          if-no-files-found: warn
+          retention-days: 14

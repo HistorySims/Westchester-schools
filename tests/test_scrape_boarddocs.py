@@ -181,7 +181,7 @@ def test_iter_documents_end_to_end(httpx_mock):
         url=f"{BASE}/BD-GetMeetingsList?open", text=_load("meetings.json")
     )
     httpx_mock.add_response(
-        url=f"{BASE}/BD-GetAgenda?open", text=_load("agenda.html"), is_reusable=True
+        url=f"{BASE}/PRINT-AgendaDetailed?open", text=_load("agenda.html"), is_reusable=True
     )
     with _fast_fetcher() as f:
         client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f, prime_session=False)
@@ -208,7 +208,7 @@ def test_iter_documents_since_filter(httpx_mock):
         url=f"{BASE}/BD-GetMeetingsList?open", text=_load("meetings.json")
     )
     httpx_mock.add_response(
-        url=f"{BASE}/BD-GetAgenda?open", text=_load("agenda.html"), is_reusable=True
+        url=f"{BASE}/PRINT-AgendaDetailed?open", text=_load("agenda.html"), is_reusable=True
     )
     with _fast_fetcher() as f:
         client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f, prime_session=False)
@@ -222,7 +222,7 @@ def test_iter_documents_since_filter(httpx_mock):
         )
     # meetings walked = those on/after 2024-01-01 OR undated (kept): 2 agendas
     agenda_calls = [
-        r for r in httpx_mock.get_requests() if r.url.path.endswith("BD-GetAgenda")
+        r for r in httpx_mock.get_requests() if r.url.path.endswith("PRINT-AgendaDetailed")
     ]
     assert len(agenda_calls) == 2
 
@@ -235,7 +235,7 @@ def _mock_full_crawl(httpx_mock) -> None:
         url=f"{BASE}/BD-GetMeetingsList?open", text=_load("meetings.json"), is_reusable=True
     )
     httpx_mock.add_response(
-        url=f"{BASE}/BD-GetAgenda?open", text=_load("agenda.html"), is_reusable=True
+        url=f"{BASE}/PRINT-AgendaDetailed?open", text=_load("agenda.html"), is_reusable=True
     )
     files = {
         "ABC123": "Minutes-January-2024.pdf",
