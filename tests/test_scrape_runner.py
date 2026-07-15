@@ -56,7 +56,7 @@ def _mock_district(httpx_mock, *, committee_id: str = "COMM123") -> None:
         url=f"{BASE}/BD-GetMeetingsList?open", text=_load("meetings.json"), is_reusable=True
     )
     httpx_mock.add_response(
-        url=f"{BASE}/BD-GetAgenda?open", text=_load("agenda.html"), is_reusable=True
+        url=f"{BASE}/PRINT-AgendaDetailed?open", text=_load("agenda.html"), is_reusable=True
     )
     files = {
         "ABC123": "Minutes-January-2024.pdf",

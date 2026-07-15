@@ -29,7 +29,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from bs4 import BeautifulSoup
 
@@ -42,7 +42,9 @@ logger = logging.getLogger(__name__)
 # endpoint (BD-GetCommittees 404s); the committee id is embedded in the
 # /Public page HTML instead — see parse_committee_id.
 EP_MEETINGS = "BD-GetMeetingsList"
-EP_AGENDA = "BD-GetAgenda"
+# PRINT-AgendaDetailed returns the agenda HTML *with* the /$file/ attachment
+# links; BD-GetAgenda returns only the bare category/item tree (no files).
+EP_AGENDA = "PRINT-AgendaDetailed"
 
 _FILE_HREF = re.compile(r"/\$file/", re.IGNORECASE)
 _DOC_EXT = re.compile(r"\.(pdf|docx?|rtf|txt|xlsx?|pptx?)(?:$|\?)", re.IGNORECASE)
@@ -227,7 +229,7 @@ def _join(base_url: str, href: str) -> str:
 
 def _filename_of(url: str) -> str:
     tail = url.split("/$file/")[-1] if "/$file/" in url else url.rsplit("/", 1)[-1]
-    return tail.split("?")[0] or "attachment"
+    return unquote(tail.split("?")[0]) or "attachment"
 
 
 @dataclass(frozen=True)
