@@ -35,9 +35,13 @@ def _fast_fetcher() -> Fetcher:
 
 
 def test_parse_committee_id_from_public_html():
-    html = '<html><script> var current_committee_id = "A1B2C3D4E5"; </script></html>'
-    assert parse_committee_id(html) == "A1B2C3D4E5"
-    assert parse_committee_id("<html>no id here</html>") is None
+    # JS var form
+    assert parse_committee_id('var current_committee_id = "A1B2C3D4E5";') == "A1B2C3D4E5"
+    # JSON/config form
+    assert parse_committee_id('{"current_committee_id":"A1B2C3D4E5"}') == "A1B2C3D4E5"
+    # URL / deep-link param form
+    assert parse_committee_id("Public#&id=X&current_committee_id=A1B2C3D4E5&y=1") == "A1B2C3D4E5"
+    assert parse_committee_id("<html>no committee here</html>") is None
 
 
 def test_parse_meetings_reads_numberdate():
