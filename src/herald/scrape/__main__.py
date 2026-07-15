@@ -176,6 +176,9 @@ def fetch(
 @app.command()
 def crawl(
     targets: str = typer.Option(..., help="Path to a targets JSON file."),
+    only: str | None = typer.Option(
+        None, help="Crawl only target(s) whose slug or district matches (comma-separated)."
+    ),
     since: str | None = typer.Option(None, help="Only meetings on/after this date (YYYY-MM-DD)."),
     limit: int | None = typer.Option(None, help="Cap meetings walked per committee."),
     out: str = typer.Option("data/raw", help="Root dir for downloaded files."),
@@ -199,6 +202,12 @@ def crawl(
     out_dir = Path(out)
     manifest = Manifest(out_dir / "manifest.jsonl")
     target_list = load_targets(targets)
+    if only:
+        wanted = {s.strip() for s in only.split(",") if s.strip()}
+        target_list = [t for t in target_list if t.slug in wanted or t.district in wanted]
+        if not target_list:
+            console.print(f"[red]no targets matched --only {only}[/red]")
+            raise typer.Exit(1)
     results: list[DistrictResult] = []
 
     for t in target_list:
