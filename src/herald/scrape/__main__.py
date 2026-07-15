@@ -71,20 +71,20 @@ def _fetcher(
 
 
 @app.command()
-def committees(
+def committee(
     state: str = typer.Option(..., help="BoardDocs state slug, e.g. 'ny'."),
     slug: str = typer.Option(..., help="District slug in the BoardDocs URL."),
     user_agent: str = typer.Option(DEFAULT_USER_AGENT, help="Identifying User-Agent."),
     min_interval: float = typer.Option(2.0, help="Min seconds between requests."),
 ) -> None:
-    """List a district's BoardDocs committees (find the id you want)."""
+    """Discover a district's committee id from its /Public page."""
     with _fetcher(user_agent, min_interval) as fetcher:
         client = BoardDocsClient(state=state, slug=slug, fetcher=fetcher)
-        rows = client.list_committees()
-    table = Table("unique", "name", title=f"{state}/{slug} committees")
-    for c in rows:
-        table.add_row(c.unique, c.name)
-    console.print(table)
+        cid = client.discover_committee_id()
+    if cid:
+        console.print(f"{state}/{slug} committee id: [bold]{cid}[/bold]")
+    else:
+        console.print(f"[yellow]no committee id found on {client.public_url}[/yellow]")
 
 
 @app.command()
@@ -168,9 +168,6 @@ def fetch(
 @app.command()
 def crawl(
     targets: str = typer.Option(..., help="Path to a targets JSON file."),
-    committee_match: str = typer.Option(
-        "board|polic", help="Regex matched (case-insensitive) against committee names."
-    ),
     since: str | None = typer.Option(None, help="Only meetings on/after this date (YYYY-MM-DD)."),
     limit: int | None = typer.Option(None, help="Cap meetings walked per committee."),
     out: str = typer.Option("data/raw", help="Root dir for downloaded files."),
@@ -210,14 +207,12 @@ def crawl(
                     t,
                     store=RawStore(out_dir),
                     manifest=manifest,
-                    committee_match=committee_match,
                     since=since_date,
                     limit=limit,
                     dry_run=dry_run,
                 )
-        except Exception as exc:  # bad slug / not BoardDocs / network
+        except Exception as exc:  # bad slug / not BoardDocs / no committee id / network
             console.print(f"  [red]skipped[/red]: {type(exc).__name__}: {exc}")
-            console.print("  (verify the slug with `herald-scrape committees`)")
             results.append(
                 DistrictResult(
                     name=t.name, state=t.state, slug=t.slug, status="skipped",
@@ -225,19 +220,16 @@ def crawl(
                 )
             )
             continue
-        status = "ok" if per_committee else "no-match"
         results.append(
             DistrictResult(
-                name=t.name, state=t.state, slug=t.slug, status=status,
+                name=t.name, state=t.state, slug=t.slug, status="ok",
                 committees=per_committee,
             )
         )
-        if not per_committee:
-            console.print("  [yellow]no committees matched[/yellow] — check --committee-match")
-        for name, s in per_committee.items():
+        for cid, s in per_committee.items():
             verb = "would download" if dry_run else "downloaded"
             console.print(
-                f"  {name}: {verb} {s.downloaded} "
+                f"  committee {cid}: {verb} {s.downloaded} "
                 f"(discovered {s.discovered}, skipped {s.skipped_seen}, failed {s.failed})"
             )
 

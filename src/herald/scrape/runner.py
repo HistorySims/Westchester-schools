@@ -11,8 +11,8 @@ from pathlib import Path
 
 from herald.scrape.boarddocs import (
     BoardDocsClient,
+    CommitteeNotFound,
     iter_documents,
-    select_committees,
 )
 from herald.scrape.core import (
     Fetcher,
@@ -161,32 +161,38 @@ def crawl_target(
     *,
     store: RawStore,
     manifest: Manifest,
-    committee_match: str | None = None,
     since: date | None = None,
     limit: int | None = None,
     dry_run: bool = False,
 ) -> dict[str, ScrapeStats]:
-    """Crawl one district's selected committees. Returns stats per committee.
+    """Crawl one district's committees. Returns stats keyed by committee id.
 
-    Committee selection: the target's explicit ``committees`` if set, else the
-    ``committee_match`` regex against committee names. Discovery + download use
-    the same tested primitives as the single-committee path.
+    Committee ids come from the target's explicit ``committees`` if set,
+    otherwise the board's id is auto-discovered from the /Public page. Raises
+    ``CommitteeNotFound`` if neither yields an id.
     """
-    committees = client.list_committees()
-    selected = select_committees(
-        committees, match=committee_match, explicit_ids=target.committees
-    )
+    committee_ids = list(target.committees) if target.committees else []
+    if not committee_ids:
+        discovered = client.discover_committee_id()
+        if discovered:
+            committee_ids = [discovered]
+    if not committee_ids:
+        raise CommitteeNotFound(
+            f"no committee id for {target.slug}: not in targets, and none found "
+            f"on {client.public_url}"
+        )
+
     out: dict[str, ScrapeStats] = {}
-    for c in selected:
+    for cid in committee_ids:
         docs = iter_documents(
             client,
             district=target.district,
-            committee=c.unique,
-            committee_name=c.name,
+            committee=cid,
+            committee_name=cid,
             since=since,
             limit=limit,
         )
-        out[c.name] = download_docs(
+        out[cid] = download_docs(
             docs, fetcher=client.fetcher, store=store, manifest=manifest, dry_run=dry_run
         )
     return out
@@ -217,27 +223,18 @@ def render_report(results: list[DistrictResult], *, dry_run: bool) -> str:
             lines.append(f"| {r.name} | **{r.status}** | — | — | — | — | — |")
             attention.append(r)
             continue
-        if not r.committees:
-            lines.append(f"| {r.name} | ok | _no committees matched_ | — | — | — | — |")
-            attention.append(r)
-            continue
-        for cname, s in r.committees.items():
+        for cid, s in r.committees.items():
             lines.append(
-                f"| {r.name} | ok | {cname} | {s.discovered} | "
+                f"| {r.name} | ok | {cid} | {s.discovered} | "
                 f"{s.downloaded} | {s.skipped_seen} | {s.failed} |"
             )
     if attention:
         lines += ["", "### Needs attention", ""]
         for r in attention:
-            if r.status == "no-match":
-                detail = (
-                    "slug resolved but no committee names matched `--committee-match`. "
-                    "Widen the pattern or set explicit committee ids in the targets file."
-                )
-            else:  # skipped: bad slug / not BoardDocs / network
-                detail = (
-                    f"{r.error or 'skipped'}. Confirm the slug at "
-                    "go.boarddocs.com/&lt;state&gt;/&lt;slug&gt; or note the real platform."
-                )
+            detail = (
+                f"{r.error or 'skipped'}. Confirm the slug at "
+                "go.boarddocs.com/&lt;state&gt;/&lt;slug&gt; or add a committee id to the "
+                "targets file."
+            )
             lines.append(f"- **{r.name}** (`{r.state}/{r.slug}`): {detail}")
     return "\n".join(lines) + "\n"

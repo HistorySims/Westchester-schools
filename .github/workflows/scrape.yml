@@ -28,10 +28,6 @@ on:
         description: "Max meetings walked per committee"
         type: string
         default: "12"
-      committee_match:
-        description: "Regex matched (case-insensitive) against committee names"
-        type: string
-        default: "board|polic"
       min_interval:
         description: "Minimum seconds between requests (politeness)"
         type: string
@@ -77,7 +73,6 @@ jobs:
             --targets "${{ inputs.targets }}" \
             --since "${{ inputs.since }}" \
             --limit "${{ inputs.limit }}" \
-            --committee-match "${{ inputs.committee_match }}" \
             --min-interval "${{ inputs.min_interval }}" \
             --out data/raw \
             --report crawl-report.md \
