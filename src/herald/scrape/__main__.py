@@ -82,14 +82,17 @@ def committee(
     user_agent: str = typer.Option(DEFAULT_USER_AGENT, help="Identifying User-Agent."),
     min_interval: float = typer.Option(2.0, help="Min seconds between requests."),
 ) -> None:
-    """Discover a district's committee id from its /Public page."""
+    """Discover a district's committee id(s) from its /Public page."""
     with _fetcher(user_agent, min_interval) as fetcher:
         client = BoardDocsClient(state=state, slug=slug, fetcher=fetcher)
-        cid = client.discover_committee_id()
-    if cid:
-        console.print(f"{state}/{slug} committee id: [bold]{cid}[/bold]")
+        committees = client.discover_committees()
+    if committees:
+        table = Table("committeeid", "name", title=f"{state}/{slug} committees")
+        for c in committees:
+            table.add_row(c.unique, c.name)
+        console.print(table)
     else:
-        console.print(f"[yellow]no committee id found on {client.public_url}[/yellow]")
+        console.print(f"[yellow]no committee found on {client.public_url}[/yellow]")
 
 
 @app.command()

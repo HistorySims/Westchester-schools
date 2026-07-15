@@ -42,10 +42,14 @@ def test_load_targets_from_repo_file():
 
 
 def _mock_district(httpx_mock, *, committee_id: str = "COMM123") -> None:
-    # /Public embeds the committee id; crawl_target discovers it there.
+    # /Public lists committees in the board menu; crawl_target discovers them.
     httpx_mock.add_response(
         url=f"{BASE}/Public",
-        text=f'<html><script>var current_committee_id = "{committee_id}";</script></html>',
+        text=(
+            '<html><body><a class="committee-trigger" '
+            f'committeeid="{committee_id}" aria-label="Board of Education">'
+            "Board of Education</a></body></html>"
+        ),
         is_reusable=True,
     )
     httpx_mock.add_response(
@@ -98,9 +102,9 @@ def test_crawl_target_discovers_committee_and_downloads(httpx_mock, tmp_path):
         client = BoardDocsClient(state="ny", slug="scarsdale", fetcher=f)
         per_committee = crawl_target(client, target, store=store, manifest=manifest, limit=1)
 
-    # committee id auto-discovered from /Public; one meeting * three files
-    assert set(per_committee) == {"COMM123"}
-    assert per_committee["COMM123"].downloaded == 3
+    # committee auto-discovered from /Public (keyed by name); one meeting * three files
+    assert set(per_committee) == {"Board of Education"}
+    assert per_committee["Board of Education"].downloaded == 3
     assert len(manifest.entries()) == 3
 
 

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from herald.scrape.boarddocs import (
     BoardDocsClient,
+    Committee,
     CommitteeNotFound,
     iter_documents,
 )
@@ -171,28 +172,27 @@ def crawl_target(
     otherwise the board's id is auto-discovered from the /Public page. Raises
     ``CommitteeNotFound`` if neither yields an id.
     """
-    committee_ids = list(target.committees) if target.committees else []
-    if not committee_ids:
-        discovered = client.discover_committee_id()
-        if discovered:
-            committee_ids = [discovered]
-    if not committee_ids:
+    if target.committees:
+        committees = [Committee(unique=c, name=c) for c in target.committees]
+    else:
+        committees = client.discover_committees()
+    if not committees:
         raise CommitteeNotFound(
             f"no committee id for {target.slug}: not in targets, and none found "
             f"on {client.public_url}"
         )
 
     out: dict[str, ScrapeStats] = {}
-    for cid in committee_ids:
+    for c in committees:
         docs = iter_documents(
             client,
             district=target.district,
-            committee=cid,
-            committee_name=cid,
+            committee=c.unique,
+            committee_name=c.name,
             since=since,
             limit=limit,
         )
-        out[cid] = download_docs(
+        out[c.name] = download_docs(
             docs, fetcher=client.fetcher, store=store, manifest=manifest, dry_run=dry_run
         )
     return out
