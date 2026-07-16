@@ -40,5 +40,7 @@ Apply the initial schema with:
 
 ```bash
 set -a; source .env; set +a
-psql "$SUPABASE_DB_URL" -f db/migrations/0001_init.sql
+psql "$SUPABASE_DB_URL" -f db/migrations/0001_schools_init.sql
+# or, without psql (e.g. from a GitHub Actions runner):
+herald-ingest init-db
 ```
