@@ -6,7 +6,12 @@ import re
 
 from herald.scrape.core import Fetcher
 from herald.scrape.models import DocType
-from herald.scrape.site import classify_link, crawl_site, extract_links
+from herald.scrape.site import (
+    classify_link,
+    crawl_site,
+    extract_links,
+    parse_sitemap_locs,
+)
 
 
 def _fast_fetcher() -> Fetcher:
@@ -40,6 +45,7 @@ def test_extract_links_resolves_and_filters():
 
 
 def test_crawl_site_finds_targets_follows_same_domain_skips_offtarget(httpx_mock):
+    httpx_mock.add_response(url="https://d.test/sitemap.xml", status_code=404)
     httpx_mock.add_response(
         url="https://d.test/",
         headers={"Content-Type": "text/html"},
@@ -69,6 +75,33 @@ def test_crawl_site_finds_targets_follows_same_domain_skips_offtarget(httpx_mock
     assert by_type[DocType.handbook].suggested_filename == "Student-Handbook.pdf"
 
 
+def test_parse_sitemap_locs():
+    xml = """<?xml version="1.0"?>
+    <urlset><url><loc>https://d.test/students/handbook.pdf</loc></url>
+    <url><loc> https://d.test/board </loc></url></urlset>"""
+    locs = parse_sitemap_locs(xml)
+    assert "https://d.test/students/handbook.pdf" in locs
+    assert "https://d.test/board" in locs
+
+
+def test_crawl_site_uses_sitemap_when_nav_is_empty(httpx_mock):
+    # A JS-rendered homepage with no usable links, but a sitemap lists the PDFs.
+    httpx_mock.add_response(
+        url="https://d.test/sitemap.xml",
+        text="""<urlset>
+          <loc>https://d.test/f/Student-Handbook.pdf</loc>
+          <loc>https://d.test/f/Teacher-CBA.pdf</loc>
+        </urlset>""",
+    )
+    httpx_mock.add_response(
+        url="https://d.test/", headers={"Content-Type": "text/html"}, text="<div>app</div>"
+    )
+    with _fast_fetcher() as f:
+        docs = list(crawl_site(f, base_url="https://d.test/", district="d"))
+    types = {d.doc_type for d in docs}
+    assert DocType.handbook in types and DocType.contract in types
+
+
 def test_crawl_site_respects_page_cap(httpx_mock):
     httpx_mock.add_response(
         url=re.compile(r"https://d\.test/.*"),
@@ -78,5 +111,6 @@ def test_crawl_site_respects_page_cap(httpx_mock):
     )
     with _fast_fetcher() as f:
         list(crawl_site(f, base_url="https://d.test/", district="d", max_pages=5))
-    # never fetches more than the cap even though every page links onward
-    assert len(httpx_mock.get_requests()) <= 5
+    # never fetches more page requests than the cap (sitemap probe excluded)
+    page_reqs = [r for r in httpx_mock.get_requests() if "sitemap" not in str(r.url)]
+    assert len(page_reqs) <= 5

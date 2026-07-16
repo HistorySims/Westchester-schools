@@ -40,6 +40,39 @@ _FOLLOW = re.compile(
     re.I,
 )
 _PDF = re.compile(r"\.pdf(?:$|\?)", re.I)
+_LOC = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>", re.I)
+
+
+def parse_sitemap_locs(xml: str) -> list[str]:
+    """All ``<loc>`` URLs in a sitemap or sitemap-index."""
+    return _LOC.findall(xml or "")
+
+
+def sitemap_urls(fetcher: Fetcher, root: str, *, max_maps: int = 20) -> list[str]:
+    """Collect page + PDF URLs from /sitemap.xml (expanding sitemap indexes).
+
+    Most school CMSs (Finalsite, Apptegy, …) render nav via JS, so a plain
+    link crawl misses everything; the sitemap lists every real URL. Best-effort.
+    """
+    urls: list[str] = []
+    queue = [f"{root}/sitemap.xml"]
+    seen: set[str] = set()
+    while queue and len(seen) < max_maps:
+        sm = queue.pop(0)
+        if sm in seen:
+            continue
+        seen.add(sm)
+        try:
+            text = fetcher.get(sm).text
+        except Exception as exc:  # no sitemap here is fine
+            logger.debug("sitemap fetch failed %s: %s", sm, exc)
+            continue
+        for loc in parse_sitemap_locs(text):
+            if loc.lower().endswith(".xml"):
+                queue.append(loc)          # nested sitemap
+            else:
+                urls.append(loc)
+    return urls
 
 
 def classify_link(url: str, text: str) -> DocType | None:
@@ -84,10 +117,27 @@ def crawl_site(
     ``target_only`` keeps only PDFs that classify as a document type we want
     (handbook/contract/policy/…), skipping stray PDFs (forms, newsletters).
     """
-    host = urlsplit(base_url).netloc
+    parts = urlsplit(base_url)
+    host = parts.netloc
+    root = f"{parts.scheme}://{host}"
     seen_pages: set[str] = set()
     seen_pdfs: set[str] = set()
     queue: list[tuple[str, int]] = [(base_url, 0)]
+
+    # Seed from the sitemap (reliable where JS-rendered nav hides links).
+    for loc in sitemap_urls(fetcher, root):
+        if _PDF.search(loc.split("?")[0]):
+            if loc in seen_pdfs:
+                continue
+            seen_pdfs.add(loc)
+            dt = classify_link(loc, "")
+            if target_only and dt is None:
+                continue
+            fname = _filename(loc)
+            yield ScrapedDoc(district=district, doc_type=dt or DocType.other,
+                             title=fname, source_url=loc, suggested_filename=fname)
+        elif urlsplit(loc).netloc == host and _FOLLOW.search(loc):
+            queue.append((loc, 0))
 
     while queue and len(seen_pages) < max_pages:
         url, depth = queue.pop(0)

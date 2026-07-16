@@ -18,6 +18,7 @@ ingest rewrite) so the scraper is runnable today. Typical first session::
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -371,11 +372,19 @@ def site(
 ) -> None:
     """Crawl a district website for PDF documents (handbooks, contracts, …)."""
     out_dir = Path(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
     manifest = Manifest(out_dir / "manifest.jsonl")
     with _fetcher(user_agent, min_interval, respect_robots=not ignore_robots, browser=browser) as f:
-        docs = crawl_site(
+        docs = list(crawl_site(
             f, base_url=url, district=district, max_pages=max_pages, target_only=not all_pdfs
-        )
+        ))
+        # Always record what was discovered (diagnostic; works even on dry runs).
+        disc = out_dir / f"discovered-{district}.jsonl"
+        with disc.open("w", encoding="utf-8") as fh:
+            for d in docs:
+                fh.write(json.dumps(
+                    {"doc_type": str(d.doc_type), "title": d.title, "url": d.source_url}
+                ) + "\n")
         stats = download_docs(
             docs, fetcher=f, store=RawStore(out_dir), manifest=manifest, dry_run=dry_run
         )
