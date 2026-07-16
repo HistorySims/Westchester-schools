@@ -46,6 +46,7 @@ from herald.scrape.runner import (
     load_targets,
     render_report,
 )
+from herald.scrape.site import crawl_site
 
 app = typer.Typer(help="Scrape district sources into raw files + a manifest.", no_args_is_help=True)
 console = Console()
@@ -352,6 +353,49 @@ def probe(
 
     (out_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     console.print(f"\nwrote {out_dir}/summary.md and captured HTML/JS under {out_dir}/")
+
+
+@app.command()
+def site(
+    url: str = typer.Option(..., help="District website base URL, e.g. https://www.tufsd.org"),
+    district: str = typer.Option(..., help="District tag for the manifest."),
+    out: str = typer.Option("data/raw", help="Root dir for downloaded files."),
+    report: str | None = typer.Option(None, help="Write a markdown summary to this path."),
+    max_pages: int = typer.Option(80, help="Max site pages to walk."),
+    all_pdfs: bool = typer.Option(False, help="Keep every PDF, not just target doc types."),
+    dry_run: bool = typer.Option(False, help="Discover + list only; download nothing."),
+    ignore_robots: bool = typer.Option(False, help="Bypass robots.txt (public records)."),
+    browser: bool = typer.Option(True, help="Present as a browser."),
+    user_agent: str = typer.Option(DEFAULT_USER_AGENT),
+    min_interval: float = typer.Option(2.0, help="Min seconds between requests."),
+) -> None:
+    """Crawl a district website for PDF documents (handbooks, contracts, …)."""
+    out_dir = Path(out)
+    manifest = Manifest(out_dir / "manifest.jsonl")
+    with _fetcher(user_agent, min_interval, respect_robots=not ignore_robots, browser=browser) as f:
+        docs = crawl_site(
+            f, base_url=url, district=district, max_pages=max_pages, target_only=not all_pdfs
+        )
+        stats = download_docs(
+            docs, fetcher=f, store=RawStore(out_dir), manifest=manifest, dry_run=dry_run
+        )
+
+    by_type = ", ".join(f"{k}={v}" for k, v in sorted(stats.by_type.items())) or "none"
+    verb = "would download" if dry_run else "downloaded"
+    console.print(
+        f"[bold]{district}[/bold]: {verb} {stats.downloaded} "
+        f"(discovered {stats.discovered}, skipped {stats.skipped_seen}, failed {stats.failed})"
+    )
+    console.print(f"by type: {by_type}")
+    if report:
+        lines = [
+            f"## Site crawl — {district}", "",
+            f"- source: {url}",
+            f"- {verb}: **{stats.downloaded}** (discovered {stats.discovered}, "
+            f"failed {stats.failed})",
+            f"- by type: {by_type}",
+        ]
+        Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -125,11 +125,49 @@ and they compose with a vector search as cheap metadata filters.
 - **doc_type classification**: "Business Meeting …" is an agenda/minutes doc but
   currently lands as `other`. Add meeting/agenda/minutes detection.
 
-## Open questions
+## Two content types → two pipelines
 
-1. **Granularity** — letter-level (per contract/action) vs top-level (per
-   section)? Proposed: adaptive (letter for consent agendas, top for narrative).
-2. **Personnel** — one merged chunk, or per-person? Proposed: merged unless you
-   need per-employee retrieval.
-3. **Contextual prefix** — deterministic breadcrumb (free) vs LLM-written
-   context (better recall, token cost)? Proposed: start deterministic.
+The corpus splits cleanly, and each half wants different handling:
+
+- **Narrative** (Superintendent's Report, discussion, Hearing of Citizens) →
+  **embed** → topic clustering & **topic trajectory** (semantic drift over time).
+- **Enumerated / consent** (personnel, contracts, budget transfers) → these are
+  labeled record lists, not prose → **extract** into typed tables → **entity
+  trajectory** (a person / vendor / dollar figure tracked over time).
+
+Both come from the same source docs; a section is routed by its `section_type`.
+
+### Entity extraction & entity trajectory (the accountability use case)
+
+The consent agendas are the richest oversight data in the corpus. Personnel
+items carry labeled fields — a prototype over the real March-17 Peekskill
+agenda pulled 11 clean records straight out:
+
+```
+personnel_action(district, meeting_date, category, name, position,
+                 location, salary, step, effective_date, source_doc)
+# e.g. (peekskill, 2026-03-17, Appointment, Melissa Mackhanlall,
+#       Interim Director of Instruction, Administration Bldg, $158,250, 11, 2026-07-01)
+```
+
+Once it's a table, entity questions are one-liners — non-renewals, who's
+collecting stipends, following one employee across years — none of which vector
+search over a merged blob would answer. The same pattern applies to
+`contract(vendor, amount, purpose, …)` and `budget_action(amount, purpose, …)`.
+
+Crucially: **merging the personnel *chunk* loses nothing**, because the raw text
+is retained (chunk + source PDF) and the person-level power lives in the
+extraction table, not the embedding. Extraction can run after the chunking
+pipeline — the raw is preserved either way. (All public record: board
+personnel actions and public-employee salaries are published for accountability.)
+
+## Decisions
+
+1. **Granularity — adaptive.** Letter-level for consent agendas (one chunk per
+   contract/action), top-level for narrative sections.
+2. **Personnel — chunk per category block** (Appointment / Resignation /
+   Retirement…) for embedding, *and* run structured extraction for per-person
+   querying. Not one blob, not per-person fragments — and no snooping capability
+   lost, because that lives in the extraction table.
+3. **Contextual prefix — deterministic** breadcrumb to start; add LLM-written
+   context later only if retrieval needs it.

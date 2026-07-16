@@ -20,6 +20,8 @@ class DocType(StrEnum):
     agenda = "agenda"
     policy = "policy"
     handbook = "handbook"
+    contract = "contract"       # CBAs / negotiated agreements / MOUs
+    budget = "budget"
     transcript = "transcript"
     other = "other"
 
