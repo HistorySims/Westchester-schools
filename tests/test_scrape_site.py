@@ -105,6 +105,22 @@ def test_crawl_site_discovers_google_drive_docs(httpx_mock):
     assert "uc?export=download&id=BBBBBBBBBBBBBBB" in by[DocType.contract].source_url
 
 
+def test_crawl_site_discovers_finalsite_resource_manager(httpx_mock):
+    # Port Chester-style: docs served via Finalsite resource-manager, not .pdf.
+    httpx_mock.add_response(url="https://d.test/sitemap.xml", status_code=404)
+    httpx_mock.add_response(
+        url="https://d.test/",
+        headers={"Content-Type": "text/html"},
+        text='<a href="https://dorg.finalsite.com/fs/resource-manager/view/abc-123">'
+             "2025-2026 Budget</a>",
+    )
+    with _fast_fetcher() as f:
+        docs = list(crawl_site(f, base_url="https://d.test/", district="d"))
+    assert len(docs) == 1
+    assert docs[0].doc_type == DocType.budget
+    assert docs[0].source_url.endswith("/fs/resource-manager/view/abc-123")
+
+
 def test_parse_sitemap_locs():
     xml = """<?xml version="1.0"?>
     <urlset><url><loc>https://d.test/students/handbook.pdf</loc></url>

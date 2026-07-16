@@ -110,6 +110,9 @@ _GDRIVE = re.compile(
     r"drive\.google\.com/(?:file/d/|open\?id=|uc\?[^\"']*?id=)([A-Za-z0-9_-]{15,})"
 )
 _TITLE_JUNK = re.compile(r"^\W*\.?(pdf|docx?|xlsx?|pptx?)\b[\s:\u2013-]*", re.I)
+# Finalsite serves documents through a resource-manager viewer (the URL itself
+# returns the file), e.g. .../fs/resource-manager/view/<uuid>.
+_FINALSITE_DOC = re.compile(r"/fs/resource-manager/(?:view|download)/", re.I)
 
 
 def gdrive_download_url(url: str) -> str | None:
@@ -130,9 +133,13 @@ def gdrive_download_url(url: str) -> str | None:
 
 
 def _as_document(url: str, text: str, district: str, *, target_only: bool) -> ScrapedDoc | None:
-    """Build a ScrapedDoc if ``url`` is a document (native PDF or Drive/Doc)."""
+    """Build a ScrapedDoc if ``url`` is a document.
+
+    Handles the three hosting patterns seen across the districts: native PDFs,
+    the Finalsite resource-manager (URL serves the file), and Google Drive/Docs.
+    """
     is_pdf = bool(_PDF.search(url.split("?")[0]))
-    download = url if is_pdf else gdrive_download_url(url)
+    download = url if (is_pdf or _FINALSITE_DOC.search(url)) else gdrive_download_url(url)
     if not download:
         return None
     dt = classify_link(url, text)
