@@ -1,0 +1,87 @@
+name: crawl-sites
+
+# Crawl each district's own website for PDF documents (student handbooks,
+# teacher contracts/CBAs, policy manuals, budgets). One job per district on
+# its own runner. Public records; browser mode + ignore-robots on.
+#
+#   Actions -> crawl-sites -> Run workflow
+#
+# Downloads land per district and upload as artifact site-<slug>.
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: "Max site pages to walk per district"
+        type: string
+        default: "120"
+      all_pdfs:
+        description: "Keep every PDF (not just handbook/contract/policy/budget)"
+        type: boolean
+        default: false
+      min_interval:
+        description: "Minimum seconds between requests"
+        type: string
+        default: "3"
+      dry_run:
+        description: "Discover + list only; download nothing"
+        type: boolean
+        default: true
+
+concurrency:
+  group: crawl-sites-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  crawl:
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - { slug: port-chester-rye,   url: "https://www.portchesterschools.org" }
+          - { slug: ossining,           url: "https://www.ossiningufsd.org" }
+          - { slug: peekskill,          url: "https://www.peekskillcsd.org" }
+          - { slug: tarrytowns,         url: "https://www.tufsd.org" }
+          - { slug: elmsford,           url: "https://www.eufsd.org" }
+          - { slug: mount-vernon,       url: "https://www.mtvernoncsd.org" }
+          - { slug: greenburgh-central, url: "https://www.greenburghcsd.org" }
+          - { slug: white-plains,       url: "https://www.whiteplainspublicschools.org" }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Crawl ${{ matrix.slug }}
+        run: |
+          uv run herald-scrape site \
+            --url "${{ matrix.url }}" \
+            --district "${{ matrix.slug }}" \
+            --max-pages "${{ inputs.max_pages }}" \
+            --min-interval "${{ inputs.min_interval }}" \
+            --browser --ignore-robots \
+            ${{ inputs.all_pdfs && '--all-pdfs' || '--no-all-pdfs' }} \
+            --out data/raw \
+            --report "site-${{ matrix.slug }}.md" \
+            ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}
+      - name: Publish report to run summary
+        if: always()
+        run: cat "site-${{ matrix.slug }}.md" >> "$GITHUB_STEP_SUMMARY" || echo "(no report)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload documents + manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-${{ matrix.slug }}
+          path: |
+            data/raw/**
+            site-${{ matrix.slug }}.md
+          if-no-files-found: warn
+          retention-days: 14
