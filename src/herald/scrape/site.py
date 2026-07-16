@@ -103,6 +103,52 @@ def _filename(url: str) -> str:
     return unquote(url.split("?")[0].rsplit("/", 1)[-1]) or "document.pdf"
 
 
+_GDOCS = re.compile(
+    r"docs\.google\.com/(document|spreadsheets|presentation)/d/([A-Za-z0-9_-]{15,})"
+)
+_GDRIVE = re.compile(
+    r"drive\.google\.com/(?:file/d/|open\?id=|uc\?[^\"']*?id=)([A-Za-z0-9_-]{15,})"
+)
+_TITLE_JUNK = re.compile(r"^\W*\.?(pdf|docx?|xlsx?|pptx?)\b[\s:\u2013-]*", re.I)
+
+
+def gdrive_download_url(url: str) -> str | None:
+    """A direct-download/export URL for a Google Drive file or Google Doc.
+
+    Many districts (Ossining, Port Chester …) store documents on Google Drive
+    rather than as native PDFs. Files download via uc?export=download; Docs
+    export to PDF. Returns None if the URL isn't a Drive/Docs link. (Drive
+    *folders* aren't handled — they need enumeration.)
+    """
+    m = _GDOCS.search(url)
+    if m:
+        return f"https://docs.google.com/{m.group(1)}/d/{m.group(2)}/export?format=pdf"
+    m = _GDRIVE.search(url)
+    if m:
+        return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+    return None
+
+
+def _as_document(url: str, text: str, district: str, *, target_only: bool) -> ScrapedDoc | None:
+    """Build a ScrapedDoc if ``url`` is a document (native PDF or Drive/Doc)."""
+    is_pdf = bool(_PDF.search(url.split("?")[0]))
+    download = url if is_pdf else gdrive_download_url(url)
+    if not download:
+        return None
+    dt = classify_link(url, text)
+    if target_only and dt is None:
+        return None
+    title = _TITLE_JUNK.sub("", text).strip()
+    fname = _filename(url) if is_pdf else (title or "document")
+    return ScrapedDoc(
+        district=district,
+        doc_type=dt or DocType.other,
+        title=title or fname,
+        source_url=download,
+        suggested_filename=fname,
+    )
+
+
 def crawl_site(
     fetcher: Fetcher,
     *,
@@ -121,21 +167,16 @@ def crawl_site(
     host = parts.netloc
     root = f"{parts.scheme}://{host}"
     seen_pages: set[str] = set()
-    seen_pdfs: set[str] = set()
+    seen_docs: set[str] = set()
     queue: list[tuple[str, int]] = [(base_url, 0)]
 
     # Seed from the sitemap (reliable where JS-rendered nav hides links).
     for loc in sitemap_urls(fetcher, root):
-        if _PDF.search(loc.split("?")[0]):
-            if loc in seen_pdfs:
-                continue
-            seen_pdfs.add(loc)
-            dt = classify_link(loc, "")
-            if target_only and dt is None:
-                continue
-            fname = _filename(loc)
-            yield ScrapedDoc(district=district, doc_type=dt or DocType.other,
-                             title=fname, source_url=loc, suggested_filename=fname)
+        doc = _as_document(loc, "", district, target_only=target_only)
+        if doc:
+            if doc.source_url not in seen_docs:
+                seen_docs.add(doc.source_url)
+                yield doc
         elif urlsplit(loc).netloc == host and _FOLLOW.search(loc):
             queue.append((loc, 0))
 
@@ -153,21 +194,11 @@ def crawl_site(
             continue
 
         for link_url, text in extract_links(resp.text, base_url=url):
-            if _PDF.search(link_url.split("?")[0]):
-                if link_url in seen_pdfs:
-                    continue
-                seen_pdfs.add(link_url)
-                dt = classify_link(link_url, text)
-                if target_only and dt is None:
-                    continue
-                fname = _filename(link_url)
-                yield ScrapedDoc(
-                    district=district,
-                    doc_type=dt or DocType.other,
-                    title=text or fname,
-                    source_url=link_url,
-                    suggested_filename=fname,
-                )
+            doc = _as_document(link_url, text, district, target_only=target_only)
+            if doc:
+                if doc.source_url not in seen_docs:
+                    seen_docs.add(doc.source_url)
+                    yield doc
             elif (
                 depth < max_depth
                 and urlsplit(link_url).netloc == host

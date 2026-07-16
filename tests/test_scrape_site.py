@@ -10,6 +10,7 @@ from herald.scrape.site import (
     classify_link,
     crawl_site,
     extract_links,
+    gdrive_download_url,
     parse_sitemap_locs,
 )
 
@@ -73,6 +74,35 @@ def test_crawl_site_finds_targets_follows_same_domain_skips_offtarget(httpx_mock
     # the newsletter PDF classified as nothing -> skipped under target_only
     assert all("newsletter" not in d.source_url for d in docs)
     assert by_type[DocType.handbook].suggested_filename == "Student-Handbook.pdf"
+
+
+def test_gdrive_download_url():
+    assert gdrive_download_url("https://drive.google.com/file/d/0B07n2IWy5hVmMUdfd/view") == (
+        "https://drive.google.com/uc?export=download&id=0B07n2IWy5hVmMUdfd"
+    )
+    assert gdrive_download_url("https://docs.google.com/document/d/1IPZrTvQPgua3NTK4un3/edit") == (
+        "https://docs.google.com/document/d/1IPZrTvQPgua3NTK4un3/export?format=pdf"
+    )
+    assert gdrive_download_url("https://www.tufsd.org/f/handbook.pdf") is None
+
+
+def test_crawl_site_discovers_google_drive_docs(httpx_mock):
+    # Ossining-style: documents are Google Drive / Docs links, not native PDFs.
+    httpx_mock.add_response(url="https://d.test/sitemap.xml", status_code=404)
+    httpx_mock.add_response(
+        url="https://d.test/",
+        headers={"Content-Type": "text/html"},
+        text="""
+        <a href="https://docs.google.com/document/d/AAAAAAAAAAAAAAA/edit">Student Handbook</a>
+        <a href="https://drive.google.com/file/d/BBBBBBBBBBBBBBB/view">Teachers CBA Contract</a>
+        """,
+    )
+    with _fast_fetcher() as f:
+        docs = list(crawl_site(f, base_url="https://d.test/", district="d"))
+    by = {d.doc_type: d for d in docs}
+    assert DocType.handbook in by and DocType.contract in by
+    assert by[DocType.handbook].source_url.endswith("/export?format=pdf")
+    assert "uc?export=download&id=BBBBBBBBBBBBBBB" in by[DocType.contract].source_url
 
 
 def test_parse_sitemap_locs():
