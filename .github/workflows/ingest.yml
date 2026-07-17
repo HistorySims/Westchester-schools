@@ -1,52 +1,58 @@
-# FORK TODO (herald): inputs: lccn/date -> district/year for the new ingest adapter — see docs/ENGINE_EXTRACTION.md
 name: ingest
 
-# Manually triggered. Runs `herald ingest --no-dry-run` for a single LCCN
-# over the chosen date window, with secrets injected from the repo's
-# Settings → Secrets → Actions.
+# Ingest scraped school documents into the corpus database:
+# manifest -> PDF text -> structural chunks -> Voyage embeddings -> Postgres.
 #
-# Required secrets:
-#   SUPABASE_DB_URL  - Supabase Session-mode pooler connection string
+# Point it at a finished scrape-all / crawl-sites run: pass that run's id
+# (the number in its URL) and this job downloads its artifacts, finds every
+# manifest.jsonl, and ingests the documents they record. Re-runs are cheap:
+# already-ingested documents (by content hash) are skipped.
+#
+#   Actions -> ingest -> Run workflow
+#
+# Required secrets (Settings -> Secrets and variables -> Actions):
+#   SUPABASE_DB_URL  - Supabase session-mode pooler connection string
 #   VOYAGE_API_KEY   - Voyage AI key (voyage-3.5)
-#
-# Free-tier runners get 6 hours per job; a full Tribune+Albany ingest
-# may need to be split into year-sized chunks.
+# Neither is needed for a dry run.
 
 on:
   workflow_dispatch:
     inputs:
-      lccn:
-        description: "Chronicling America LCCN (e.g. sn83030213)"
+      run_id:
+        description: "Actions run id of the scrape/crawl run whose artifacts to ingest"
         required: true
         type: string
-      date_from:
-        description: "Start date YYYY-MM-DD (inclusive)"
-        required: true
-        type: string
-      date_to:
-        description: "End date YYYY-MM-DD (inclusive)"
-        required: true
-        type: string
-      dry_run:
-        description: "Dry-run only (enumerate, no DB writes)"
-        required: false
-        type: boolean
-        default: false
-      sample_days:
-        description: "Sparse mode: comma-separated days-of-month (e.g. '1,15'). Empty = full range."
+      district:
+        description: "Only this district slug (empty = all)"
         required: false
         type: string
         default: ""
+      limit:
+        description: "Stop after N documents (empty = all)"
+        required: false
+        type: string
+        default: ""
+      init_db:
+        description: "Apply the schema first (safe to re-run; needed once on a fresh DB)"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Extract + chunk + report only; no DB writes, no Voyage"
+        type: boolean
+        default: true
 
 concurrency:
-  # Prevent two ingests touching the same paper from racing.
-  group: ingest-${{ inputs.lccn }}
+  group: ingest
   cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read   # download artifacts from another run
 
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 350  # just under the 6h job ceiling
+    timeout-minutes: 350
     env:
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
@@ -59,25 +65,29 @@ jobs:
         run: uv python install
       - name: Sync deps
         run: uv sync --frozen
-      - name: Sanity-check required secrets are present
+      - name: Sanity-check secrets (real run only)
+        if: ${{ !inputs.dry_run }}
         run: |
           [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
           [ -n "$VOYAGE_API_KEY" ]  || { echo "VOYAGE_API_KEY secret is missing"; exit 1; }
           echo "secrets present (lengths only): db=${#SUPABASE_DB_URL} voyage=${#VOYAGE_API_KEY}"
+      - name: Download scrape artifacts (run ${{ inputs.run_id }})
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: data/artifacts
+      - name: Apply schema
+        if: ${{ inputs.init_db && !inputs.dry_run }}
+        run: uv run herald-ingest init-db
       - name: Ingest
         run: |
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            uv run herald ingest \
-              --lccn "${{ inputs.lccn }}" \
-              --from "${{ inputs.date_from }}" \
-              --to   "${{ inputs.date_to }}" \
-              --sample-days "${{ inputs.sample_days }}" \
-              --dry-run
-          else
-            uv run herald ingest \
-              --lccn "${{ inputs.lccn }}" \
-              --from "${{ inputs.date_from }}" \
-              --to   "${{ inputs.date_to }}" \
-              --sample-days "${{ inputs.sample_days }}" \
-              --no-dry-run
-          fi
+          uv run herald-ingest run \
+            --root data/artifacts \
+            ${{ inputs.district && format('--district "{0}"', inputs.district) || '' }} \
+            ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
+            --report ingest-report.md \
+            ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}
+      - name: Publish report to run summary
+        if: always()
+        run: cat ingest-report.md >> "$GITHUB_STEP_SUMMARY" || echo "(no report)" >> "$GITHUB_STEP_SUMMARY"

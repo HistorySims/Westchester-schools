@@ -194,10 +194,17 @@ crawler                                             │
    `dry_run: false` for the seven strong districts; BoardDocs pulls done.
 2. **Investigate Greenburgh** (deferred) — find its real document index /
    sitemap path so it isn't budget-only.
-3. **Build the ingest pipeline** — the big next milestone. Consume the
-   manifest → structural chunk → **quality filter** (drop junk before
-   Voyage) → embed → load pgvector DB. Fix authoritative `date` +
-   `doc_type` here from document content.
+3. **Run the ingest pipeline** — built (2026-07-16): `herald-ingest` +
+   the `ingest` workflow consume scrape artifacts by run id (manifest →
+   PyMuPDF text → structural chunk → contextual-prefix embed → Postgres,
+   schema in `db/migrations/0001_schools_init.sql`; the newspaper chain
+   moved to `db/newspaper/`). Dry-run verified on the real Peekskill
+   pull: 12 docs → 421 chunks, correct dates (title ▸ document header ▸
+   manifest — BoardDocs stamps a school-year-end placeholder on every
+   file). Blocked only on secrets: a fresh Supabase project's
+   `SUPABASE_DB_URL` + `VOYAGE_API_KEY` in repo Actions secrets, then
+   run workflow `ingest` with `init_db` once. The junk/quality filter
+   remains deferred (chunks carry a `status` column for it).
 4. **Build entity extraction** for the enumerated pipeline —
    `personnel_action` / `contract` tables that preserve per-person
    queryability (tenure, stipends).

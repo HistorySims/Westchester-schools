@@ -6,7 +6,7 @@
 """Herald CLI.
 
 Phase 1 surface:
-- ``herald ingest --lccn <lccn> --from YYYY-MM-DD --to YYYY-MM-DD [--no-dry-run]``
+- newspaper ``ingest`` removed - schools ingest lives in ``herald-ingest`` (herald.ingest_schools)
 - ``herald ask "<question>"``  (stub — wired in a later slice)
 - ``herald normalize-text <path>`` (debug helper)
 """
@@ -27,8 +27,6 @@ from herald.eval import (
     format_results_markdown,
     run_eval,
 )
-from herald.ingest import ingest_paper
-from herald.loc import LOCClient, PageRef
 from herald.rerank import VoyageReranker
 from herald.retrieval import HybridRetriever
 from herald.synth import Synthesizer
@@ -39,182 +37,6 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
-
-
-@app.command()
-def ingest(
-    lccn: str = typer.Option(..., "--lccn", help="Chronicling America LCCN"),
-    date_from: str = typer.Option(..., "--from", help="Inclusive start date (YYYY-MM-DD)"),
-    date_to: str = typer.Option(..., "--to", help="Inclusive end date (YYYY-MM-DD)"),
-    dry_run: bool = typer.Option(
-        True,
-        "--dry-run/--no-dry-run",
-        help="Dry-run enumerates issues only. --no-dry-run writes to Supabase.",
-    ),
-    sample_days: str = typer.Option(
-        "",
-        "--sample-days",
-        help="Comma-separated days-of-month to sample (e.g. '1,15'). Empty = full range.",
-    ),
-) -> None:
-    """Ingest a paper from Chronicling America into Supabase.
-
-    With --sample-days, only specific days of each month are ingested
-    (e.g. '1,15' picks the 1st and 15th). This is the cheap-and-wide
-    strategy: get sparse coverage across many years without ingesting
-    every issue.
-    """
-    cfg = settings.load()
-    df = _parse_date(date_from)
-    dt = _parse_date(date_to)
-    days = _parse_sample_days(sample_days)
-    asyncio.run(_ingest(cfg, lccn, df, dt, dry_run, days))
-
-
-def _parse_sample_days(s: str) -> list[int]:
-    s = s.strip()
-    if not s:
-        return []
-    out: list[int] = []
-    for piece in s.split(","):
-        piece = piece.strip()
-        if not piece:
-            continue
-        try:
-            day = int(piece)
-        except ValueError as e:
-            raise typer.BadParameter(f"sample-days must be integers: {piece}") from e
-        if not 1 <= day <= 31:
-            raise typer.BadParameter(f"sample-days must be 1-31: {day}")
-        out.append(day)
-    return sorted(set(out))
-
-
-def _expand_sample_dates(df: date, dt: date, days: list[int]) -> list[date]:
-    """Generate sampled dates: for each month in [df, dt], pick the given days."""
-    if not days:
-        return []
-    from calendar import monthrange
-    dates: list[date] = []
-    year, month = df.year, df.month
-    while (year, month) <= (dt.year, dt.month):
-        last_day_of_month = monthrange(year, month)[1]
-        for d in days:
-            if d > last_day_of_month:
-                continue
-            candidate = date(year, month, d)
-            if df <= candidate <= dt:
-                dates.append(candidate)
-        month += 1
-        if month > 12:
-            month = 1
-            year += 1
-    return dates
-
-
-async def _ingest(
-    cfg: settings.Settings,
-    lccn: str,
-    df: date,
-    dt: date,
-    dry_run: bool,
-    sample_days: list[int],
-) -> None:
-    if sample_days:
-        sample_dates = _expand_sample_dates(df, dt, sample_days)
-        console.print(
-            f"[bold]Sparse ingest:[/bold] {len(sample_dates)} dates "
-            f"(days {sample_days} per month, {df} → {dt})"
-        )
-        for d in sample_dates:
-            console.print(f"\n[bold cyan]→ {d}[/bold cyan]")
-            if dry_run:
-                await _ingest_dry_run(cfg, lccn, d, d)
-            else:
-                await _ingest_full(cfg, lccn, d, d)
-        return
-
-    if dry_run:
-        await _ingest_dry_run(cfg, lccn, df, dt)
-        return
-    await _ingest_full(cfg, lccn, df, dt)
-
-
-async def _ingest_dry_run(
-    cfg: settings.Settings, lccn: str, df: date, dt: date
-) -> None:
-    async with LOCClient(user_agent=cfg.loc_user_agent) as loc:
-        meta = await loc.get_paper_metadata(lccn)
-        console.print(f"[bold]{meta.title}[/bold]  ({meta.lccn})  {meta.place or '-'}")
-        issue_count = 0
-        page_count = 0
-        async for issue, pages in loc.iter_issues_with_pages(
-            lccn, date_from=df, date_to=dt,
-        ):
-            issue_count += 1
-            page_count += len(pages)
-            console.print(
-                f"  {issue.date_issued} ed-{issue.edition}  pages={len(pages)}"
-            )
-    console.print(
-        f"\n[bold]dry run done[/bold]  issues={issue_count}  pages={page_count}"
-    )
-
-
-async def _ingest_full(
-    cfg: settings.Settings, lccn: str, df: date, dt: date
-) -> None:
-    if not cfg.supabase_db_url:
-        raise typer.BadParameter(
-            "SUPABASE_DB_URL is not set. See README for setup."
-        )
-    if not cfg.voyage_api_key:
-        raise typer.BadParameter(
-            "VOYAGE_API_KEY is not set. See README for setup."
-        )
-
-    conn = db.connect(cfg.supabase_db_url)
-    try:
-        async with (
-            LOCClient(user_agent=cfg.loc_user_agent) as loc,
-            VoyageEmbedder(api_key=cfg.voyage_api_key) as voyage,
-        ):
-            meta = await loc.get_paper_metadata(lccn)
-            console.print(
-                f"[bold]{meta.title}[/bold]  ({meta.lccn})  {meta.place or '-'}"
-            )
-            console.print(f"  window: {df}  →  {dt}\n")
-
-            def _on_page(p: PageRef, status: str) -> None:
-                color = {"skipped": "dim", "written": "green", "empty": "yellow"}.get(
-                    status, "white"
-                )
-                console.print(
-                    f"  [{color}]{status:>7}[/]  {p.date_issued} ed-{p.edition} seq-{p.sequence}"
-                )
-
-            stats = await ingest_paper(
-                loc=loc,
-                voyage=voyage,
-                conn=conn,
-                lccn=meta.lccn,
-                title=meta.title,
-                place=meta.place,
-                start_year=meta.start_year,
-                end_year=meta.end_year,
-                date_from=df,
-                date_to=dt,
-                on_page=_on_page,
-            )
-    finally:
-        conn.close()
-
-    console.print(
-        f"\n[bold green]done[/bold green]  "
-        f"issues={stats.issues_seen}  pages_seen={stats.pages_seen}  "
-        f"written={stats.pages_written}  skipped={stats.pages_skipped}  "
-        f"chunks={stats.chunks_written}"
-    )
 
 
 @app.command()
@@ -518,7 +340,7 @@ def cluster(
 
         result = run_pipeline(cfg.supabase_db_url, params, on_progress)
 
-    console.print(f"\n[bold green]Clustering complete[/bold green]")
+    console.print("\n[bold green]Clustering complete[/bold green]")
     console.print(f"  run_id: {result.run_id}")
     console.print(f"  chunks: {result.chunk_count}")
     console.print(f"  outliers: {result.outlier_count}")
