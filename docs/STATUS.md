@@ -29,12 +29,21 @@ live sites:
    resource-manager). Crawler handles all three.
 
 The **structural chunker** is built and validated on a real Peekskill
-agenda (40 clean chunks off the numbered outline). The rest of the engine
-(embed → cluster → drift → brief → dossier) is inherited and not yet
-wired to this corpus.
+agenda. The **ingest pipeline is live** (`herald-ingest`): the first real
+run (2026-07-18, crawl-sites run `29528495341`) embedded **11,871 chunks
+from 731 documents** across all 8 districts into Supabase — filterable by
+district, ordered chronologically, each carrying its section-path. The
+downstream engine (cluster → drift → brief → dossier) is inherited and
+not yet wired to this corpus.
 
-**Current milestone:** the real (non-dry) `crawl-sites` download is being
-run by the user now. BoardDocs full pulls already succeeded overnight.
+**First-ingest counts (district-website docs only):** port-chester-rye
+3873, ossining 1770, mount-vernon 1494, peekskill 1479, white-plains
+1091, tarrytowns 1029, elmsford 962, greenburgh-central 173. Outcome:
+731 ingested, 27 skipped (resumed after a mid-run fix), 37 no_text, 1
+error.
+
+**Current milestone:** BoardDocs agendas/minutes still need a second
+ingest pass (their own `scrape-all` run id) into the same database.
 
 ---
 
@@ -108,6 +117,18 @@ adapted).
 
 ## Failures, weak spots & known issues
 
+- **~37 scanned PDFs have no text layer (`no_text`) → OCR needed.** These
+  aren't random: older Port Chester agendas (2019–2021), several budget
+  hearing packets, White Plains budget newsletters — and, most important,
+  **two teacher contracts** (Peekskill `PAA CBA 2025-2028`, Mount Vernon
+  `MVAG MOA 2022`). Some of the highest-value documents are scanned
+  images, so they were skipped. This is the concrete, *targeted* case for
+  an OCR pass: we have the exact ~37-document list, no need to OCR the
+  corpus. The pipeline records these as `documents.ingest_status='no_text'`
+  so they're queryable.
+- **One `.bin` download can't be parsed** (Greenburgh "Budget WorkShop #4")
+  — the server didn't declare a content type, so it saved as `.bin` and
+  PyMuPDF refused it. 1 document; recorded as `ingest_status='error'`.
 - **Greenburgh Central is thin** — 22 docs, almost all budget, no
   minutes/agenda/contract discovered. Either a sparser site or a nav/
   sitemap pattern the crawler isn't reaching. **Deliberately deferred as a
