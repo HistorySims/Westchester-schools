@@ -19,6 +19,17 @@ import psycopg
 from herald.db import connect as connect  # re-export: pgvector-registered connection
 
 
+def connect_raw(url: str) -> psycopg.Connection:
+    """Connect without registering the pgvector adapter.
+
+    ``connect()`` registers the ``vector`` type, which requires the
+    extension to already exist — a chicken-and-egg problem for ``init-db``,
+    whose whole job is to *create* that extension. DDL needs no vector
+    adapter, so schema application uses this instead.
+    """
+    return psycopg.connect(url, autocommit=True, prepare_threshold=None)
+
+
 @dataclass(frozen=True)
 class SchoolChunkRow:
     """Row to insert into ``chunks``. ``embedding`` may be None (embed later)."""

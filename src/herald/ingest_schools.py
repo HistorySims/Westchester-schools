@@ -334,9 +334,10 @@ def init_db(
     from herald import schools_db
 
     sql = Path(schema).read_text(encoding="utf-8")
-    with schools_db.connect(_db_url()) as conn:
+    # Raw connection: the schema creates the `vector` extension, so the
+    # pgvector adapter can't be registered until *after* this runs.
+    with schools_db.connect_raw(_db_url()) as conn:
         conn.execute(sql)
-        conn.commit()
     console.print(f"[green]applied[/green] {schema}")
 
 
