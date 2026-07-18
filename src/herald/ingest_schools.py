@@ -125,12 +125,14 @@ class IngestStats:
     docs_seen: int = 0
     docs_skipped: int = 0      # already ingested (manifest re-run)
     docs_missing: int = 0      # file not found next to its manifest
-    docs_no_text: int = 0      # scanned/empty PDF
+    docs_no_text: int = 0      # scanned/empty PDF (OCR mode: OCR recovered nothing)
     docs_error: int = 0
     docs_ingested: int = 0
+    docs_ocr_candidate: int = 0     # OCR dry-run: a no-text doc that would be OCR'd
     chunks_written: int = 0
     by_district: Counter[str] = field(default_factory=Counter)
     by_doc_type: Counter[str] = field(default_factory=Counter)
+    ocr_candidates: Counter[str] = field(default_factory=Counter)  # per district
 
 
 @dataclass
@@ -151,8 +153,18 @@ async def ingest_manifests(
     voyage: VoyageEmbedder | None = None,
     wave_size: int = DEFAULT_WAVE,
     on_doc=None,                     # callback(entry, status) for progress
+    ocr_mode: bool = False,          # only (re)process no-text docs, via OCR
+    ocr_fn=None,                     # callable(path)->ExtractedText; None = dry count
 ) -> IngestStats:
-    """Ingest manifest entries. ``conn is None`` means dry-run (no writes)."""
+    """Ingest manifest entries. ``conn is None`` means dry-run (no writes).
+
+    In ``ocr_mode`` the roles invert: documents that already have a text
+    layer are skipped (they're ingested), and only the no-text ones are
+    acted on. With ``ocr_fn`` set they're OCR'd, chunked, embedded and
+    written; with ``ocr_fn=None`` (the fast dry pass) they're merely
+    tallied as candidates so you can see the per-district count without
+    paying for OCR.
+    """
     from herald import schools_db
 
     stats = IngestStats()
@@ -263,10 +275,31 @@ async def ingest_manifests(
                 mark(doc_id, "error", error=str(exc)[:500])
                 continue
 
+            if ocr_mode:
+                if len(extracted.text) >= MIN_TEXT_CHARS:
+                    # already has a text layer — nothing for OCR to do
+                    stats.docs_skipped += 1
+                    note = "has-text"
+                    continue
+                if ocr_fn is None:
+                    # fast dry pass: count the candidate, don't spend on OCR
+                    stats.docs_ocr_candidate += 1
+                    stats.ocr_candidates[entry.district] += 1
+                    note = "ocr-candidate"
+                    continue
+                try:
+                    extracted = ocr_fn(path)
+                except Exception as exc:
+                    stats.docs_error += 1
+                    note = f"ocr-error: {exc}"
+                    logger.warning("ocr failed %s: %s", path, exc)
+                    mark(doc_id, "error", error=str(exc)[:500])
+                    continue
+
             chunks, meeting_date, doc_type = prepare_document(entry, extracted.text)
             if len(extracted.text) < MIN_TEXT_CHARS or not chunks:
                 stats.docs_no_text += 1
-                note = "no_text"
+                note = "no_text"      # in OCR mode: OCR recovered nothing usable
                 mark(doc_id, "no_text")
                 continue
 
@@ -287,10 +320,11 @@ async def ingest_manifests(
 
 # ---- reporting ---------------------------------------------------------
 
-def render_report(stats: IngestStats, *, dry_run: bool) -> str:
-    mode = "DRY RUN — nothing written" if dry_run else "ingested to database"
+def render_report(stats: IngestStats, *, dry_run: bool, ocr: bool = False) -> str:
+    title = "OCR report" if ocr else "Ingest report"
+    mode = "DRY RUN — nothing written" if dry_run else "written to database"
     lines = [
-        "# Ingest report",
+        f"# {title}",
         "",
         f"_{mode}_",
         "",
@@ -300,6 +334,19 @@ def render_report(stats: IngestStats, *, dry_run: bool) -> str:
         f"| {stats.docs_no_text} | {stats.docs_missing} | {stats.docs_error} "
         f"| {stats.chunks_written} |",
         "",
+    ]
+    if ocr and dry_run:
+        lines += [
+            f"## OCR candidates by district — **{stats.docs_ocr_candidate} total**",
+            "",
+            "_(no-text documents a real run would OCR)_",
+            "",
+            "| district | candidates |",
+            "|---|---|",
+        ]
+        lines += [f"| {d} | {n} |" for d, n in stats.ocr_candidates.most_common()]
+        return "\n".join(lines) + "\n"
+    lines += [
         "## Chunks by district",
         "",
         "| district | chunks |",
@@ -322,6 +369,30 @@ def _db_url() -> str:
     if not url:
         raise typer.BadParameter("SUPABASE_DB_URL is not set.")
     return url
+
+
+def _gather_pairs(
+    *, root: str, manifest: str | None, district: str | None,
+    doc_type: str | None, limit: int | None,
+) -> tuple[list[tuple[ManifestEntry, Path]], int]:
+    """Load manifest entries (with optional filters) from --root and --manifest."""
+    explicit = [Path(m.strip()) for m in (manifest or "").split(",") if m.strip()]
+    manifests = list(dict.fromkeys(explicit + find_manifests(root)))  # de-dupe, keep order
+    if not manifests:
+        console.print(f"[red]no manifest.jsonl found under {root!r}[/red]")
+        raise typer.Exit(1)
+    pairs: list[tuple[ManifestEntry, Path]] = []
+    for mpath in manifests:
+        for entry in load_manifest(mpath):
+            if district and entry.district != district:
+                continue
+            if doc_type and str(entry.doc_type) != doc_type:
+                continue
+            pairs.append((entry, mpath))
+    if limit is not None:
+        pairs = pairs[:limit]
+    console.print(f"{len(pairs)} document(s) across {len(manifests)} manifest(s)")
+    return pairs, len(manifests)
 
 
 @app.command("init-db")
@@ -359,24 +430,8 @@ def run(
     report: str | None = typer.Option(None, help="Write a markdown report here."),
 ) -> None:
     """Ingest every document recorded in the scrape manifests."""
-    explicit = [Path(m.strip()) for m in (manifest or "").split(",") if m.strip()]
-    manifests = explicit + find_manifests(root)
-    manifests = list(dict.fromkeys(manifests))  # de-dupe, keep order
-    if not manifests:
-        console.print(f"[red]no manifest.jsonl found under {root!r}[/red]")
-        raise typer.Exit(1)
-
-    pairs: list[tuple[ManifestEntry, Path]] = []
-    for mpath in manifests:
-        for entry in load_manifest(mpath):
-            if district and entry.district != district:
-                continue
-            if doc_type and str(entry.doc_type) != doc_type:
-                continue
-            pairs.append((entry, mpath))
-    if limit is not None:
-        pairs = pairs[:limit]
-    console.print(f"{len(pairs)} document(s) across {len(manifests)} manifest(s)")
+    pairs, _ = _gather_pairs(root=root, manifest=manifest, district=district,
+                             doc_type=doc_type, limit=limit)
 
     conn = None
     voyage = None
@@ -426,6 +481,108 @@ def run(
 
     if report:
         Path(report).write_text(render_report(stats, dry_run=dry_run), encoding="utf-8")
+        console.print(f"report: {report}")
+
+
+@app.command()
+def ocr(
+    root: str = typer.Option(
+        "data", help="Directory searched for **/manifest.jsonl (scrape artifacts)."
+    ),
+    manifest: str | None = typer.Option(
+        None, help="Explicit manifest path(s), comma-separated; adds to --root's finds."
+    ),
+    district: str | None = typer.Option(None, help="Only OCR this district slug."),
+    doc_type: str | None = typer.Option(None, help="Only OCR this doc type."),
+    limit: int | None = typer.Option(None, help="Stop after N manifest entries."),
+    dpi: int = typer.Option(300, help="Rasterization DPI for OCR."),
+    max_pages: int | None = typer.Option(
+        None, help="Cap pages OCR'd per document (None = all)."
+    ),
+    dry_run: bool = typer.Option(
+        True, help="Count OCR candidates per district only; no OCR, no DB, no Voyage."
+    ),
+    wave_size: int = typer.Option(DEFAULT_WAVE, help="Chunks per embed/write flush."),
+    report: str | None = typer.Option(None, help="Write a markdown report here."),
+) -> None:
+    """OCR the scanned (no-text) documents and add their chunks to the corpus.
+
+    Reprocesses only documents that yielded no text on the normal ingest.
+    The dry run (default) just tallies how many per district — fast, no
+    Tesseract, no keys — so you can confirm the set before spending on OCR.
+    """
+    pairs, _ = _gather_pairs(root=root, manifest=manifest, district=district,
+                             doc_type=doc_type, limit=limit)
+
+    conn = None
+    voyage = None
+    ocr_fn = None
+    if not dry_run:
+        from herald import schools_db
+        from herald.ocr import ocr_pdf
+
+        conn = schools_db.connect(_db_url())
+        key = os.environ.get("VOYAGE_API_KEY", "")
+        if not key:
+            raise typer.BadParameter("VOYAGE_API_KEY is not set.")
+        voyage = VoyageEmbedder(key)
+
+        def ocr_fn(path):
+            return ocr_pdf(path, dpi=dpi, max_pages=max_pages)
+
+    done = 0
+
+    def on_doc(entry: ManifestEntry, note: str) -> None:
+        nonlocal done
+        done += 1
+        # "has-text" is the overwhelming majority (already-ingested docs); stay quiet
+        if note in ("ok", "skipped", "has-text"):
+            if done % 100 == 0:
+                console.print(f"[{done}/{len(pairs)}] scanning…")
+            return
+        console.print(f"[{done}/{len(pairs)}] {entry.district} {entry.title[:60]!r} {note}")
+
+    async def go() -> IngestStats:
+        try:
+            return await ingest_manifests(
+                pairs, conn=conn, voyage=voyage, wave_size=wave_size,
+                on_doc=on_doc, ocr_mode=True, ocr_fn=ocr_fn,
+            )
+        finally:
+            if voyage is not None:
+                await voyage.aclose()
+
+    try:
+        stats = asyncio.run(go())
+    finally:
+        if conn is not None:
+            conn.close()
+
+    if dry_run:
+        console.print(
+            f"\n[bold]{stats.docs_ocr_candidate}[/bold] OCR candidate(s) "
+            f"across {len(stats.ocr_candidates)} district(s):"
+        )
+        for d, n in stats.ocr_candidates.most_common():
+            console.print(f"  {d}: {n}")
+    else:
+        table = Table(title="OCR")
+        for col in ("seen", "recovered", "skipped", "still_empty", "missing",
+                    "errors", "chunks"):
+            table.add_column(col, justify="right")
+        table.add_row(
+            str(stats.docs_seen), str(stats.docs_ingested), str(stats.docs_skipped),
+            str(stats.docs_no_text), str(stats.docs_missing), str(stats.docs_error),
+            str(stats.chunks_written),
+        )
+        console.print(table)
+        for d, n in stats.by_district.most_common():
+            console.print(f"  {d}: {n} chunks recovered")
+
+    if report:
+        Path(report).write_text(
+            render_report(stats, dry_run=dry_run, ocr=True), encoding="utf-8"
+        )
         console.print(f"report: {report}")
 
 
