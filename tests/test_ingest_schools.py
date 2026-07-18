@@ -19,7 +19,7 @@ from herald.ingest_schools import (
     render_report,
     resolve_local_path,
 )
-from herald.pdf_text import extract_pdf_text
+from herald.pdf_text import extract_pdf_text, sanitize
 from herald.schools_db import (
     SchoolChunkRow,
     find_or_insert_document,
@@ -78,6 +78,12 @@ def test_extract_pdf_text(tmp_path):
     assert got.page_count == 1
     assert "Call to Order" in got.text
     assert "Jane Smith" in got.text
+
+
+def test_sanitize_strips_nul():
+    # PyMuPDF occasionally emits NUL bytes; Postgres text columns reject them.
+    assert sanitize("Board\x00 of\x00 Ed") == "Board of Ed"
+    assert "\x00" not in sanitize("a\x00b")
 
 
 # ---- chunk preparation -------------------------------------------------
