@@ -28,6 +28,7 @@ dependencies = [
 herald = "herald.cli:app"
 herald-scrape = "herald.scrape.__main__:app"
 herald-ingest = "herald.ingest_schools:app"
+herald-ask = "herald.ask_schools:app"
 
 [build-system]
 requires = ["hatchling"]
