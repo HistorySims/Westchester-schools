@@ -19,6 +19,13 @@ class ExtractedText:
     page_count: int
 
 
+def sanitize(text: str) -> str:
+    """Strip NUL (0x00) bytes: PyMuPDF occasionally emits them and
+    PostgreSQL text columns reject them (``DataError``). Nothing
+    downstream needs them."""
+    return text.replace("\x00", "")
+
+
 def extract_pdf_text(path: str | Path) -> ExtractedText:
     """Plain text of every page, joined with newlines.
 
@@ -27,4 +34,4 @@ def extract_pdf_text(path: str | Path) -> ExtractedText:
     """
     with fitz.open(str(path)) as doc:
         pages = [page.get_text("text") for page in doc]
-    return ExtractedText(text="\n".join(pages).strip(), page_count=len(pages))
+    return ExtractedText(text=sanitize("\n".join(pages).strip()), page_count=len(pages))
