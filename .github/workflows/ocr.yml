@@ -1,0 +1,98 @@
+name: ocr
+
+# OCR the scanned (no-text) documents from a scrape run and add their
+# chunks to the corpus. Reprocesses only documents that yielded no text on
+# the normal ingest: rasterize with PyMuPDF, OCR with Tesseract (CPU, free),
+# then chunk -> embed -> write, updating each document row in place.
+#
+#   Actions -> ocr -> Run workflow
+#
+# The dry run (default) just counts OCR candidates per district — fast, no
+# Tesseract, no secrets — so you can confirm the set (and that Port Chester's
+# scanned agendas are in it) before spending on a real OCR pass.
+#
+# Required secrets for a real run (not the dry run):
+#   SUPABASE_DB_URL, VOYAGE_API_KEY
+#
+# Note: OCR needs the original files, which live in the scrape run's
+# artifacts (14-day retention). Run before they expire, per run id:
+#   crawl-sites  29528495341   (site documents)
+#   scrape-all   29385193938   (BoardDocs agendas/minutes)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Actions run id of the scrape run whose no-text docs to OCR"
+        required: true
+        type: string
+      district:
+        description: "Only this district slug (empty = all)"
+        required: false
+        type: string
+        default: ""
+      dpi:
+        description: "Rasterization DPI for OCR"
+        type: string
+        default: "300"
+      limit:
+        description: "Stop after N documents (empty = all)"
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "Count OCR candidates only; no OCR, no DB writes"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ocr
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read   # download artifacts from another run
+
+jobs:
+  ocr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Install Tesseract (real run only)
+        if: ${{ !inputs.dry_run }}
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr
+      - name: Sanity-check secrets (real run only)
+        if: ${{ !inputs.dry_run }}
+        run: |
+          [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
+          [ -n "$VOYAGE_API_KEY" ]  || { echo "VOYAGE_API_KEY secret is missing"; exit 1; }
+          echo "secrets present (lengths only): db=${#SUPABASE_DB_URL} voyage=${#VOYAGE_API_KEY}"
+      - name: Download scrape artifacts (run ${{ inputs.run_id }})
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: data/artifacts
+      - name: OCR
+        run: |
+          uv run herald-ingest ocr \
+            --root data/artifacts \
+            --dpi "${{ inputs.dpi }}" \
+            ${{ inputs.district && format('--district "{0}"', inputs.district) || '' }} \
+            ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
+            --report ocr-report.md \
+            ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}
+      - name: Publish report to run summary
+        if: always()
+        run: cat ocr-report.md >> "$GITHUB_STEP_SUMMARY" || echo "(no report)" >> "$GITHUB_STEP_SUMMARY"

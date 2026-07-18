@@ -136,15 +136,20 @@ adapted).
 
 ## Failures, weak spots & known issues
 
-- **~37 scanned PDFs have no text layer (`no_text`) → OCR needed.** These
-  aren't random: older Port Chester agendas (2019–2021), several budget
-  hearing packets, White Plains budget newsletters — and, most important,
-  **two teacher contracts** (Peekskill `PAA CBA 2025-2028`, Mount Vernon
-  `MVAG MOA 2022`). Some of the highest-value documents are scanned
-  images, so they were skipped. This is the concrete, *targeted* case for
-  an OCR pass: we have the exact ~37-document list, no need to OCR the
-  corpus. The pipeline records these as `documents.ingest_status='no_text'`
-  so they're queryable.
+- **~300 scanned PDFs have no text layer (`no_text`) → OCR pass built,
+  not yet run.** These aren't random: older Port Chester agendas
+  (2019–2021, ~20 docs — over half the *site*-crawl no_text), plus in the
+  BoardDocs pass a large tail of small scanned consent-agenda backups
+  (fixed-asset disposal forms, bid awards, club charters, individual
+  MOAs) — and, most important, **teacher contracts** (Peekskill `PAA CBA
+  2025-2028`, Mount Vernon `MVAG MOA 2022`). Some of the highest-value
+  documents are scanned images. **`herald-ingest ocr` + the `ocr`
+  workflow** handle this: Tesseract via PyMuPDF rasterization (CPU-only,
+  free, no new key/allowlist), reprocessing only `no_text` docs → chunk →
+  embed → update-in-place. A fast dry run counts candidates per district
+  (no OCR/keys) before spending. **Must run before ~July 29–30** (needs
+  the scrape artifacts, 14-day retention). The pipeline records these as
+  `documents.ingest_status='no_text'` so they stay queryable.
 - **One `.bin` download can't be parsed** (Greenburgh "Budget WorkShop #4")
   — the server didn't declare a content type, so it saved as `.bin` and
   PyMuPDF refused it. 1 document; recorded as `ingest_status='error'`.
