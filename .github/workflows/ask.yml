@@ -1,0 +1,71 @@
+name: ask
+
+# Ask the corpus a question from your phone:
+#   Actions -> ask -> Run workflow -> type the question.
+# The cited answer lands in the run summary.
+#
+# Retrieval is a per-district evidence panel (semantic + keyword + rerank),
+# so comparative questions ("what's the normal X policy", "which districts
+# do Y") get evidence from every district — and districts with none are
+# reported honestly.
+#
+# Required secrets: SUPABASE_DB_URL, VOYAGE_API_KEY, and (unless
+# evidence_only) ANTHROPIC_API_KEY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      question:
+        description: "The question to ask the corpus"
+        required: true
+        type: string
+      districts:
+        description: "Comma-separated district slugs (empty = all 8)"
+        required: false
+        type: string
+        default: ""
+      since:
+        description: "Earliest meeting date YYYY-MM-DD (empty = no floor)"
+        required: false
+        type: string
+        default: ""
+      evidence_only:
+        description: "Show the retrieved evidence panel only (no synthesis; no Anthropic key needed)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  ask:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # Passed via env (not inline) so quotes/backticks in a question can't
+      # break or inject into the shell command.
+      QUESTION: ${{ inputs.question }}
+      DISTRICTS: ${{ inputs.districts }}
+      SINCE: ${{ inputs.since }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Ask
+        run: |
+          args=( "$QUESTION" --report answer.md )
+          [ -n "$DISTRICTS" ] && args+=( --districts "$DISTRICTS" )
+          [ -n "$SINCE" ]     && args+=( --since "$SINCE" )
+          [ "${{ inputs.evidence_only }}" = "true" ] && args+=( --evidence-only )
+          uv run herald-ask "${args[@]}"
+      - name: Publish answer to run summary
+        if: always()
+        run: cat answer.md >> "$GITHUB_STEP_SUMMARY" || echo "(no answer)" >> "$GITHUB_STEP_SUMMARY"

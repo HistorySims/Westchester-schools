@@ -59,10 +59,15 @@ mount-vernon 1548, white-plains 1242, greenburgh-central 339.
 weighting for before any cross-district comparison (e.g. per-district
 normalization, not raw counts).
 
-**Current milestone:** both scrape sources are now ingested. The
-downstream engine (cluster → drift → brief) is the next real gap — the
-corpus is large enough to start exploring, but there's no query surface
-yet beyond direct SQL.
+**Current milestone:** both scrape sources are ingested and the OCR pass
+ran. The first query surface is built: **`herald-ask` + the `ask`
+workflow** — *panel retrieval* (per-district semantic + FTS + RRF +
+rerank, with empty districts reported explicitly) feeding cited Sonnet
+synthesis. Designed for the corpus's real question shapes (norm /
+coverage / outlier — see [`ASK.md`](ASK.md)) rather than global top-k
+RAG. Needs `ANTHROPIC_API_KEY` as a repo secret (evidence-only mode
+works without it). The rest of the engine (cluster → drift → brief
+surfaces) remains unwired.
 
 ---
 
