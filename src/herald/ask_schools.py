@@ -28,6 +28,7 @@ from rich.console import Console
 from herald.embed import VoyageEmbedder
 from herald.rerank import VoyageReranker
 from herald.schools_retrieval import (
+    DEFAULT_MAX_PER_DOC,
     DEFAULT_PER_DISTRICT,
     DEFAULT_POOL,
     EvidenceChunk,
@@ -147,12 +148,37 @@ def validate_citations(text: str, n_evidence: int) -> list[int]:
 
 # ---- synthesis ---------------------------------------------------------
 
+# Approximate USD per million tokens (input, output), for a rough per-question
+# cost readout. Sonnet 5 is on introductory pricing through 2026-08-31 ($2/$10),
+# reverting to $3/$15 after; update when it does. Voyage embed/rerank is a
+# fraction of a cent and omitted.
+_PRICING: dict[str, tuple[float, float]] = {
+    "claude-sonnet-5": (2.0, 10.0),
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+}
+
+
+def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    """Rough USD cost of one synthesis, or None if the model's price is unknown."""
+    price = _PRICING.get(model) or _PRICING.get(model.rsplit("-", 1)[0])
+    if not price:
+        return None
+    return input_tokens / 1e6 * price[0] + output_tokens / 1e6 * price[1]
+
+
 @dataclass
 class Answer:
     text: str
     panel: Panel
     evidence: list[EvidenceChunk]
     model: str
+    input_tokens: int = 0
+    output_tokens: int = 0    # includes adaptive-thinking tokens
+
+    @property
+    def cost_usd(self) -> float | None:
+        return estimate_cost(self.model, self.input_tokens, self.output_tokens)
 
 
 class CitationError(RuntimeError):
@@ -171,6 +197,7 @@ async def synthesize(
     client = AsyncAnthropic(api_key=api_key)
     user_prompt, ordered = build_user_prompt(panel)
     messages = [{"role": "user", "content": user_prompt}]
+    in_tok = out_tok = 0
     for attempt in (1, 2):
         resp = await client.messages.create(
             model=model,
@@ -178,10 +205,13 @@ async def synthesize(
             system=SYSTEM_PROMPT,
             messages=messages,
         )
+        in_tok += resp.usage.input_tokens        # a retry adds to the tally
+        out_tok += resp.usage.output_tokens
         text = "".join(b.text for b in resp.content if b.type == "text")
         bad = validate_citations(text, len(ordered))
         if not bad:
-            return Answer(text=text, panel=panel, evidence=ordered, model=model)
+            return Answer(text=text, panel=panel, evidence=ordered, model=model,
+                          input_tokens=in_tok, output_tokens=out_tok)
         if attempt == 1:
             messages = [
                 {"role": "user", "content": user_prompt},
@@ -222,7 +252,13 @@ def render_markdown(ans: Answer) -> str:
             f"_No evidence retrieved from: {', '.join(ans.panel.empty_districts)}._"
         )
         lines.append("")
-    lines.append(f"_Model: {ans.model}. Answers only reflect the ingested corpus._")
+    cost = ans.cost_usd
+    cost_str = f", ~${cost:.3f}" if cost is not None else ""
+    lines.append(
+        f"_Model: {ans.model}. Tokens: {ans.input_tokens:,} in / "
+        f"{ans.output_tokens:,} out{cost_str}. Answers only reflect the "
+        "ingested corpus._"
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -260,6 +296,9 @@ def ask(
         DEFAULT_PER_DISTRICT, help="Evidence passages per district."
     ),
     pool: int = typer.Option(DEFAULT_POOL, help="Candidate pool per district per leg."),
+    max_per_doc: int = typer.Option(
+        DEFAULT_MAX_PER_DOC, help="Max evidence chunks from any one document."
+    ),
     rerank: bool = typer.Option(True, help="Voyage rerank the fused pool."),
     evidence_only: bool = typer.Option(
         False, help="Print the retrieved panel without calling the synthesis model."
@@ -286,7 +325,7 @@ def ask(
             panel = await retrieve_panel(
                 conn, voyage,
                 question=question, reranker=reranker,
-                per_district=per_district, pool=pool,
+                per_district=per_district, pool=pool, max_per_doc=max_per_doc,
                 districts=slugs, doc_type=doc_type,
                 date_from=date_from, date_to=date_to,
             )
