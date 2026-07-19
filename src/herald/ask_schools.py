@@ -39,7 +39,6 @@ console = Console()
 
 DEFAULT_MODEL = "claude-sonnet-5"
 DEFAULT_MAX_TOKENS = 3000
-DEFAULT_TEMPERATURE = 0.2
 MAX_CHUNK_CHARS = 1800          # per-chunk cap in the prompt (keep panels affordable)
 
 _CITE_RE = re.compile(r"\[(\d+)\]")
@@ -169,7 +168,6 @@ async def synthesize(
         resp = await client.messages.create(
             model=model,
             max_tokens=max_tokens,
-            temperature=DEFAULT_TEMPERATURE,
             system=SYSTEM_PROMPT,
             messages=messages,
         )
