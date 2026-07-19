@@ -31,7 +31,11 @@ district can crowd out another. Then:
    outranks either alone; fusion never crosses district lines.
 4. **One pooled Voyage rerank-2.5 call** over all districts' candidates
    (cheap: one HTTP call), then top-`per_district` (default 4) each.
-5. **Empty districts are returned explicitly** (`Panel.empty_districts`),
+5. **Per-document cap** (`max_per_doc`, default 2) — no more than 2 chunks
+   from any one document per district, so a single long policy/contract
+   can't fill the slate with near-duplicates; backfills from the same
+   document only if the district has no other relevant source.
+6. **Empty districts are returned explicitly** (`Panel.empty_districts`),
    not silently dropped.
 
 At ~25k chunks the window-function scan is exact (no ANN approximation)
@@ -59,7 +63,13 @@ and fast. Revisit only past a few hundred thousand chunks.
 ## Surfaces
 
 - **CLI**: `herald-ask "question" [--districts a,b] [--doc-type policy]
-  [--since 2024-01-01] [--evidence-only] [--report out.md]`
+  [--since 2024-01-01] [--per-district N] [--max-per-doc N]
+  [--model claude-haiku-4-5] [--evidence-only] [--report out.md]`.
+  Each answer's footer reports token usage + an approximate USD cost
+  (`_PRICING` table in `ask_schools.py`; Sonnet 5 is on intro pricing
+  through 2026-08-31). `--model claude-haiku-4-5` is the cheap lever
+  (~3–4× cheaper, no adaptive thinking) at a quality cost on the hard
+  comparative questions.
 - **Workflow** `ask` (phone path): Actions → ask → type the question →
   cited answer in the run summary. `evidence_only` runs retrieval without
   the synthesis model — no Anthropic key needed — for smoke-testing and

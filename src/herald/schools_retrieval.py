@@ -31,6 +31,7 @@ from herald.rerank import VoyageReranker
 RRF_K = 60                  # standard reciprocal-rank-fusion constant
 DEFAULT_POOL = 12           # candidates per district per leg, pre-fusion
 DEFAULT_PER_DISTRICT = 4    # evidence chunks per district after fusion/rerank
+DEFAULT_MAX_PER_DOC = 2     # cap chunks from any one document (diversify sources)
 
 
 @dataclass
@@ -230,6 +231,32 @@ def rrf_fuse_per_district(
     }
 
 
+def cap_per_document(
+    rows: list[EvidenceChunk], *, limit: int, max_per_doc: int
+) -> list[EvidenceChunk]:
+    """Take up to ``limit`` chunks in rank order, at most ``max_per_doc`` from
+    any one document (keyed by ``source_url``).
+
+    Districts often have one rich document (a long policy or contract) whose
+    chunks would otherwise fill the whole slate with near-duplicates; the cap
+    spreads the budget across more sources. If diverse documents run out
+    before ``limit``, backfill with the highest-ranked overflow so a district
+    with genuinely one relevant document isn't shortchanged.
+    """
+    kept: list[EvidenceChunk] = []
+    overflow: list[EvidenceChunk] = []
+    per_doc: dict[str, int] = defaultdict(int)
+    for c in rows:
+        if per_doc[c.source_url] < max_per_doc:
+            per_doc[c.source_url] += 1
+            kept.append(c)
+            if len(kept) >= limit:
+                return kept
+        else:
+            overflow.append(c)
+    return (kept + overflow)[:limit]
+
+
 # ---- orchestration -----------------------------------------------------
 
 async def retrieve_panel(
@@ -240,6 +267,7 @@ async def retrieve_panel(
     reranker: VoyageReranker | None = None,
     per_district: int = DEFAULT_PER_DISTRICT,
     pool: int = DEFAULT_POOL,
+    max_per_doc: int = DEFAULT_MAX_PER_DOC,
     districts: list[str] | None = None,
     doc_type: str | None = None,
     date_from: _dt.date | None = None,
@@ -248,7 +276,8 @@ async def retrieve_panel(
     """Retrieve the evidence panel for one question.
 
     semantic + FTS per-district → RRF per district → (optional) one
-    pooled Voyage rerank call → top ``per_district`` per district.
+    pooled Voyage rerank call → top ``per_district`` per district, capped at
+    ``max_per_doc`` chunks per document so the slate spreads across sources.
     Districts (after the ``districts`` filter) with no hits are listed in
     ``empty_districts`` — absence is part of the answer.
     """
@@ -274,7 +303,10 @@ async def retrieve_panel(
                 for slug, rows in fused.items()
             }
 
-    by_district = {slug: rows[:per_district] for slug, rows in fused.items() if rows}
+    by_district = {
+        slug: cap_per_document(rows, limit=per_district, max_per_doc=max_per_doc)
+        for slug, rows in fused.items() if rows
+    }
 
     known = list_district_slugs(cur)
     if districts:

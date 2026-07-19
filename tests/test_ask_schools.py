@@ -9,6 +9,7 @@ from uuid import UUID
 from herald.ask_schools import (
     Answer,
     build_user_prompt,
+    estimate_cost,
     format_evidence,
     render_markdown,
     validate_citations,
@@ -16,6 +17,7 @@ from herald.ask_schools import (
 from herald.schools_retrieval import (
     EvidenceChunk,
     Panel,
+    cap_per_document,
     panel_fts,
     panel_semantic,
     retrieve_panel,
@@ -27,13 +29,27 @@ U2 = UUID("22222222-2222-2222-2222-222222222222")
 U3 = UUID("33333333-3333-3333-3333-333333333333")
 
 
-def _chunk(cid: UUID, district: str, content: str = "Cell phones must be off.") -> EvidenceChunk:
+def _chunk(cid: UUID, district: str, content: str = "Cell phones must be off.",
+           source_url: str = "https://d.test/x.pdf") -> EvidenceChunk:
     return EvidenceChunk(
         chunk_id=cid, district=district, meeting_date=_dt.date(2026, 3, 17),
         doc_type="policy", doc_title="Code of Conduct", section_path="P5.B",
         heading="Electronic Devices", content=content,
-        source_url="https://d.test/x.pdf",
+        source_url=source_url,
     )
+
+
+def test_cap_per_document_diversifies_then_backfills():
+    a1, a2, a3 = (_chunk(UUID(int=i), "peekskill", source_url="doc-A") for i in (1, 2, 3))
+    b1 = _chunk(UUID(int=4), "peekskill", source_url="doc-B")
+    # rank order: A,A,A,B — cap 2/doc, limit 3 -> A,A,B (B promoted over 3rd A)
+    got = cap_per_document([a1, a2, a3, b1], limit=3, max_per_doc=2)
+    assert [c.source_url for c in got] == ["doc-A", "doc-A", "doc-B"]
+
+    # only one document available -> backfill rather than shortchange the slate
+    only_a = [_chunk(UUID(int=i), "peekskill", source_url="doc-A") for i in range(1, 5)]
+    got = cap_per_document(only_a, limit=3, max_per_doc=2)
+    assert len(got) == 3 and all(c.source_url == "doc-A" for c in got)
 
 
 # ---- fusion ------------------------------------------------------------
@@ -187,6 +203,12 @@ def test_validate_citations():
     assert validate_citations("Fine [1] and [2].", 2) == []
     assert validate_citations("Bad [3] worse [12].", 2) == [3, 12]
     assert validate_citations("No citations at all.", 2) == []
+
+
+def test_estimate_cost():
+    # sonnet-5 intro pricing: $2/M in, $10/M out
+    assert estimate_cost("claude-sonnet-5", 16_000, 6_000) == 0.032 + 0.060
+    assert estimate_cost("something-unknown", 1000, 1000) is None
 
 
 def test_render_markdown_includes_evidence_and_absence():
