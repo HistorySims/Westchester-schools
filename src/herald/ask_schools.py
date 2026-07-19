@@ -38,7 +38,14 @@ from herald.schools_retrieval import (
 console = Console()
 
 DEFAULT_MODEL = "claude-sonnet-5"
-DEFAULT_MAX_TOKENS = 3000
+# max_tokens caps thinking + visible text *combined*. claude-sonnet-5 runs
+# adaptive thinking by default (when `thinking` is unset), and that reasoning
+# is billed against this budget — too low a cap truncates the visible answer
+# mid-sentence. 16000 leaves ample room and stays under the SDK's non-streaming
+# HTTP timeout. We deliberately don't set `thinking`: omitting it is portable —
+# Sonnet 5 thinks adaptively (good for the comparative reasoning), Haiku/Opus
+# simply don't, and none of them reject the request.
+DEFAULT_MAX_TOKENS = 16000
 MAX_CHUNK_CHARS = 1800          # per-chunk cap in the prompt (keep panels affordable)
 
 _CITE_RE = re.compile(r"\[(\d+)\]")
