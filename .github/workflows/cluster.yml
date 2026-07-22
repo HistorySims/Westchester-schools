@@ -1,52 +1,83 @@
-name: Run Clustering
+name: cluster
+
+# Cluster the corpus into a topic map: load chunk embeddings -> UMAP (2D) ->
+# HDBSCAN (discovered topics) -> Haiku topic labels -> compact JSON. The JSON
+# feeds the interactive cluster map (docs/VIZ.md). Uploaded as an artifact you
+# can download; share it back and it renders as a phone-viewable page.
+#
+#   Actions -> cluster -> Run workflow
+#
+# Required secrets: SUPABASE_DB_URL, and ANTHROPIC_API_KEY (topic labels;
+# skip with the 'label' input off).
 
 on:
   workflow_dispatch:
     inputs:
+      sample:
+        description: "Random-sample this many chunks (empty = all ~23k)"
+        required: false
+        type: string
+        default: ""
       min_cluster_size:
-        description: "HDBSCAN min_cluster_size (smaller = more granular)"
+        description: "HDBSCAN min_cluster_size (larger = fewer, broader topics)"
+        type: string
         default: "15"
-        type: string
-      min_samples:
-        description: "HDBSCAN min_samples"
-        default: "5"
-        type: string
-      tier1_target:
-        description: "Tier 1 target cluster count"
-        default: "50"
-        type: string
-      tier2_target:
-        description: "Tier 2 target cluster count"
-        default: "15"
-        type: string
-      tier3_target:
-        description: "Tier 3 target cluster count"
-        default: "5"
-        type: string
+      label:
+        description: "Label topics with Haiku (needs ANTHROPIC_API_KEY)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: cluster
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   cluster:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
         with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install -e .
-
-      - name: Run clustering
-        env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Sanity-check secrets
         run: |
-          herald cluster \
-            --min-cluster-size ${{ inputs.min_cluster_size }} \
-            --min-samples ${{ inputs.min_samples }} \
-            --tier1 ${{ inputs.tier1_target }} \
-            --tier2 ${{ inputs.tier2_target }} \
-            --tier3 ${{ inputs.tier3_target }}
+          [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
+      - name: Cluster
+        run: |
+          uv run herald-cluster run \
+            --out cluster-map.json \
+            --min-cluster-size "${{ inputs.min_cluster_size }}" \
+            ${{ inputs.sample && format('--sample "{0}"', inputs.sample) || '' }} \
+            ${{ inputs.label && '' || '--no-labels' }}
+      - name: Summarize topics in the run log
+        if: always()
+        run: |
+          if [ -f cluster-map.json ]; then
+            uv run python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          d = json.load(open("cluster-map.json"))
+          print(f"# Topic map\n\n{d['n_points']} points · {d['n_clusters']} topics · {d['n_noise']} noise\n")
+          print("| topic | size |\n|---|---|")
+          for c in sorted(d["clusters"], key=lambda c: -c["size"])[:40]:
+              print(f"| {c['label']} | {c['size']} |")
+          PY
+          fi
+      - name: Upload topic map
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cluster-map
+          path: cluster-map.json
+          if-no-files-found: warn
+          retention-days: 14
