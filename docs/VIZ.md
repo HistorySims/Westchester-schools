@@ -57,6 +57,29 @@ content`), and `ANTHROPIC_API_KEY` (for labels). CLI equivalent:
 recomputed each run; if we settle on it we'll store a `content_embedding`
 column to avoid the repeat cost.
 
+## Tuning it (the sweep)
+
+Before committing to a granularity, run the **`cluster-sweep`** workflow
+(Actions → cluster-sweep → Run workflow). It grid-searches
+`cluster_dims` × `min_cluster_size`: for each dimension it UMAP-reduces once
+(the expensive step) then re-runs HDBSCAN across every `min_cluster_size`,
+reporting **topic count**, **noise %**, and **DBCV** (density-based cluster
+validity — HDBSCAN's `relative_validity_`, higher = cleaner separation). It
+runs on a `sample` (default 8k chunks — the *relative* ranking holds on a
+sample, and it's faster/cheaper). Defaults: `dims=5,10,15,20`,
+`min_cluster_sizes=15,30,60,100`. Output is a markdown table (`cluster-sweep.md`,
+printed to the run summary, ranked by DBCV). Pick the cell that trades off
+clean separation against a legible topic count, then feed those numbers into
+the `cluster` workflow. CLI: `herald-cluster sweep [--sample N] [--dims …]
+[--min-cluster-sizes …] [--embeddings content|stored]`.
+
+**On hierarchy** (asked during design): for nested topics — broad themes that
+split into sub-topics — prefer **cluster-of-clusters** (agglomerative merge on
+cluster centroids) over re-running HDBSCAN at 15/30/60. Separate HDBSCAN runs
+give three *independent* partitions that need not nest (a point can land in
+different parents at different granularities); merging centroids upward
+*guarantees* nesting and costs one small linkage, not three full re-clusters.
+
 ## Viewing it
 
 `viz/cluster_map.html` is a self-contained renderer (no external libraries —
