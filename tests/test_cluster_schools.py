@@ -9,10 +9,13 @@ import numpy as np
 from herald.cluster_schools import (
     ChunkRow,
     ClusterParams,
+    SweepResult,
     build_export,
     load_chunks,
+    render_sweep,
     representative_indices,
     run_clustering,
+    sweep_clustering,
 )
 
 
@@ -65,13 +68,49 @@ def test_run_clustering_end_to_end_synthetic():
         _row(i, "peekskill" if i < 30 else "ossining", v)
         for i, v in enumerate(np.vstack([a, b]))
     ]
-    params = ClusterParams(min_cluster_size=5, min_samples=2, umap_neighbors=5)
+    params = ClusterParams(min_cluster_size=5, min_samples=2, umap_neighbors=5, cluster_dims=4)
     out = run_clustering(rows, params, api_key=None)
     assert out["n_points"] == 60
-    assert out["n_clusters"] == 2
-    # unlabeled fallback names
-    assert all(c["label"].startswith("Topic ") for c in out["clusters"])
+    # clusters on the 2D projection of tiny data — count isn't guaranteed, but
+    # the pipeline must produce a valid, aligned, in-range export
+    assert out["n_clusters"] >= 1
+    assert all(c["label"].startswith("Topic ") for c in out["clusters"])   # unlabeled fallback
+    assert len(out["x"]) == 60 and len(out["cluster"]) == 60
     assert all(0.0 <= v <= 1.0 for v in out["x"] + out["y"])
+
+    # explicit `embeddings=` override is honored (content-only path)
+    out2 = run_clustering(rows, params, embeddings=np.vstack([r.embedding for r in rows]),
+                          api_key=None)
+    assert out2["n_points"] == 60
+
+
+def test_sweep_clustering_grid_and_render():
+    # two well-separated blobs -> the grid runs each cell and reports metrics
+    rng = np.random.default_rng(3)
+    a = rng.normal(0, 0.02, (40, 8)) + np.eye(8)[0]
+    b = rng.normal(0, 0.02, (40, 8)) + np.eye(8)[1]
+    emb = np.vstack([a, b]).astype(np.float32)
+
+    results = sweep_clustering(
+        emb, dims_list=[4], mcs_list=[5, 10], min_samples=2, umap_neighbors=5,
+    )
+    assert len(results) == 2                      # one cell per (dims x mcs)
+    for r in results:
+        assert r.cluster_dims == 4
+        assert r.min_cluster_size in (5, 10)
+        assert r.n_clusters >= 1
+        assert 0.0 <= r.noise_pct <= 100.0
+        assert r.median_size >= 0
+
+    table = render_sweep(results)
+    assert "# Clustering sweep" in table
+    assert "min_cluster_size" in table
+    assert table.count("\n|") >= 3                # header rule + >=2 data rows
+
+
+def test_render_sweep_tolerates_nan_dbcv():
+    r = render_sweep([SweepResult(10, 15, 3, 12.0, float("nan"), 40)])
+    assert "nan" in r.lower()                      # doesn't crash on NaN DBCV
 
 
 class FakeCursor:

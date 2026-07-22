@@ -60,6 +60,7 @@ class ClusterParams:
     min_samples: int = 5
     umap_neighbors: int = 15
     umap_min_dist: float = 0.1
+    cluster_dims: int = 10       # UMAP target dim for HDBSCAN (not 2 — 2D over-merges)
 
 
 @dataclass
@@ -119,15 +120,38 @@ def hdbscan_labels(embeddings: np.ndarray, params: ClusterParams) -> np.ndarray:
     return clusterer.fit_predict(embeddings)
 
 
-def umap_project(embeddings: np.ndarray, params: ClusterParams) -> np.ndarray:
+def umap_reduce(embeddings: np.ndarray, params: ClusterParams) -> np.ndarray:
+    """Reduce to ``cluster_dims`` for HDBSCAN — the clustering space.
+
+    Straight to 2D over-merges topics (the 2D layout optimizes visual
+    separation, not density); the raw 1024-D drowns points in noise. A
+    mid-dimensional cosine UMAP (``min_dist=0`` packs points for density
+    clustering) is the standard middle ground.
+    """
+    import umap
+
+    reducer = umap.UMAP(
+        n_components=params.cluster_dims, n_neighbors=params.umap_neighbors,
+        min_dist=0.0, metric="cosine", random_state=42, low_memory=True,
+    )
+    return np.asarray(reducer.fit_transform(embeddings), dtype=np.float32)
+
+
+def umap_project(coords: np.ndarray, params: ClusterParams) -> np.ndarray:
+    """Lay the (already reduced) clustering space out in 2D for display.
+
+    Fed the ``cluster_dims`` output of ``umap_reduce`` so the map you see is
+    a projection *of the space the topics were found in* — the colored
+    regions correspond to the clusters. Cheap (small input dim).
+    """
     import umap
 
     reducer = umap.UMAP(
         n_components=2, n_neighbors=params.umap_neighbors,
-        min_dist=params.umap_min_dist, metric="cosine",
+        min_dist=params.umap_min_dist, metric="euclidean",
         random_state=42, low_memory=True,
     )
-    xy = np.asarray(reducer.fit_transform(embeddings), dtype=np.float32)
+    xy = np.asarray(reducer.fit_transform(coords), dtype=np.float32)
     for dim in range(2):  # normalize each axis to [0, 1] for the renderer
         col = xy[:, dim]
         lo, hi = float(col.min()), float(col.max())
@@ -233,19 +257,52 @@ def build_export(
     }
 
 
+# ---- content embeddings ------------------------------------------------
+
+def content_embeddings(voyage_key: str, rows: list[ChunkRow], *, on_progress) -> np.ndarray:
+    """Re-embed each chunk's *raw content* (no district/date prefix).
+
+    The stored ``chunks.embedding`` carries the contextual prefix
+    ("{district} · {date} · …"), which is right for retrieval but makes a
+    topic map cluster by district. Embedding content alone yields a topic
+    vector. (Voyage batches internally; ~$0.35 for the full corpus.)
+    """
+    from herald.embed import VoyageEmbedder
+
+    on_progress(f"re-embedding {len(rows)} chunks content-only via Voyage")
+
+    async def go() -> list[list[float]]:
+        async with VoyageEmbedder(voyage_key) as v:
+            return await v.embed_documents([r.content for r in rows])
+
+    return np.asarray(asyncio.run(go()), dtype=np.float32)
+
+
 # ---- orchestration -----------------------------------------------------
 
 def run_clustering(
-    rows: list[ChunkRow], params: ClusterParams, *, api_key: str | None,
-    on_progress=lambda s: None,
+    rows: list[ChunkRow], params: ClusterParams, *, embeddings: np.ndarray | None = None,
+    api_key: str | None = None, on_progress=lambda s: None,
 ) -> dict:
-    embeddings = np.vstack([r.embedding for r in rows]).astype(np.float32)
-    on_progress(f"HDBSCAN over {len(rows)} chunks (min_cluster_size={params.min_cluster_size})")
-    labels = hdbscan_labels(embeddings, params)
+    """Cluster ``rows`` and build the export.
+
+    UMAP-reduce to ``cluster_dims`` → HDBSCAN there → project that reduced
+    space to 2D for display. ``embeddings`` overrides ``rows``' stored
+    vectors (e.g. content-only).
+    """
+    if embeddings is None:
+        embeddings = np.vstack([r.embedding for r in rows]).astype(np.float32)
+    on_progress(f"UMAP → {params.cluster_dims}D over {len(rows)} chunks (clustering space)")
+    reduced = umap_reduce(embeddings, params)
+    on_progress(f"HDBSCAN on {params.cluster_dims}D (min_cluster_size={params.min_cluster_size}, "
+                f"min_samples={params.min_samples})")
+    labels = hdbscan_labels(reduced, params)
+    on_progress("UMAP → 2D for display")
+    xy = umap_project(reduced, params)
     n_clusters = len({int(x) for x in labels if x >= 0})
-    on_progress(f"  {n_clusters} topics, {int((labels < 0).sum())} noise points")
-    on_progress("UMAP projection to 2D")
-    xy = umap_project(embeddings, params)
+    n_noise = int((labels < 0).sum())
+    pct = 100 * n_noise / max(len(rows), 1)
+    on_progress(f"  {n_clusters} topics, {n_noise} noise ({pct:.0f}%)")
 
     cluster_labels: dict[int, str] = {}
     if api_key and n_clusters:
@@ -255,6 +312,77 @@ def run_clustering(
         cluster_labels = asyncio.run(label_clusters(api_key, reps))
         on_progress(f"  {len(cluster_labels)}/{n_clusters} labelled")
     return build_export(rows, labels, xy, cluster_labels)
+
+
+# ---- parameter sweep ---------------------------------------------------
+
+@dataclass
+class SweepResult:
+    cluster_dims: int
+    min_cluster_size: int
+    n_clusters: int
+    noise_pct: float
+    dbcv: float           # HDBSCAN relative validity (density-based); higher = better
+    median_size: int
+
+
+def sweep_clustering(
+    embeddings: np.ndarray, *, dims_list: list[int], mcs_list: list[int],
+    min_samples: int, umap_neighbors: int = 15, on_progress=lambda s: None,
+) -> list[SweepResult]:
+    """Grid over (``cluster_dims`` by ``min_cluster_size``).
+
+    Reduces once per dimension (the expensive step) and re-clusters cheaply
+    across ``min_cluster_size``, so the grid costs ~one UMAP per dimension.
+    Each cell reports topic count, noise %, and DBCV (density-based cluster
+    validity) — enough to pick a base granularity without labelling.
+    """
+    import hdbscan
+
+    results: list[SweepResult] = []
+    for dims in dims_list:
+        p = ClusterParams(cluster_dims=dims, umap_neighbors=umap_neighbors,
+                          min_samples=min_samples)
+        on_progress(f"UMAP → {dims}D")
+        reduced = umap_reduce(embeddings, p)
+        for mcs in mcs_list:
+            cl = hdbscan.HDBSCAN(
+                min_cluster_size=mcs, min_samples=min_samples, metric="euclidean",
+                core_dist_n_jobs=-1, cluster_selection_method="leaf",
+                gen_min_span_tree=True,
+            )
+            labels = cl.fit_predict(reduced)
+            n = len({int(x) for x in labels if x >= 0})
+            noise = float((labels < 0).mean() * 100)
+            try:
+                dbcv = float(cl.relative_validity_)
+            except Exception:
+                dbcv = float("nan")
+            sizes = [int((labels == k).sum()) for k in range(n)]
+            med = int(np.median(sizes)) if sizes else 0
+            results.append(SweepResult(dims, mcs, n, noise, dbcv, med))
+            on_progress(f"  dims={dims:2d} mcs={mcs:3d}: {n:3d} topics, "
+                        f"{noise:4.0f}% noise, DBCV={dbcv:+.3f}, median size {med}")
+    return results
+
+
+def render_sweep(results: list[SweepResult]) -> str:
+    ranked = sorted(results, key=lambda r: (-(r.dbcv if r.dbcv == r.dbcv else -9)))
+    lines = [
+        "# Clustering sweep",
+        "",
+        "Ranked by **DBCV** (density-based cluster validity, higher = cleaner "
+        "separation). Also weigh topic count (legible?) and noise %.",
+        "",
+        "| cluster_dims | min_cluster_size | topics | noise % | DBCV | median size |",
+        "|---:|---:|---:|---:|---:|---:|",
+    ]
+    for r in ranked:
+        lines.append(
+            f"| {r.cluster_dims} | {r.min_cluster_size} | {r.n_clusters} | "
+            f"{r.noise_pct:.0f}% | {r.dbcv:+.3f} | {r.median_size} |"
+        )
+    return "\n".join(lines) + "\n"
 
 
 # ---- CLI ---------------------------------------------------------------
@@ -276,8 +404,15 @@ def run(
     min_cluster_size: int = typer.Option(15, help="HDBSCAN min_cluster_size."),
     min_samples: int = typer.Option(5, help="HDBSCAN min_samples."),
     umap_neighbors: int = typer.Option(15, help="UMAP n_neighbors."),
-    no_labels: bool = typer.Option(
-        False, "--no-labels", help="Skip Haiku labelling (no ANTHROPIC_API_KEY needed)."
+    cluster_dims: int = typer.Option(
+        10, help="UMAP dim to cluster in (mid-dim; 2 over-merges topics)."
+    ),
+    embeddings: str = typer.Option(
+        "content", help="'content' (re-embed content-only for topics) or 'stored' "
+        "(reuse the district-prefixed retrieval vectors)."
+    ),
+    labels: bool = typer.Option(
+        True, "--labels/--no-labels", help="Label topics with Haiku (needs ANTHROPIC_API_KEY)."
     ),
 ) -> None:
     """Load embeddings → UMAP + HDBSCAN → Haiku labels → JSON for the map."""
@@ -286,21 +421,29 @@ def run(
     db_url = os.environ.get("SUPABASE_DB_URL", "")
     if not db_url:
         raise typer.BadParameter("SUPABASE_DB_URL is not set.")
-    api_key = None if no_labels else os.environ.get("ANTHROPIC_API_KEY") or None
-    if not no_labels and not api_key:
+    if embeddings not in ("content", "stored"):
+        raise typer.BadParameter("--embeddings must be 'content' or 'stored'.")
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or None if labels else None
+    if labels and not api_key:
         console.print("[yellow]ANTHROPIC_API_KEY not set — topics will be unlabelled[/yellow]")
+    voyage_key = os.environ.get("VOYAGE_API_KEY") or None
+    if embeddings == "content" and not voyage_key:
+        raise typer.BadParameter("VOYAGE_API_KEY is required for --embeddings content.")
 
     params = ClusterParams(
         min_cluster_size=min_cluster_size, min_samples=min_samples,
-        umap_neighbors=umap_neighbors,
+        umap_neighbors=umap_neighbors, cluster_dims=cluster_dims,
     )
     with schools_db.connect(db_url) as conn:
         rows = load_chunks(conn.cursor(), sample=sample)
-    console.print(f"loaded {len(rows)} chunks")
+    console.print(f"loaded {len(rows)} chunks · embeddings={embeddings}")
     if not rows:
         raise typer.Exit(1)
 
-    export = run_clustering(rows, params, api_key=api_key,
+    emb = None
+    if embeddings == "content":
+        emb = content_embeddings(voyage_key, rows, on_progress=lambda s: console.print(s))
+    export = run_clustering(rows, params, embeddings=emb, api_key=api_key,
                             on_progress=lambda s: console.print(s))
     Path(out).write_text(json.dumps(export, separators=(",", ":")), encoding="utf-8")
     size_kb = Path(out).stat().st_size / 1024
@@ -308,6 +451,49 @@ def run(
         f"[green]wrote[/green] {out} — {export['n_clusters']} topics, "
         f"{export['n_points']} points ({size_kb:.0f} KB)"
     )
+
+
+def _ints(s: str) -> list[int]:
+    return [int(x) for x in s.replace(" ", "").split(",") if x]
+
+
+@app.command()
+def sweep(
+    out: str = typer.Option("cluster-sweep.md", help="Markdown table output path."),
+    sample: int = typer.Option(
+        8000, help="Sweep on this many random chunks (relative ranking holds; faster/cheaper)."
+    ),
+    dims: str = typer.Option("5,10,15,20", help="cluster_dims values to try."),
+    min_cluster_sizes: str = typer.Option("15,30,60,100", help="HDBSCAN sizes to try."),
+    min_samples: int = typer.Option(5, help="HDBSCAN min_samples (held fixed across the grid)."),
+    embeddings: str = typer.Option("content", help="'content' or 'stored'."),
+) -> None:
+    """Grid-search cluster_dims by min_cluster_size; report topic count / noise / DBCV."""
+    from herald import schools_db
+
+    db_url = os.environ.get("SUPABASE_DB_URL", "")
+    if not db_url:
+        raise typer.BadParameter("SUPABASE_DB_URL is not set.")
+    voyage_key = os.environ.get("VOYAGE_API_KEY") or None
+    if embeddings == "content" and not voyage_key:
+        raise typer.BadParameter("VOYAGE_API_KEY is required for --embeddings content.")
+
+    with schools_db.connect(db_url) as conn:
+        rows = load_chunks(conn.cursor(), sample=sample)
+    console.print(f"loaded {len(rows)} chunks · embeddings={embeddings}")
+    if not rows:
+        raise typer.Exit(1)
+
+    emb = (content_embeddings(voyage_key, rows, on_progress=lambda s: console.print(s))
+           if embeddings == "content"
+           else np.vstack([r.embedding for r in rows]).astype(np.float32))
+
+    results = sweep_clustering(
+        emb, dims_list=_ints(dims), mcs_list=_ints(min_cluster_sizes),
+        min_samples=min_samples, on_progress=lambda s: console.print(s),
+    )
+    Path(out).write_text(render_sweep(results), encoding="utf-8")
+    console.print(f"[green]wrote[/green] {out}")
 
 
 if __name__ == "__main__":
