@@ -44,26 +44,27 @@ def test_representative_indices_picks_nearest_centroid():
     assert len(reps[0]) == 2 and len(reps[1]) == 2
 
 
-def test_build_export_topic_bubbles():
+def test_build_export_per_chunk_columns():
     rows = [
         _row(0, "peekskill", [1, 0]),
         _row(1, "peekskill", [1, 0]),
         _row(2, "ossining", [0, 1], doc_type=None),   # noise
     ]
     labels = np.array([0, 0, -1])
-    leaf_ids = [0]
-    topic_xy = np.array([[0.25, 0.75]], dtype=np.float32)
-    out = build_export(rows, labels, leaf_ids, topic_xy, {0: "Cell phone policy"},
-                       rep_idx={0: [0]})
+    chunk_xy = np.array([[0.25, 0.75], [0.3, 0.7], [0.5, 0.5]], dtype=np.float32)
+    out = build_export(rows, labels, chunk_xy, [0], {0: "Cell phone policy"}, rep_idx={0: [0]})
     assert out["n_points"] == 3 and out["n_clusters"] == 1 and out["n_noise"] == 1
     assert out["districts"] == ["ossining", "peekskill"]
-    assert out["doc_types"] == ["other", "policy"]
+    # per-chunk parallel arrays, all length n_points
+    for key in ("x", "y", "cluster", "district", "month"):
+        assert len(out[key]) == 3
+    assert out["cluster"] == [0, 0, -1]
+    assert out["district"] == [1, 1, 0]         # peekskill=1, ossining=0
+    assert out["month"] == ["2026-03", "2026-03", "2026-03"]
+    # leaf topic carries label + rep tip, no hierarchy parents here
     (c,) = out["clusters"]
     assert c["id"] == 0 and c["label"] == "Cell phone policy" and c["size"] == 2
-    assert c["x"] == 0.25 and c["y"] == 0.75
-    assert c["dist"] == [0, 2]                 # ossining=0, peekskill=2 (noise excluded)
-    assert "Consent Agenda" in c["tip"]
-    assert c["theme"] == -1 and c["mid"] == -1  # no hierarchy passed
+    assert "Consent Agenda" in c["tip"] and c["theme"] == -1 and c["mid"] == -1
 
 
 def test_run_clustering_end_to_end_synthetic():
@@ -79,13 +80,13 @@ def test_run_clustering_end_to_end_synthetic():
     out = run_clustering(rows, params, api_key=None)
     assert out["n_points"] == 60
     assert out["n_clusters"] >= 1
-    # one bubble per topic: aligned fields, positions in range, sizes sum sanely
-    for c in out["clusters"]:
-        assert c["label"].startswith("Topic ")            # unlabeled fallback
-        assert 0.0 <= c["x"] <= 1.0 and 0.0 <= c["y"] <= 1.0
-        assert len(c["dist"]) == len(out["districts"])
-        assert c["size"] == sum(c["dist"])
-    assert sum(c["size"] for c in out["clusters"]) == out["n_points"] - out["n_noise"]
+    # per-chunk arrays aligned and in range
+    assert len(out["x"]) == 60 and len(out["cluster"]) == 60 and len(out["district"]) == 60
+    assert all(0.0 <= v <= 1.0 for v in out["x"] + out["y"])
+    assert all(c["label"].startswith("Topic ") for c in out["clusters"])   # unlabeled fallback
+    # cluster ids on points reference real leaf topics (or noise)
+    leaf_ids = {c["id"] for c in out["clusters"]} | {-1}
+    assert all(c in leaf_ids for c in out["cluster"])
 
     # explicit `embeddings=` override is honored (content-only path)
     out2 = run_clustering(rows, params, embeddings=np.vstack([r.embedding for r in rows]),
@@ -172,8 +173,7 @@ def test_run_clustering_with_hierarchy_export_shape():
         for c in tier["clusters"]:
             assert set(c["leaves"]) <= leaf_ids
             assert c["label"].startswith("Group ")
-            assert 0.0 <= c["x"] <= 1.0 and 0.0 <= c["y"] <= 1.0   # tier bubble position
-        # leaves carry their theme parent (tier 0)
+        # leaves carry their theme parent (tier 0), for point recoloring
         theme_ids = {c["id"] for c in tier["clusters"]}
         for leaf in out["clusters"]:
             assert leaf["theme"] in theme_ids

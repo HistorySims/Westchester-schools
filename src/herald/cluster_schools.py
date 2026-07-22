@@ -148,29 +148,24 @@ def _normalize01(xy: np.ndarray) -> np.ndarray:
     return xy
 
 
-def project_topics(centroids: np.ndarray, params: ClusterParams) -> np.ndarray:
-    """Lay the *topic centroids* out in 2D for the bubble map.
+def project_chunks(embeddings: np.ndarray, params: ClusterParams) -> np.ndarray:
+    """Lay *every chunk* out in 2D — a cosine UMAP straight on the embeddings.
 
-    One position per topic, from a **cosine** UMAP of the (L2-normalized) leaf
-    centroids — the map is a layout of topics, not of 23k chunks. Cosine on the
-    real semantic centroids keeps related topics together; a chunk-level layout
-    (or a euclidean projection of an already-reduced space) scatters a single
-    topic's passages across the plane. Small input (one row per topic), so it's
-    cheap and stable.
+    This mirrors the newspaper map (one dot per chunk): with a direct cosine
+    projection, a topic's chunks co-locate into a visual "bubble", and — the
+    property worth keeping — *semantic neighborhoods are real*, so a keyword's
+    matches sit together on the map even when they span several clusters. The
+    earlier chained projection (euclidean UMAP of the already-reduced 10-D
+    space) destroyed that locality and scattered topics across the plane.
     """
     import umap
 
-    n = len(centroids)
-    if n == 0:
-        return np.zeros((0, 2), dtype=np.float32)
-    if n <= 2:                                   # nothing to lay out
-        return _normalize01(np.array([[0.35, 0.5], [0.65, 0.5]][:n], dtype=np.float32))
-
     reducer = umap.UMAP(
-        n_components=2, n_neighbors=min(params.umap_neighbors, n - 1),
-        min_dist=0.15, metric="cosine", random_state=42, low_memory=True,
+        n_components=2, n_neighbors=params.umap_neighbors,
+        min_dist=params.umap_min_dist, metric="cosine",
+        random_state=42, low_memory=True,
     )
-    return _normalize01(reducer.fit_transform(centroids))
+    return _normalize01(reducer.fit_transform(embeddings))
 
 
 def representative_indices(
@@ -314,27 +309,27 @@ def _tooltip(row: ChunkRow) -> str:
 
 
 def build_export(
-    rows: list[ChunkRow], labels: np.ndarray, leaf_ids: list[int],
-    topic_xy: np.ndarray, cluster_labels: dict[int, str],
+    rows: list[ChunkRow], labels: np.ndarray, chunk_xy: np.ndarray,
+    leaf_ids: list[int], cluster_labels: dict[int, str],
     hierarchy: list[dict] | None = None,
     hierarchy_labels: list[dict[int, str]] | None = None,
     rep_idx: dict[int, list[int]] | None = None,
 ) -> dict:
-    """Compact JSON for the bubble map — one object per *topic*, not per chunk.
+    """Columnar JSON for the map — **one point per chunk** (like the newspaper).
 
-    Each leaf topic becomes a bubble: a 2D position (``x``/``y`` from
-    ``project_topics``), a ``size``, its ``theme``/``mid`` hierarchy parents, a
-    per-district passage histogram (``dist``, for district coloring/filtering),
-    and a representative ``tip``. The 23k individual chunks are aggregated away,
-    so the export is small.
+    The parallel arrays (``x``/``y``/``cluster``/``district``/``month``) carry
+    every chunk; the cosine projection keeps semantic neighborhoods intact, so a
+    topic's points co-locate and a keyword's matches sit together on the map
+    even across cluster lines. ``clusters`` (leaf topics, with ``theme``/``mid``
+    parents) and ``hierarchy`` let the renderer recolor the *same* points at
+    Fine / Medium / Broad levels and drive the drill-down legend.
     """
     districts = sorted({r.district for r in rows})
     doc_types = sorted({r.doc_type or "other" for r in rows})
     d_idx = {s: i for i, s in enumerate(districts)}
-    pos = {lid: i for i, lid in enumerate(leaf_ids)}
     rep_idx = rep_idx or {}
 
-    # leaf -> hierarchy parents (tier 0 = theme, tier 1 = mid), from the groups
+    # leaf -> hierarchy parents (tier 0 = theme, tier 1 = mid)
     theme_of: dict[int, int] = {}
     mid_of: dict[int, int] = {}
     if hierarchy:
@@ -347,61 +342,50 @@ def build_export(
                 for leaf in leaves:
                     mid_of[leaf] = pid
 
-    # per-leaf size + district histogram in one pass
     sizes: dict[int, int] = defaultdict(int)
-    dist_hist: dict[int, list[int]] = {lid: [0] * len(districts) for lid in leaf_ids}
-    n_noise = 0
-    for r, lab in zip(rows, labels, strict=False):
-        lab = int(lab)
-        if lab < 0:
-            n_noise += 1
-            continue
-        sizes[lab] += 1
-        dist_hist[lab][d_idx[r.district]] += 1
+    for lab in labels:
+        sizes[int(lab)] += 1
 
-    clusters = []
-    for lid in leaf_ids:
-        i = pos[lid]
-        rep = rep_idx.get(lid) or []
-        clusters.append({
+    clusters = [
+        {
             "id": lid,
             "label": cluster_labels.get(lid, f"Topic {lid}"),
             "size": sizes[lid],
-            "x": round(float(topic_xy[i, 0]), 4),
-            "y": round(float(topic_xy[i, 1]), 4),
             "theme": theme_of.get(lid, -1),
             "mid": mid_of.get(lid, -1),
-            "dist": dist_hist[lid],
-            "tip": _tooltip(rows[rep[0]]) if rep else "",
-        })
+            "tip": _tooltip(rows[(rep_idx.get(lid) or [0])[0]]) if rep_idx.get(lid) else "",
+        }
+        for lid in leaf_ids
+    ]
 
     out = {
         "generated_at": _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds"),
         "n_points": len(rows),
         "n_clusters": len(clusters),
-        "n_noise": n_noise,
+        "n_noise": sizes.get(-1, 0),
         "districts": districts,
         "doc_types": doc_types,
         "clusters": clusters,
+        "x": [round(float(v), 4) for v in chunk_xy[:, 0]],
+        "y": [round(float(v), 4) for v in chunk_xy[:, 1]],
+        "cluster": [int(v) for v in labels],
+        "district": [d_idx[r.district] for r in rows],
+        "month": [r.meeting_date.strftime("%Y-%m") if r.meeting_date else "" for r in rows],
     }
 
     if hierarchy:
         labels_per_tier = hierarchy_labels or [{} for _ in hierarchy]
         tiers_out = []
         for level, (tier, hl) in enumerate(zip(hierarchy, labels_per_tier, strict=False)):
-            tclusters = []
-            for pid, leaves in sorted(tier["groups"].items()):
-                total = sum(sizes[leaf] for leaf in leaves) or 1
-                cx = sum(topic_xy[pos[leaf], 0] * sizes[leaf] for leaf in leaves) / total
-                cy = sum(topic_xy[pos[leaf], 1] * sizes[leaf] for leaf in leaves) / total
-                tclusters.append({
+            tclusters = [
+                {
                     "id": pid,
                     "label": hl.get(pid, f"Group {pid}"),
                     "size": sum(sizes[leaf] for leaf in leaves),
-                    "x": round(float(cx), 4),
-                    "y": round(float(cy), 4),
                     "leaves": sorted(leaves),
-                })
+                }
+                for pid, leaves in sorted(tier["groups"].items())
+            ]
             tiers_out.append({"level": level, "target": tier["target"], "clusters": tclusters})
         out["hierarchy"] = tiers_out
 
@@ -436,13 +420,13 @@ def run_clustering(
     api_key: str | None = None, hierarchy_targets: list[int] | None = None,
     on_progress=lambda s: None,
 ) -> dict:
-    """Cluster ``rows`` and build the bubble-map export.
+    """Cluster ``rows`` and build the per-chunk map export.
 
-    UMAP-reduce to ``cluster_dims`` → HDBSCAN there → **project the topic
-    centroids** (not the chunks) to 2D for the bubble layout. ``embeddings``
-    overrides ``rows``' stored vectors (e.g. content-only).
-    ``hierarchy_targets`` (e.g. ``[15, 60]``) merges the leaf centroids into
-    coarser browsable tiers.
+    UMAP-reduce to ``cluster_dims`` → HDBSCAN there → **project every chunk** to
+    2D with a direct cosine UMAP (preserves semantic locality). ``embeddings``
+    overrides ``rows``' stored vectors (e.g. content-only). ``hierarchy_targets``
+    (e.g. ``[15, 60]``) merges the leaf centroids into coarser tiers, which the
+    map uses to recolor the points at Fine / Medium / Broad levels.
     """
     if embeddings is None:
         embeddings = np.vstack([r.embedding for r in rows]).astype(np.float32)
@@ -456,9 +440,9 @@ def run_clustering(
     pct = 100 * n_noise / max(len(rows), 1)
     on_progress(f"  {n_clusters} topics, {n_noise} noise ({pct:.0f}%)")
 
+    on_progress(f"projecting {len(rows)} chunks → 2D (cosine, direct)")
+    chunk_xy = project_chunks(embeddings, params)
     leaf_ids, cents = leaf_centroids(embeddings, labels)
-    on_progress(f"projecting {len(leaf_ids)} topic centroids → 2D (cosine)")
-    topic_xy = project_topics(cents, params)
     rep_idx = representative_indices(embeddings, labels) if n_clusters else {}
     cluster_labels: dict[int, str] = {}
     if api_key and n_clusters:
@@ -476,7 +460,7 @@ def run_clustering(
         if api_key and hierarchy:
             leaf_reps = {lab: [rows[i].content for i in idxs] for lab, idxs in rep_idx.items()}
             hierarchy_labels = asyncio.run(label_hierarchy(api_key, hierarchy, leaf_reps))
-    return build_export(rows, labels, leaf_ids, topic_xy, cluster_labels,
+    return build_export(rows, labels, chunk_xy, leaf_ids, cluster_labels,
                         hierarchy, hierarchy_labels, rep_idx=rep_idx)
 
 

@@ -8,16 +8,16 @@ are in the corpus, and which districts sit where."
 
 ```
 content embed ─► UMAP (→10-D) ─► HDBSCAN ─► leaf topics ─┐
-                                    │                     ├─► topic JSON ─► cluster_map.html
-                    Ward-merge centroids → theme tiers    │    (artifact)   (canvas bubble map
-                                 Haiku labels (all tiers) ─┤                  + drill-down tree)
-        project *topic centroids* → 2-D (cosine) bubbles ─┘
+                                    │                     ├─► chunk JSON ─► cluster_map.html
+                    Ward-merge centroids → theme tiers    │   (artifact)   (canvas point cloud,
+                                 Haiku labels (all tiers) ─┤                 recolor by level
+        project *every chunk* → 2-D (cosine, direct) ─────┘                 + drill-down tree)
 ```
 
 - **`herald.cluster_schools`** loads active chunks, **UMAP-reduces to a
   mid dimensionality (`cluster_dims`, default 10)**, clusters that with
-  HDBSCAN (leaf method, `-1` noise preserved), **projects the topic centroids
-  to 2D** for the bubble layout, picks the chunks nearest each cluster's
+  HDBSCAN (leaf method, `-1` noise preserved), **projects every chunk to 2D**
+  with a direct cosine UMAP for the map, picks the chunks nearest each cluster's
   embedding centroid as representatives, and labels each topic with Haiku.
   Export-only (writes no cluster tables — the map reads a JSON artifact).
 
@@ -27,14 +27,15 @@ content embed ─► UMAP (→10-D) ─► HDBSCAN ─► leaf topics ─┐
     over-merges (the 2D layout optimizes visual separation, not cluster
     density). A mid-dimensional cosine UMAP (`min_dist=0`) is the standard
     middle ground for the *clustering* space.
-  - *Lay out **topics**, not chunks.* The map is a **bubble map** — one disk
-    per topic at its centroid, radius ∝ passage count — so it projects the 539
-    topic centroids to 2D with a **cosine** UMAP (`project_topics`). An earlier
-    version projected all 23k chunks (and via a euclidean projection of the
-    already-reduced space): a single topic's passages scattered to opposite
-    ends of the plane and the whole thing read as confetti. Projecting the
-    centroids with cosine keeps each topic one tight bubble and related topics
-    near each other.
+  - *Project chunks directly, with cosine.* The map is **one dot per chunk**
+    (like the inherited newspaper map). The projection is a **cosine** UMAP
+    straight on the embeddings (`project_chunks`) — that preserves semantic
+    locality, so a topic's passages co-locate into a visible cluster *and* a
+    keyword's matches sit together even across cluster lines. An earlier attempt
+    projected the *already-reduced 10-D* space with a euclidean metric; that
+    chaining destroyed locality and scattered a single topic across the plane.
+    (Aggregating to one bubble per topic hid that scatter but also threw away
+    the point-level locality that makes search-on-the-map work.)
   - *Cluster on **content-only** embeddings.* The stored `chunks.embedding`
     carries the contextual prefix (`"{district} · {date} · …"`) — right for
     retrieval, but it makes the map cluster by *district* (the first run's
@@ -60,14 +61,13 @@ content embed ─► UMAP (→10-D) ─► HDBSCAN ─► leaf topics ─┐
   leaves. This is why the merge beats independent HDBSCAN runs at 15/30/60:
   nesting is guaranteed by construction and it costs one small linkage, not
   three full re-clusters.
-- **Output** is a compact *per-topic* JSON — the 23k chunks are aggregated
-  away, so it's small (a few hundred KB, not the 3.6 MB the old per-chunk
-  export was). Each leaf topic in `clusters` is a bubble:
-  `{id, label, size, x, y, theme, mid, dist, tip}` — `x`/`y` its 2D position,
-  `theme`/`mid` its hierarchy parents, `dist` a per-district passage histogram
-  (for district coloring / filtering), `tip` a representative snippet. The
-  `hierarchy` carries the coarsest-first tiers of
-  `{id, label, size, x, y, leaves}`, plus the district / doc-type index tables.
+- **Output** is columnar per-chunk JSON: parallel arrays `x`, `y`, `cluster`
+  (leaf id), `district`, `month`, one entry per chunk (~a few hundred KB — plain
+  numbers compress well). `clusters` lists the leaf topics
+  `{id, label, size, theme, mid, tip}` (`theme`/`mid` are the hierarchy parents,
+  `tip` a representative snippet); `hierarchy` carries the coarsest-first tiers
+  of `{id, label, size, leaves}`. The renderer recolors the *same* points by
+  theme / topic / district and drives the legend from `clusters` + `hierarchy`.
 
 ## Running it
 
@@ -120,33 +120,35 @@ CSP-safe). It reads the JSON from its `#map-data` script tag; the
 page. To get it on a phone: run the `cluster` workflow, share the
 `cluster-map.json` back, and it's published as a private Artifact link.
 
-**The map**: a **bubble map** — one disk per topic, radius ∝ passage count,
-colored by theme. Pan / zoom / pinch. The legend is a **drill-down tree** —
+**The map**: **one dot per chunk**, pan / zoom / pinch. **Color by** recolors
+the *same* points three ways — **Theme** (~15 hues → clear regions), **Topic**
+(the fine leaf clusters), or **District**. The legend is a **drill-down tree** —
 broad themes expand to topics expand to leaf topics (from the export's
-`hierarchy`); tapping a branch opens it, isolates its bubbles, *and frames them*
-(the map pans/zooms to the selection), so you narrow from "Personnel & labor"
-down to "Substitute & coaching stipends" in two taps. Labels appear only when a
-small set is isolated or you zoom in (greedy collision-avoidance, so they never
-pile up). Searching flattens the tree to matching leaf topics. Also: filter by
-district chips, toggle color between **theme** and **district** (dominant
-district per bubble — "which districts sit where"), hover or tap a bubble for
-its label · size · top districts · snippet. Dark and light themes; mobile-first
-(the control rail becomes a bottom sheet).
+`hierarchy`); tapping a branch isolates its points *and frames them* (the map
+pans/zooms to the selection), so you narrow from "Personnel & labor" to
+"Substitute & coaching stipends" in two taps. **Search** highlights every point
+whose topic label matches and dims the rest — because the projection preserves
+locality, the matches show up as a tight region (the "426 Oregon matches land
+together" behavior). Also: filter by district chips, tap a dot for its topic ·
+district · date · snippet. Dark and light themes; mobile-first (the control rail
+becomes a bottom sheet).
 
 ## Design notes
 
 - **Theme colors** are evenly spaced around the HSL wheel (themes are few — ~15
-  — so they stay far apart); a leaf bubble takes its theme's hue, so themes read
-  as colored regions. **District colors** use a fixed 8-hue set.
-- Rendering is Canvas 2D. There are only ~hundreds of topic bubbles (not 23k
-  chunks), so each is a plain `arc` fill drawn largest-first (small bubbles stay
-  clickable on top); interactive without WebGL.
+  — so they stay far apart); **Topic colors** use a golden-angle rotation (many
+  leaves, so spatial position disambiguates); **District colors** a fixed 8-hue
+  set. Noise (`-1`) is a neutral gray.
+- Rendering is Canvas 2D with color-batched draw (one `fillStyle` per color
+  group). When a focus is active (isolation ∩ search), a faint context pass
+  draws the rest at low alpha so you keep the shape of the whole corpus — this
+  handles ~23k points at interactive frame rates without WebGL.
 - Verified headless (Playwright + the pre-installed Chromium) across
   desktop/mobile and both themes before shipping.
 
 ## Next views (build on this)
 
-Each topic's `dist` histogram and hierarchy parents in the export already
-support the other planned views without re-clustering: district comparison
-(from `dist`), single-topic dossier, and — once we add a per-topic month
-histogram — topic-over-time. This bubble map is their shared substrate.
+The per-chunk `district` / `month` arrays and the hierarchy in the export
+already support the other planned views without re-clustering: district
+comparison, single-topic dossier, and topic-over-time (trajectory). This map is
+their shared substrate.
