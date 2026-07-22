@@ -262,6 +262,11 @@ def run_clustering(
 app = typer.Typer(help="Cluster the schools corpus into a topic map.", no_args_is_help=True)
 
 
+@app.callback()
+def _main() -> None:
+    """Group callback so ``run`` stays a named subcommand (room to grow)."""
+
+
 @app.command()
 def run(
     out: str = typer.Option("cluster-map.json", help="Output JSON path."),
