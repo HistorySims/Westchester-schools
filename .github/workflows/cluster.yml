@@ -22,6 +22,11 @@ on:
         description: "HDBSCAN min_cluster_size (larger = fewer, broader topics)"
         type: string
         default: "15"
+      embeddings:
+        description: "content = re-embed content-only (topic map); stored = district-prefixed vectors"
+        type: choice
+        options: ["content", "stored"]
+        default: "content"
       label:
         description: "Label topics with Haiku (needs ANTHROPIC_API_KEY)"
         type: boolean
@@ -41,6 +46,7 @@ jobs:
     env:
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -58,8 +64,9 @@ jobs:
           uv run herald-cluster run \
             --out cluster-map.json \
             --min-cluster-size "${{ inputs.min_cluster_size }}" \
+            --embeddings "${{ inputs.embeddings }}" \
             ${{ inputs.sample && format('--sample "{0}"', inputs.sample) || '' }} \
-            ${{ inputs.label && '' || '--no-labels' }}
+            ${{ inputs.label && '--labels' || '--no-labels' }}
       - name: Summarize topics in the run log
         if: always()
         run: |

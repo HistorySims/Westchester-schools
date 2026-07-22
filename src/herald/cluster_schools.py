@@ -233,19 +233,51 @@ def build_export(
     }
 
 
+# ---- content embeddings ------------------------------------------------
+
+def content_embeddings(voyage_key: str, rows: list[ChunkRow], *, on_progress) -> np.ndarray:
+    """Re-embed each chunk's *raw content* (no district/date prefix).
+
+    The stored ``chunks.embedding`` carries the contextual prefix
+    ("{district} · {date} · …"), which is right for retrieval but makes a
+    topic map cluster by district. Embedding content alone yields a topic
+    vector. (Voyage batches internally; ~$0.35 for the full corpus.)
+    """
+    from herald.embed import VoyageEmbedder
+
+    on_progress(f"re-embedding {len(rows)} chunks content-only via Voyage")
+
+    async def go() -> list[list[float]]:
+        async with VoyageEmbedder(voyage_key) as v:
+            return await v.embed_documents([r.content for r in rows])
+
+    return np.asarray(asyncio.run(go()), dtype=np.float32)
+
+
 # ---- orchestration -----------------------------------------------------
 
 def run_clustering(
-    rows: list[ChunkRow], params: ClusterParams, *, api_key: str | None,
-    on_progress=lambda s: None,
+    rows: list[ChunkRow], params: ClusterParams, *, embeddings: np.ndarray | None = None,
+    api_key: str | None = None, on_progress=lambda s: None,
 ) -> dict:
-    embeddings = np.vstack([r.embedding for r in rows]).astype(np.float32)
-    on_progress(f"HDBSCAN over {len(rows)} chunks (min_cluster_size={params.min_cluster_size})")
-    labels = hdbscan_labels(embeddings, params)
-    n_clusters = len({int(x) for x in labels if x >= 0})
-    on_progress(f"  {n_clusters} topics, {int((labels < 0).sum())} noise points")
-    on_progress("UMAP projection to 2D")
+    """Cluster ``rows`` and build the export.
+
+    Clusters on the **2D UMAP projection** (not the raw high-dim vectors):
+    HDBSCAN in 1024-D drowns most points in the noise bin, and clustering
+    the projection makes the colored regions match the blobs you see.
+    ``embeddings`` overrides ``rows``' stored vectors (e.g. content-only).
+    """
+    if embeddings is None:
+        embeddings = np.vstack([r.embedding for r in rows]).astype(np.float32)
+    on_progress(f"UMAP → 2D over {len(rows)} chunks")
     xy = umap_project(embeddings, params)
+    on_progress(f"HDBSCAN on the projection (min_cluster_size={params.min_cluster_size}, "
+                f"min_samples={params.min_samples})")
+    labels = hdbscan_labels(xy, params)
+    n_clusters = len({int(x) for x in labels if x >= 0})
+    n_noise = int((labels < 0).sum())
+    pct = 100 * n_noise / max(len(rows), 1)
+    on_progress(f"  {n_clusters} topics, {n_noise} noise ({pct:.0f}%)")
 
     cluster_labels: dict[int, str] = {}
     if api_key and n_clusters:
@@ -276,8 +308,12 @@ def run(
     min_cluster_size: int = typer.Option(15, help="HDBSCAN min_cluster_size."),
     min_samples: int = typer.Option(5, help="HDBSCAN min_samples."),
     umap_neighbors: int = typer.Option(15, help="UMAP n_neighbors."),
-    no_labels: bool = typer.Option(
-        False, "--no-labels", help="Skip Haiku labelling (no ANTHROPIC_API_KEY needed)."
+    embeddings: str = typer.Option(
+        "content", help="'content' (re-embed content-only for topics) or 'stored' "
+        "(reuse the district-prefixed retrieval vectors)."
+    ),
+    labels: bool = typer.Option(
+        True, "--labels/--no-labels", help="Label topics with Haiku (needs ANTHROPIC_API_KEY)."
     ),
 ) -> None:
     """Load embeddings → UMAP + HDBSCAN → Haiku labels → JSON for the map."""
@@ -286,9 +322,14 @@ def run(
     db_url = os.environ.get("SUPABASE_DB_URL", "")
     if not db_url:
         raise typer.BadParameter("SUPABASE_DB_URL is not set.")
-    api_key = None if no_labels else os.environ.get("ANTHROPIC_API_KEY") or None
-    if not no_labels and not api_key:
+    if embeddings not in ("content", "stored"):
+        raise typer.BadParameter("--embeddings must be 'content' or 'stored'.")
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or None if labels else None
+    if labels and not api_key:
         console.print("[yellow]ANTHROPIC_API_KEY not set — topics will be unlabelled[/yellow]")
+    voyage_key = os.environ.get("VOYAGE_API_KEY") or None
+    if embeddings == "content" and not voyage_key:
+        raise typer.BadParameter("VOYAGE_API_KEY is required for --embeddings content.")
 
     params = ClusterParams(
         min_cluster_size=min_cluster_size, min_samples=min_samples,
@@ -296,11 +337,14 @@ def run(
     )
     with schools_db.connect(db_url) as conn:
         rows = load_chunks(conn.cursor(), sample=sample)
-    console.print(f"loaded {len(rows)} chunks")
+    console.print(f"loaded {len(rows)} chunks · embeddings={embeddings}")
     if not rows:
         raise typer.Exit(1)
 
-    export = run_clustering(rows, params, api_key=api_key,
+    emb = None
+    if embeddings == "content":
+        emb = content_embeddings(voyage_key, rows, on_progress=lambda s: console.print(s))
+    export = run_clustering(rows, params, embeddings=emb, api_key=api_key,
                             on_progress=lambda s: console.print(s))
     Path(out).write_text(json.dumps(export, separators=(",", ":")), encoding="utf-8")
     size_kb = Path(out).stat().st_size / 1024

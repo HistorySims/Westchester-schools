@@ -12,13 +12,25 @@ chunks.embedding  ──►  UMAP (2D)          ─┐
                   ──►  Haiku (topic labels)─┘        (artifact)     (canvas scatter)
 ```
 
-- **`herald.cluster_schools`** loads active, embedded chunks from the schools
-  schema, projects them to 2D with UMAP (cosine, normalized to `[0,1]`),
-  clusters with HDBSCAN (leaf method, `-1` noise preserved), picks the chunks
-  nearest each cluster centroid as representatives, and labels each topic with
-  Haiku. Reuses the UMAP/HDBSCAN parameters from the inherited newspaper
-  `cluster.py`; this is the schools-schema, export-only cut (writes no cluster
-  tables — the map reads a JSON artifact, not the DB).
+- **`herald.cluster_schools`** loads active chunks, projects to 2D with UMAP
+  (cosine, normalized to `[0,1]`), clusters with HDBSCAN **on the 2D
+  projection** (leaf method, `-1` noise preserved), picks the chunks nearest
+  each cluster's embedding centroid as representatives, and labels each topic
+  with Haiku. Export-only (writes no cluster tables — the map reads a JSON
+  artifact, not the DB).
+
+  **Two learnings from the first real run** (baked into the defaults):
+  - *Cluster on the 2D projection, not the raw 1024-D vectors.* HDBSCAN in
+    1024-D drowns ~60% of points in the noise bin (distance concentration);
+    on the projection the noise collapses and the colored regions line up
+    with the blobs you see.
+  - *Cluster on **content-only** embeddings.* The stored `chunks.embedding`
+    carries the contextual prefix (`"{district} · {date} · …"`) — right for
+    retrieval, but it makes the map cluster by *district* (the first run's
+    top clusters were ~100% single-district). `--embeddings content`
+    re-embeds each chunk's raw content with Voyage (~$0.35 for the corpus,
+    needs `VOYAGE_API_KEY`) so the map organizes by topic. `--embeddings
+    stored` reuses the district-prefixed vectors (a *district* map).
 - **Output** is deliberately *columnar* JSON (parallel arrays, not per-point
   objects) to keep ~23k points small: `x`, `y`, `cluster`, `district`,
   `doc_type`, `month`, `tip`, plus a `clusters` list of `{id, label, size}`
@@ -32,12 +44,16 @@ Workflow **`cluster`** (Actions → cluster → Run workflow):
 |---|---|
 | `sample` | random-sample N chunks for a lighter map (empty = all) |
 | `min_cluster_size` | HDBSCAN granularity — larger = fewer, broader topics |
+| `embeddings` | `content` (topic map) or `stored` (district map) |
 | `label` | label topics with Haiku (needs `ANTHROPIC_API_KEY`) |
 
 It uploads `cluster-map.json` as an artifact and prints the topic table to the
-run summary. Needs `SUPABASE_DB_URL` (and `ANTHROPIC_API_KEY` for labels).
-CLI equivalent: `herald-cluster run --out cluster-map.json [--sample N]
-[--min-cluster-size 15] [--no-labels]`.
+run summary. Needs `SUPABASE_DB_URL`, `VOYAGE_API_KEY` (for `--embeddings
+content`), and `ANTHROPIC_API_KEY` (for labels). CLI equivalent:
+`herald-cluster run --out cluster-map.json [--sample N] [--min-cluster-size 15]
+[--embeddings content|stored] [--labels/--no-labels]`. Content re-embedding is
+recomputed each run; if we settle on it we'll store a `content_embedding`
+column to avoid the repeat cost.
 
 ## Viewing it
 
