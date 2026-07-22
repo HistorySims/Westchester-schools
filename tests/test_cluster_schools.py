@@ -11,6 +11,8 @@ from herald.cluster_schools import (
     ClusterParams,
     SweepResult,
     build_export,
+    build_hierarchy,
+    leaf_centroids,
     load_chunks,
     render_sweep,
     representative_indices,
@@ -111,6 +113,59 @@ def test_sweep_clustering_grid_and_render():
 def test_render_sweep_tolerates_nan_dbcv():
     r = render_sweep([SweepResult(10, 15, 3, 12.0, float("nan"), 40)])
     assert "nan" in r.lower()                      # doesn't crash on NaN DBCV
+
+
+def test_build_hierarchy_nests_and_cuts():
+    # six leaf centroids in two well-separated families of three
+    fam_a = np.array([[1, 0, 0], [0.98, 0.05, 0], [0.97, 0, 0.05]], dtype=np.float32)
+    fam_b = np.array([[0, 1, 0], [0.05, 0.98, 0], [0, 0.97, 0.05]], dtype=np.float32)
+    cents = np.vstack([fam_a, fam_b])
+    leaf_ids = [10, 11, 12, 20, 21, 22]
+
+    tiers = build_hierarchy(leaf_ids, cents, targets=[2, 4])
+    assert [t["target"] for t in tiers] == [2, 4]        # broadest (2) first
+    # the k=2 cut recovers the two families
+    coarse = tiers[0]["groups"]
+    assert len(coarse) == 2
+    members = sorted(sorted(v) for v in coarse.values())
+    assert members == [[10, 11, 12], [20, 21, 22]]
+    # every leaf appears exactly once in each tier
+    for tier in tiers:
+        flat = [lid for leaves in tier["groups"].values() for lid in leaves]
+        assert sorted(flat) == leaf_ids
+
+    # degenerate: targets >= n_leaves (the leaf tier itself) are dropped
+    assert build_hierarchy(leaf_ids, cents, targets=[6, 99]) == []
+    # too few leaves -> no hierarchy
+    assert build_hierarchy([1, 2], cents[:2], targets=[2]) == []
+
+
+def test_leaf_centroids_normalized():
+    emb = np.array([[3, 0], [3, 0], [0, 5], [0, 5]], dtype=np.float32)
+    labels = np.array([0, 0, 1, 1])
+    ids, cents = leaf_centroids(emb, labels)
+    assert ids == [0, 1]
+    assert np.allclose(np.linalg.norm(cents, axis=1), 1.0)
+
+
+def test_run_clustering_with_hierarchy_export_shape():
+    # three separated blobs -> >=3 leaves so the hierarchy can form a tier
+    rng = np.random.default_rng(11)
+    blobs = [rng.normal(0, 0.015, (25, 8)) + np.eye(8)[i] for i in range(3)]
+    rows = [_row(i, "peekskill", v) for i, v in enumerate(np.vstack(blobs))]
+    params = ClusterParams(min_cluster_size=5, min_samples=2, umap_neighbors=5, cluster_dims=4)
+    out = run_clustering(rows, params, api_key=None, hierarchy_targets=[2])
+    if out["n_clusters"] >= 3:                       # hierarchy needs >=3 leaves
+        assert "hierarchy" in out
+        tier = out["hierarchy"][0]
+        assert tier["level"] == 0 and tier["target"] == 2
+        # tier cluster sizes sum to the clustered (non-noise) points
+        assert sum(c["size"] for c in tier["clusters"]) == out["n_points"] - out["n_noise"]
+        # leaves referenced are real leaf ids, unlabelled fallback name
+        leaf_ids = {c["id"] for c in out["clusters"]}
+        for c in tier["clusters"]:
+            assert set(c["leaves"]) <= leaf_ids
+            assert c["label"].startswith("Group ")
 
 
 class FakeCursor:
