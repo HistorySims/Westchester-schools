@@ -1,0 +1,418 @@
+<!--
+  Westchester Schools — Topic Map renderer.
+
+  Self-contained (no external libs — CSP-safe). Reads a compact columnar JSON
+  (herald-cluster export) from the #map-data script tag. Canvas 2D scatter of
+  every chunk, laid out by UMAP similarity, colored by discovered topic or by
+  district. Pan / zoom / pinch; tap the legend to isolate a topic; filter by
+  district; tap a point for its detail. Written as Artifact body content (the
+  host wraps it in <!doctype><head><body>); the __MAP_DATA__ token is replaced
+  with the exported JSON at publish time.
+-->
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22cc; --panel-solid: #161b22; --panel-2: #1c232c;
+    --line: #2a3441; --ink: #e6edf3; --muted: #8b97a6; --faint: #5b6675;
+    --accent: #d8a24a; --accent-ink: #1a1204;
+    --shadow: 0 8px 30px -8px #000a;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+    --ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9; --panel: #ffffffe6; --panel-solid: #ffffff; --panel-2: #eef1f4;
+      --line: #d9dee5; --ink: #1a2029; --muted: #5b6675; --faint: #98a2b0;
+      --accent: #b0761a; --accent-ink: #fff; --shadow: 0 8px 30px -10px #0002;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1117; --panel: #161b22cc; --panel-solid: #161b22; --panel-2: #1c232c;
+    --line: #2a3441; --ink: #e6edf3; --muted: #8b97a6; --faint: #5b6675;
+    --accent: #d8a24a; --accent-ink: #1a1204; --shadow: 0 8px 30px -8px #000a;
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f7f9; --panel: #ffffffe6; --panel-solid: #ffffff; --panel-2: #eef1f4;
+    --line: #d9dee5; --ink: #1a2029; --muted: #5b6675; --faint: #98a2b0;
+    --accent: #b0761a; --accent-ink: #fff; --shadow: 0 8px 30px -10px #0002;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink); font-family: var(--ui);
+    overflow: hidden; -webkit-tap-highlight-color: transparent;
+  }
+  #app { position: fixed; inset: 0; display: grid; grid-template-columns: 300px 1fr; }
+  #stage { position: relative; overflow: hidden; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+    touch-action: none; cursor: grab; }
+  canvas:active { cursor: grabbing; }
+
+  /* ---- rail ---- */
+  #rail {
+    display: flex; flex-direction: column; min-height: 0;
+    background: var(--panel-solid); border-right: 1px solid var(--line);
+  }
+  .head { padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
+  .kicker { font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--accent); font-weight: 600; }
+  h1 { font-size: 16px; margin: 3px 0 0; letter-spacing: -.01em; line-height: 1.25;
+    text-wrap: balance; }
+  .stat { margin-top: 8px; font-family: var(--mono); font-size: 11.5px;
+    color: var(--muted); font-variant-numeric: tabular-nums; }
+  .stat b { color: var(--ink); font-weight: 600; }
+
+  .controls { padding: 14px 16px; display: flex; flex-direction: column; gap: 14px;
+    border-bottom: 1px solid var(--line); }
+  .label { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--faint); margin-bottom: 7px; font-weight: 600; }
+
+  .seg { display: flex; background: var(--panel-2); border-radius: 8px; padding: 3px;
+    gap: 3px; }
+  .seg button { flex: 1; border: 0; background: transparent; color: var(--muted);
+    font: inherit; font-size: 12.5px; padding: 6px 8px; border-radius: 6px;
+    cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink);
+    font-weight: 600; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { border: 1px solid var(--line); background: transparent; color: var(--muted);
+    font: inherit; font-size: 11.5px; padding: 4px 9px; border-radius: 999px;
+    cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+  .chip[aria-pressed="true"] { border-color: var(--accent); color: var(--ink);
+    background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .chip .dot { width: 8px; height: 8px; border-radius: 2px; }
+
+  .topics { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .search { margin: 12px 16px 8px; }
+  .search input { width: 100%; background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--ink); font: inherit; font-size: 12.5px; padding: 8px 10px;
+    border-radius: 8px; }
+  .search input::placeholder { color: var(--faint); }
+  .list { overflow-y: auto; padding: 0 8px 12px; }
+  .topic { display: grid; grid-template-columns: 10px 1fr auto; align-items: center;
+    gap: 9px; padding: 7px 8px; border-radius: 7px; cursor: pointer; border: 0;
+    background: transparent; width: 100%; text-align: left; color: var(--ink);
+    font: inherit; }
+  .topic:hover { background: var(--panel-2); }
+  .topic[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+  .topic .swatch { width: 10px; height: 10px; border-radius: 3px; }
+  .topic .name { font-size: 12.5px; line-height: 1.3; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .topic .n { font-family: var(--mono); font-size: 11px; color: var(--muted);
+    font-variant-numeric: tabular-nums; }
+  .foot { padding: 10px 16px; border-top: 1px solid var(--line); font-size: 11px;
+    color: var(--faint); display: flex; justify-content: space-between; align-items: center; }
+  .foot button { border: 1px solid var(--line); background: transparent; color: var(--muted);
+    font: inherit; font-size: 11px; padding: 4px 9px; border-radius: 6px; cursor: pointer; }
+
+  /* ---- tooltip ---- */
+  #tip { position: absolute; pointer-events: none; z-index: 5; max-width: 260px;
+    background: var(--panel-solid); border: 1px solid var(--line); border-radius: 9px;
+    box-shadow: var(--shadow); padding: 9px 11px; font-size: 12px; opacity: 0;
+    transition: opacity .1s; transform: translate(-50%, calc(-100% - 12px)); }
+  #tip.on { opacity: 1; }
+  #tip .t-top { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; }
+  #tip .t-swatch { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+  #tip .t-topic { font-weight: 600; font-size: 12px; }
+  #tip .t-meta { font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+    letter-spacing: .01em; }
+  #tip .t-body { color: var(--ink); margin-top: 4px; line-height: 1.35; }
+
+  /* floating controls on desktop stage */
+  .stage-btns { position: absolute; top: 12px; right: 12px; z-index: 4; display: flex;
+    gap: 6px; }
+  .stage-btns button { width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel); backdrop-filter: blur(6px); color: var(--ink); cursor: pointer;
+    font-size: 16px; line-height: 1; }
+
+  /* mobile sheet trigger */
+  #sheetBtn { display: none; }
+
+  @media (max-width: 720px) {
+    #app { grid-template-columns: 1fr; }
+    #rail {
+      position: fixed; left: 0; right: 0; bottom: 0; top: auto; z-index: 10;
+      max-height: 72vh; border-right: 0; border-top: 1px solid var(--line);
+      border-radius: 16px 16px 0 0; box-shadow: var(--shadow);
+      transform: translateY(calc(100% - 52px)); transition: transform .28s cubic-bezier(.4,0,.2,1);
+    }
+    #rail.open { transform: translateY(0); }
+    .head { cursor: pointer; padding-top: 14px; }
+    .head::before { content: ""; position: absolute; top: 7px; left: 50%; transform: translateX(-50%);
+      width: 36px; height: 4px; border-radius: 3px; background: var(--line); }
+    #rail { padding-top: 6px; }
+  }
+</style>
+
+<div id="app">
+  <aside id="rail" aria-label="Map controls">
+    <header class="head" id="head">
+      <div class="kicker">Westchester Schools</div>
+      <h1>Topic Map</h1>
+      <div class="stat" id="stat">—</div>
+    </header>
+
+    <div class="controls">
+      <div>
+        <div class="label">Color by</div>
+        <div class="seg" role="group" aria-label="Color mode">
+          <button id="byTopic" aria-pressed="true">Topic</button>
+          <button id="byDistrict" aria-pressed="false">District</button>
+        </div>
+      </div>
+      <div>
+        <div class="label">Districts</div>
+        <div class="chips" id="chips"></div>
+      </div>
+    </div>
+
+    <div class="topics">
+      <div class="search"><input id="search" type="search" placeholder="Search topics…"
+        autocomplete="off" /></div>
+      <div class="list" id="list"></div>
+    </div>
+
+    <div class="foot">
+      <span id="footNote">Tap a topic to isolate it</span>
+      <button id="reset">Reset view</button>
+    </div>
+  </aside>
+
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div class="stage-btns">
+      <button id="zin" title="Zoom in">+</button>
+      <button id="zout" title="Zoom out">−</button>
+    </div>
+    <div id="tip"></div>
+  </div>
+</div>
+
+<script id="map-data" type="application/json">__MAP_DATA__</script>
+<script>
+(function () {
+  "use strict";
+  const DATA = JSON.parse(document.getElementById("map-data").textContent);
+  const N = DATA.n_points;
+  const X = DATA.x, Y = DATA.y, C = DATA.cluster, D = DATA.district,
+        T = DATA.doc_type, MON = DATA.month, TIP = DATA.tip;
+
+  // ---- colors ------------------------------------------------------------
+  const DIST_HUES = [4, 32, 45, 130, 190, 210, 265, 320]; // 8 distinct hues
+  const dark = () => {
+    const t = document.documentElement.getAttribute("data-theme");
+    if (t) return t === "dark";
+    return matchMedia("(prefers-color-scheme: dark)").matches;
+  };
+  function topicColor(cid) {
+    if (cid < 0) return dark() ? "#3a434f" : "#c2cad4";      // noise
+    const h = (cid * 137.508) % 360;                          // golden angle
+    return dark() ? `hsl(${h} 62% 62%)` : `hsl(${h} 58% 46%)`;
+  }
+  function distColor(di) {
+    const h = DIST_HUES[di % DIST_HUES.length];
+    return dark() ? `hsl(${h} 60% 62%)` : `hsl(${h} 55% 45%)`;
+  }
+
+  const clusters = DATA.clusters.slice().sort((a, b) => b.size - a.size);
+  const labelById = {}; DATA.clusters.forEach(c => labelById[c.id] = c.label);
+
+  // ---- state -------------------------------------------------------------
+  let mode = "topic";                       // "topic" | "district"
+  const distOn = DATA.districts.map(() => true);
+  let selTopic = null;                       // isolate one cluster id
+  let batches = [];                          // [{color, idx:[...]}]
+
+  function pointColor(i) {
+    return mode === "topic" ? topicColor(C[i]) : distColor(D[i]);
+  }
+  function rebuildBatches() {
+    const groups = new Map();
+    for (let i = 0; i < N; i++) {
+      if (!distOn[D[i]]) continue;
+      const col = pointColor(i);
+      let g = groups.get(col); if (!g) { g = []; groups.set(col, g); }
+      g.push(i);
+    }
+    batches = [...groups.entries()].map(([color, idx]) => ({ color, idx }));
+    draw();
+  }
+
+  // ---- canvas + transform ------------------------------------------------
+  const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+  let W = 0, H = 0, DPR = 1;
+  const view = { k: 1, tx: 0, ty: 0 };       // world[0..1] -> screen
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2);
+    const r = cv.getBoundingClientRect(); W = r.width; H = r.height;
+    cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    draw();
+  }
+  function fit() {
+    const pad = 28, s = Math.min(W, H) - pad * 2;
+    view.k = s; view.tx = (W - s) / 2; view.ty = (H - s) / 2; draw();
+  }
+  const sx = i => X[i] * view.k + view.tx;
+  const sy = i => (1 - Y[i]) * view.k + view.ty;
+
+  let raf = 0;
+  function draw() { if (!raf) raf = requestAnimationFrame(render); }
+  function render() {
+    raf = 0;
+    ctx.clearRect(0, 0, W, H);
+    const r = Math.max(1.1, Math.min(3.4, view.k / 260)); // point size vs zoom
+    const s = r * 2;
+    for (const b of batches) {
+      const dim = selTopic !== null;
+      ctx.fillStyle = b.color;
+      for (const i of b.idx) {
+        const on = selTopic === null || C[i] === selTopic;
+        if (dim && !on) continue;
+        ctx.globalAlpha = 0.82;
+        ctx.fillRect(sx(i) - r, sy(i) - r, s, s);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // ---- interaction: pan / zoom / pinch ----------------------------------
+  function zoomAt(px, py, factor) {
+    const wx = (px - view.tx) / view.k, wy = (py - view.ty) / view.k;
+    view.k *= factor;
+    view.tx = px - wx * view.k; view.ty = py - wy * view.k; draw();
+  }
+  cv.addEventListener("wheel", e => {
+    e.preventDefault();
+    zoomAt(e.offsetX, e.offsetY, Math.exp(-e.deltaY * 0.0016));
+  }, { passive: false });
+
+  const pts = new Map();
+  let panLast = null, pinchLast = 0;
+  cv.addEventListener("pointerdown", e => {
+    cv.setPointerCapture(e.pointerId);
+    pts.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
+    if (pts.size === 1) panLast = { x: e.offsetX, y: e.offsetY };
+    hideTip();
+  });
+  cv.addEventListener("pointermove", e => {
+    if (pts.has(e.pointerId)) pts.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
+    if (pts.size === 2) {
+      const [a, b] = [...pts.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (pinchLast) zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, d / pinchLast);
+      pinchLast = d; panLast = null;
+    } else if (pts.size === 1 && panLast) {
+      view.tx += e.offsetX - panLast.x; view.ty += e.offsetY - panLast.y;
+      panLast = { x: e.offsetX, y: e.offsetY }; draw();
+    } else if (pts.size === 0) {
+      hover(e.offsetX, e.offsetY);
+    }
+  });
+  function endPtr(e) {
+    pts.delete(e.pointerId);
+    if (pts.size < 2) pinchLast = 0;
+    if (pts.size === 1) { const p = [...pts.values()][0]; panLast = { x: p.x, y: p.y }; }
+    if (pts.size === 0) panLast = null;
+  }
+  cv.addEventListener("pointerup", endPtr);
+  cv.addEventListener("pointercancel", endPtr);
+  cv.addEventListener("pointerleave", () => hideTip());
+  document.getElementById("zin").onclick = () => zoomAt(W / 2, H / 2, 1.4);
+  document.getElementById("zout").onclick = () => zoomAt(W / 2, H / 2, 1 / 1.4);
+
+  // ---- hit testing + tooltip --------------------------------------------
+  const tip = document.getElementById("tip");
+  function nearest(px, py) {
+    let best = -1, bd = 12 * 12;
+    for (let i = 0; i < N; i++) {
+      if (!distOn[D[i]]) continue;
+      if (selTopic !== null && C[i] !== selTopic) continue;
+      const dx = sx(i) - px, dy = sy(i) - py, d = dx * dx + dy * dy;
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+  }
+  function hover(px, py) {
+    const i = nearest(px, py);
+    if (i < 0) return hideTip();
+    const col = pointColor(i), cid = C[i];
+    tip.innerHTML =
+      `<div class="t-top"><span class="t-swatch" style="background:${col}"></span>` +
+      `<span class="t-topic">${esc(cid < 0 ? "Unclustered" : labelById[cid] || ("Topic " + cid))}</span></div>` +
+      `<div class="t-meta">${esc(DATA.districts[D[i]])} · ${esc(MON[i] || "undated")} · ${esc(DATA.doc_types[T[i]])}</div>` +
+      `<div class="t-body">${esc(TIP[i] || "")}</div>`;
+    tip.style.left = px + "px"; tip.style.top = py + "px"; tip.classList.add("on");
+  }
+  function hideTip() { tip.classList.remove("on"); }
+  function esc(s) { return String(s).replace(/[&<>"]/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+  // tap-to-inspect on touch
+  cv.addEventListener("pointerup", e => {
+    if (e.pointerType !== "mouse" && pts.size === 0) hover(e.offsetX, e.offsetY);
+  });
+
+  // ---- rail: stats, chips, topics ---------------------------------------
+  document.getElementById("stat").innerHTML =
+    `<b>${N.toLocaleString()}</b> passages · <b>${DATA.n_clusters}</b> topics` +
+    (DATA.n_noise ? ` · ${DATA.n_noise.toLocaleString()} unclustered` : "");
+
+  const chipsEl = document.getElementById("chips");
+  DATA.districts.forEach((slug, di) => {
+    const b = document.createElement("button");
+    b.className = "chip"; b.setAttribute("aria-pressed", "true");
+    b.innerHTML = `<span class="dot" style="background:${distColor(di)}"></span>${esc(slug)}`;
+    b.onclick = () => { distOn[di] = !distOn[di]; b.setAttribute("aria-pressed", distOn[di]); rebuildBatches(); };
+    chipsEl.appendChild(b);
+  });
+
+  const listEl = document.getElementById("list"), searchEl = document.getElementById("search");
+  function renderList() {
+    const q = searchEl.value.trim().toLowerCase();
+    listEl.innerHTML = "";
+    for (const c of clusters) {
+      if (q && !c.label.toLowerCase().includes(q)) continue;
+      const b = document.createElement("button");
+      b.className = "topic"; b.setAttribute("aria-pressed", selTopic === c.id);
+      b.innerHTML = `<span class="swatch" style="background:${topicColor(c.id)}"></span>` +
+        `<span class="name">${esc(c.label)}</span><span class="n">${c.size}</span>`;
+      b.onclick = () => { selTopic = selTopic === c.id ? null : c.id; syncTopics(); draw(); };
+      listEl.appendChild(b);
+    }
+  }
+  function syncTopics() {
+    renderList();
+    document.getElementById("footNote").textContent =
+      selTopic === null ? "Tap a topic to isolate it"
+        : `Isolated: ${labelById[selTopic] || "Topic " + selTopic}`;
+  }
+  searchEl.addEventListener("input", renderList);
+
+  // ---- color mode toggle -------------------------------------------------
+  const bT = document.getElementById("byTopic"), bD = document.getElementById("byDistrict");
+  function setMode(m) {
+    mode = m; bT.setAttribute("aria-pressed", m === "topic"); bD.setAttribute("aria-pressed", m === "district");
+    rebuildBatches();
+  }
+  bT.onclick = () => setMode("topic"); bD.onclick = () => setMode("district");
+
+  document.getElementById("reset").onclick = () => { selTopic = null; syncTopics(); fit(); };
+
+  // mobile sheet toggle
+  const rail = document.getElementById("rail");
+  document.getElementById("head").addEventListener("click", () => {
+    if (matchMedia("(max-width: 720px)").matches) rail.classList.toggle("open");
+  });
+
+  // theme changes recolor
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { renderList(); rebuildBatches(); });
+  new MutationObserver(() => { renderList(); rebuildBatches(); })
+    .observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+  // ---- boot --------------------------------------------------------------
+  window.addEventListener("resize", () => { resize(); });
+  resize(); fit(); renderList(); rebuildBatches();
+})();
+</script>

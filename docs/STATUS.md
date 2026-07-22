@@ -59,15 +59,28 @@ mount-vernon 1548, white-plains 1242, greenburgh-central 339.
 weighting for before any cross-district comparison (e.g. per-district
 normalization, not raw counts).
 
-**Current milestone:** both scrape sources are ingested and the OCR pass
-ran. The first query surface is built: **`herald-ask` + the `ask`
+**Query surface — built and working:** **`herald-ask` + the `ask`
 workflow** — *panel retrieval* (per-district semantic + FTS + RRF +
-rerank, with empty districts reported explicitly) feeding cited Sonnet
-synthesis. Designed for the corpus's real question shapes (norm /
-coverage / outlier — see [`ASK.md`](ASK.md)) rather than global top-k
-RAG. Needs `ANTHROPIC_API_KEY` as a repo secret (evidence-only mode
-works without it). The rest of the engine (cluster → drift → brief
-surfaces) remains unwired.
+rerank, per-document cap, empty districts reported explicitly) feeding
+cited Sonnet synthesis. Designed for the corpus's real question shapes
+(norm / coverage / outlier — see [`ASK.md`](ASK.md)) rather than global
+top-k RAG. Verified live on all three archetypes; each answer prints its
+token/cost. Needs `ANTHROPIC_API_KEY` (evidence-only mode works without).
+
+**Visualization surface — built, awaiting first real run:** the **topic
+map** (cluster scatter) — first of four planned views (see
+[`VIZ.md`](VIZ.md)). `herald-cluster` + the `cluster` workflow run
+UMAP + HDBSCAN + Haiku labels over the chunk embeddings and export a
+compact columnar JSON; `viz/cluster_map.html` is a self-contained
+canvas renderer (pan/zoom/pinch, topic isolation, district filter,
+color-by toggle, both themes, mobile bottom sheet) verified headless.
+Delivery: run `cluster`, share the JSON, it's published as a
+phone-viewable Artifact. The other three views (trajectory, district
+comparison, dossier) build on the same export.
+
+**Current milestone:** run the `cluster` workflow for the first real
+topic map. The rest of the inherited engine (drift, brief) remains
+unwired.
 
 ---
 
