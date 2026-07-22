@@ -67,20 +67,28 @@ cited Sonnet synthesis. Designed for the corpus's real question shapes
 top-k RAG. Verified live on all three archetypes; each answer prints its
 token/cost. Needs `ANTHROPIC_API_KEY` (evidence-only mode works without).
 
-**Visualization surface — built, awaiting first real run:** the **topic
-map** (cluster scatter) — first of four planned views (see
-[`VIZ.md`](VIZ.md)). `herald-cluster` + the `cluster` workflow run
-UMAP + HDBSCAN + Haiku labels over the chunk embeddings and export a
-compact columnar JSON; `viz/cluster_map.html` is a self-contained
-canvas renderer (pan/zoom/pinch, topic isolation, district filter,
-color-by toggle, both themes, mobile bottom sheet) verified headless.
-Delivery: run `cluster`, share the JSON, it's published as a
-phone-viewable Artifact. The other three views (trajectory, district
-comparison, dossier) build on the same export.
+**Visualization surface — built + tuned:** the **topic map** (cluster
+scatter) — first of four planned views (see [`VIZ.md`](VIZ.md)).
+`herald-cluster` + the `cluster` workflow re-embed content-only, UMAP
+to a mid dimensionality (`cluster_dims=10`), HDBSCAN, Haiku labels, and
+export compact columnar JSON. A parameter **sweep** (`cluster-sweep`
+workflow) settled the knobs: `cluster_dims` barely matters (keep 10);
+`min_cluster_size` is a pure granularity dial where fine (15) is both
+cleanest (best DBCV) and lowest-noise but yields too many topics for a
+flat legend. So the map is now **hierarchical** — cluster fine for
+clean leaves, then merge leaf centroids agglomeratively into coarser
+tiers (`--tiers 15,60`, guaranteed nesting), each tier Haiku-labelled.
+`viz/cluster_map.html` renders it as a **drill-down tree** (theme →
+topic → leaf; tapping a branch isolates its points) plus the canvas
+scatter (pan/zoom/pinch, district filter, color-by toggle, both themes,
+mobile bottom sheet) — verified headless. Delivery: run `cluster`,
+share the JSON, it's published as a phone-viewable Artifact. The other
+three views (trajectory, district comparison, dossier) build on the
+same export.
 
 **Current milestone:** run the `cluster` workflow for the first real
-topic map. The rest of the inherited engine (drift, brief) remains
-unwired.
+hierarchical topic map on the full corpus. The rest of the inherited
+engine (drift, brief) remains unwired.
 
 ---
 

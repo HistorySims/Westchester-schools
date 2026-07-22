@@ -7,9 +7,12 @@ are in the corpus, and which districts sit where."
 ## Pipeline
 
 ```
-chunks.embedding  ──►  UMAP (2D)          ─┐
-                  ──►  HDBSCAN (topics)     ├─► compact JSON ─► cluster_map.html
-                  ──►  Haiku (topic labels)─┘        (artifact)     (canvas scatter)
+content embed ─► UMAP (→10-D) ─► HDBSCAN ─► leaf topics ─┐
+                                    │                     ├─► compact JSON ─► cluster_map.html
+                        merge centroids (agglomerative)   │      (artifact)   (canvas + drill-down)
+                        → coarse tiers (themes)  ─────────┤
+                                 Haiku labels (all tiers) ─┘
+              UMAP (10-D → 2-D) for the display layout ───┘
 ```
 
 - **`herald.cluster_schools`** loads active chunks, **UMAP-reduces to a
@@ -33,10 +36,25 @@ chunks.embedding  ──►  UMAP (2D)          ─┐
     re-embeds each chunk's raw content with Voyage (~$0.35 for the corpus,
     needs `VOYAGE_API_KEY`) so the map organizes by topic. `--embeddings
     stored` reuses the district-prefixed vectors (a *district* map).
+- **Hierarchy (cluster-of-clusters).** A single flat granularity can't be both
+  clean and legible — the sweep showed fine clustering (`min_cluster_size=15`)
+  gives the best DBCV and lowest noise but ~200 topics on a sample (~500 on the
+  full corpus), while coarse clustering is legible but noisier. So we cluster
+  *fine* for clean leaves, then **merge the leaf centroids** upward
+  (`herald.cluster_schools.build_hierarchy`: one agglomerative linkage, cut at
+  each `--tiers` count, default `15,60`). Because every tier is a cut of the
+  *same* linkage, the tiers **strictly nest** — a leaf's ancestors are
+  well-defined (unlike re-running HDBSCAN per level, whose partitions needn't
+  agree). Each tier is labelled by Haiku from passages pooled across its child
+  leaves. This is why the merge beats independent HDBSCAN runs at 15/30/60:
+  nesting is guaranteed by construction and it costs one small linkage, not
+  three full re-clusters.
 - **Output** is deliberately *columnar* JSON (parallel arrays, not per-point
   objects) to keep ~23k points small: `x`, `y`, `cluster`, `district`,
   `doc_type`, `month`, `tip`, plus a `clusters` list of `{id, label, size}`
-  and the district / doc-type index tables. A full run is ~2 MB.
+  (the leaf topics), the `hierarchy` (coarsest-first tiers of
+  `{id, label, size, leaves}`), and the district / doc-type index tables. A
+  full run is ~2 MB.
 
 ## Running it
 
@@ -46,14 +64,15 @@ Workflow **`cluster`** (Actions → cluster → Run workflow):
 |---|---|
 | `sample` | random-sample N chunks for a lighter map (empty = all) |
 | `min_cluster_size` | HDBSCAN granularity — larger = fewer, broader topics |
+| `tiers` | coarse hierarchy tiers merged from leaf centroids (broadest first; empty = flat) |
 | `embeddings` | `content` (topic map) or `stored` (district map) |
 | `label` | label topics with Haiku (needs `ANTHROPIC_API_KEY`) |
 
-It uploads `cluster-map.json` as an artifact and prints the topic table to the
-run summary. Needs `SUPABASE_DB_URL`, `VOYAGE_API_KEY` (for `--embeddings
-content`), and `ANTHROPIC_API_KEY` (for labels). CLI equivalent:
+It uploads `cluster-map.json` as an artifact and prints the theme + topic
+tables to the run summary. Needs `SUPABASE_DB_URL`, `VOYAGE_API_KEY` (for
+`--embeddings content`), and `ANTHROPIC_API_KEY` (for labels). CLI equivalent:
 `herald-cluster run --out cluster-map.json [--sample N] [--min-cluster-size 15]
-[--embeddings content|stored] [--labels/--no-labels]`. Content re-embedding is
+[--tiers 15,60] [--embeddings content|stored] [--labels/--no-labels]`. Content re-embedding is
 recomputed each run; if we settle on it we'll store a `content_embedding`
 column to avoid the repeat cost.
 
@@ -88,10 +107,14 @@ CSP-safe). It reads the JSON from its `#map-data` script tag; the
 page. To get it on a phone: run the `cluster` workflow, share the
 `cluster-map.json` back, and it's published as a private Artifact link.
 
-**The map**: canvas scatter, pan / zoom / pinch, tap the legend to isolate a
-topic, filter by district chips, toggle color between topic and district,
-hover or tap a point for its district · date · doc-type · snippet. Dark and
-light themes; mobile-first (the control rail becomes a bottom sheet).
+**The map**: canvas scatter, pan / zoom / pinch. The legend is a **drill-down
+tree** — broad themes expand to topics expand to leaf topics (from the export's
+`hierarchy`); tapping a branch opens it *and* isolates its points on the map,
+so you narrow from "Personnel & labor" down to "Substitute & coaching stipends"
+in two taps. Searching flattens the tree to matching leaf topics. Also: filter
+by district chips, toggle color between topic and district, hover or tap a
+point for its district · date · doc-type · snippet. Dark and light themes;
+mobile-first (the control rail becomes a bottom sheet).
 
 ## Design notes
 

@@ -22,6 +22,10 @@ on:
         description: "HDBSCAN min_cluster_size (larger = fewer, broader topics)"
         type: string
         default: "15"
+      tiers:
+        description: "Coarse hierarchy tiers merged from leaf centroids (broadest first; empty = flat)"
+        type: string
+        default: "15,60"
       embeddings:
         description: "content = re-embed content-only (topic map); stored = district-prefixed vectors"
         type: choice
@@ -64,6 +68,7 @@ jobs:
           uv run herald-cluster run \
             --out cluster-map.json \
             --min-cluster-size "${{ inputs.min_cluster_size }}" \
+            --tiers "${{ inputs.tiers }}" \
             --embeddings "${{ inputs.embeddings }}" \
             ${{ inputs.sample && format('--sample "{0}"', inputs.sample) || '' }} \
             ${{ inputs.label && '--labels' || '--no-labels' }}
@@ -74,8 +79,15 @@ jobs:
             uv run python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           d = json.load(open("cluster-map.json"))
-          print(f"# Topic map\n\n{d['n_points']} points · {d['n_clusters']} topics · {d['n_noise']} noise\n")
-          print("| topic | size |\n|---|---|")
+          hier = d.get("hierarchy") or []
+          themes = f" · {len(hier[0]['clusters'])} themes" if hier else ""
+          print(f"# Topic map\n\n{d['n_points']} points · {d['n_clusters']} topics{themes} · {d['n_noise']} noise\n")
+          if hier:
+              print("## Themes\n\n| theme | topics | size |\n|---|---:|---:|")
+              for c in sorted(hier[0]["clusters"], key=lambda c: -c["size"]):
+                  print(f"| {c['label']} | {len(c['leaves'])} | {c['size']} |")
+              print()
+          print("## Topics\n\n| topic | size |\n|---|---:|")
           for c in sorted(d["clusters"], key=lambda c: -c["size"])[:40]:
               print(f"| {c['label']} | {c['size']} |")
           PY

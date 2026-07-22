@@ -4,8 +4,9 @@
   Self-contained (no external libs — CSP-safe). Reads a compact columnar JSON
   (herald-cluster export) from the #map-data script tag. Canvas 2D scatter of
   every chunk, laid out by UMAP similarity, colored by discovered topic or by
-  district. Pan / zoom / pinch; tap the legend to isolate a topic; filter by
-  district; tap a point for its detail. Written as Artifact body content (the
+  district. Pan / zoom / pinch; the legend is a drill-down tree (theme → topic
+  → leaf, from the export's `hierarchy`) — tap to open a branch and isolate it;
+  filter by district; tap a point for its detail. Written as Artifact body (the
   host wraps it in <!doctype><head><body>); the __MAP_DATA__ token is replaced
   with the exported JSON at publish time.
 -->
@@ -101,6 +102,13 @@
     text-overflow: ellipsis; white-space: nowrap; }
   .topic .n { font-family: var(--mono); font-size: 11px; color: var(--muted);
     font-variant-numeric: tabular-nums; }
+  .topic .tw { width: 10px; height: 10px; display: inline-flex; align-items: center;
+    justify-content: center; color: var(--faint); font-size: 9px; transition: transform .12s; }
+  .topic.open > .tw { transform: rotate(90deg); }
+  .topic.group .name { font-weight: 600; }
+  .topic.lvl0 .name { font-size: 13px; }
+  .topic.lvl1 .name { color: var(--muted); }
+  .topic.leaf .name { font-size: 12px; }
   .foot { padding: 10px 16px; border-top: 1px solid var(--line); font-size: 11px;
     color: var(--faint); display: flex; justify-content: space-between; align-items: center; }
   .foot button { border: 1px solid var(--line); background: transparent; color: var(--muted);
@@ -217,11 +225,44 @@
 
   const clusters = DATA.clusters.slice().sort((a, b) => b.size - a.size);
   const labelById = {}; DATA.clusters.forEach(c => labelById[c.id] = c.label);
+  const leafById = {}; DATA.clusters.forEach(c => leafById[c.id] = c);
+
+  // ---- topic hierarchy (cluster-of-clusters) ----------------------------
+  // DATA.hierarchy: coarsest-first tiers of {id, label, size, leaves:[leafId]}.
+  // Build a nesting tree: broad theme -> mid topic -> leaf topic. Each node
+  // carries the *set* of leaf ids under it, so isolating a group isolates all
+  // its leaves. Guaranteed-nesting (each tier is a cut of one linkage) means a
+  // child's leaves sit entirely within one parent — we test one leaf to nest.
+  let uid = 0;
+  function leafNode(c) {
+    return { key: ++uid, kind: "leaf", cid: c.id, label: c.label, size: c.size,
+             leaves: new Set([c.id]), children: null };
+  }
+  function buildRoots() {
+    const H = DATA.hierarchy;
+    if (!H || !H.length) return clusters.map(leafNode);   // flat fallback
+    const tiers = H.map((tier, lvl) => tier.clusters.map(g => ({
+      key: ++uid, kind: "group", lvl, label: g.label, size: g.size,
+      leaves: new Set(g.leaves), first: g.leaves[0], children: null, _leaves: g.leaves,
+    })));
+    for (let i = 0; i < tiers.length; i++) {
+      for (const g of tiers[i]) {
+        const kids = (i + 1 < tiers.length)
+          ? tiers[i + 1].filter(h => g.leaves.has(h.first))
+          : g._leaves.map(id => leafNode(leafById[id] || { id, label: "Topic " + id, size: 0 }));
+        g.children = kids.sort((a, b) => b.size - a.size);
+      }
+    }
+    return tiers[0].slice().sort((a, b) => b.size - a.size);
+  }
+  const ROOTS = buildRoots();
+  const HAS_TREE = !!(DATA.hierarchy && DATA.hierarchy.length);
 
   // ---- state -------------------------------------------------------------
   let mode = "topic";                       // "topic" | "district"
   const distOn = DATA.districts.map(() => true);
-  let selTopic = null;                       // isolate one cluster id
+  let sel = null;                            // { label, leaves:Set<cid> } | null
+  const open = new Set();                    // expanded group node keys
   let batches = [];                          // [{color, idx:[...]}]
 
   function pointColor(i) {
@@ -265,10 +306,10 @@
     const r = Math.max(1.1, Math.min(3.4, view.k / 260)); // point size vs zoom
     const s = r * 2;
     for (const b of batches) {
-      const dim = selTopic !== null;
+      const dim = sel !== null;
       ctx.fillStyle = b.color;
       for (const i of b.idx) {
-        const on = selTopic === null || C[i] === selTopic;
+        const on = sel === null || sel.leaves.has(C[i]);
         if (dim && !on) continue;
         ctx.globalAlpha = 0.82;
         ctx.fillRect(sx(i) - r, sy(i) - r, s, s);
@@ -328,7 +369,7 @@
     let best = -1, bd = 12 * 12;
     for (let i = 0; i < N; i++) {
       if (!distOn[D[i]]) continue;
-      if (selTopic !== null && C[i] !== selTopic) continue;
+      if (sel !== null && !sel.leaves.has(C[i])) continue;
       const dx = sx(i) - px, dy = sy(i) - py, d = dx * dx + dy * dy;
       if (d < bd) { bd = d; best = i; }
     }
@@ -357,6 +398,7 @@
   // ---- rail: stats, chips, topics ---------------------------------------
   document.getElementById("stat").innerHTML =
     `<b>${N.toLocaleString()}</b> passages · <b>${DATA.n_clusters}</b> topics` +
+    (HAS_TREE ? ` in <b>${DATA.hierarchy[0].clusters.length}</b> themes` : "") +
     (DATA.n_noise ? ` · ${DATA.n_noise.toLocaleString()} unclustered` : "");
 
   const chipsEl = document.getElementById("chips");
@@ -369,24 +411,73 @@
   });
 
   const listEl = document.getElementById("list"), searchEl = document.getElementById("search");
+
+  function isolate(node) {
+    // toggle: same selection off, else isolate this node's leaves
+    if (sel && sel.key === node.key) sel = null;
+    else sel = { key: node.key, label: node.label, leaves: node.leaves };
+    syncTopics(); draw();
+  }
+  function selected(node) { return sel && sel.key === node.key; }
+
+  function leafRow(node, depth) {
+    const b = document.createElement("button");
+    b.className = "topic leaf"; b.setAttribute("aria-pressed", selected(node));
+    b.style.paddingLeft = (8 + depth * 15) + "px";
+    b.innerHTML = `<span class="swatch" style="background:${topicColor(node.cid)}"></span>` +
+      `<span class="name">${esc(node.label)}</span><span class="n">${node.size}</span>`;
+    b.onclick = () => isolate(node);
+    return b;
+  }
+  function groupRow(node, depth) {
+    const b = document.createElement("button");
+    const isOpen = open.has(node.key);
+    b.className = `topic group lvl${node.lvl}` + (isOpen ? " open" : "");
+    b.setAttribute("aria-pressed", selected(node));
+    b.style.paddingLeft = (8 + depth * 15) + "px";
+    b.innerHTML = `<span class="tw">▶</span>` +
+      `<span class="name">${esc(node.label)}</span><span class="n">${node.size}</span>`;
+    b.onclick = () => {
+      // open a theme -> isolate it; collapse -> clear that isolation
+      if (isOpen) {
+        open.delete(node.key);
+        if (selected(node)) sel = null;
+      } else {
+        open.add(node.key);
+        sel = { key: node.key, label: node.label, leaves: node.leaves };
+      }
+      syncTopics(); draw();
+    };
+    return b;
+  }
+  function renderTree(nodes, depth) {
+    for (const node of nodes) {
+      if (node.kind === "leaf") { listEl.appendChild(leafRow(node, depth)); continue; }
+      listEl.appendChild(groupRow(node, depth));
+      if (open.has(node.key)) renderTree(node.children, depth + 1);
+    }
+  }
+  function renderFlat(q) {
+    // search matches leaf labels; show flat, ignoring the tree
+    const seen = new Set();
+    const walk = ns => ns.forEach(n => n.kind === "leaf"
+      ? (n.label.toLowerCase().includes(q) && !seen.has(n.cid)
+         && (seen.add(n.cid), listEl.appendChild(leafRow(n, 0))))
+      : walk(n.children || []));
+    walk(ROOTS);
+    if (!listEl.children.length)
+      listEl.innerHTML = `<div style="padding:10px 12px;color:var(--faint);font-size:12px">No topics match.</div>`;
+  }
   function renderList() {
     const q = searchEl.value.trim().toLowerCase();
     listEl.innerHTML = "";
-    for (const c of clusters) {
-      if (q && !c.label.toLowerCase().includes(q)) continue;
-      const b = document.createElement("button");
-      b.className = "topic"; b.setAttribute("aria-pressed", selTopic === c.id);
-      b.innerHTML = `<span class="swatch" style="background:${topicColor(c.id)}"></span>` +
-        `<span class="name">${esc(c.label)}</span><span class="n">${c.size}</span>`;
-      b.onclick = () => { selTopic = selTopic === c.id ? null : c.id; syncTopics(); draw(); };
-      listEl.appendChild(b);
-    }
+    if (q) renderFlat(q); else renderTree(ROOTS, 0);
   }
   function syncTopics() {
     renderList();
     document.getElementById("footNote").textContent =
-      selTopic === null ? "Tap a topic to isolate it"
-        : `Isolated: ${labelById[selTopic] || "Topic " + selTopic}`;
+      sel === null ? (HAS_TREE ? "Tap a theme to open · tap to isolate" : "Tap a topic to isolate it")
+        : `Isolated: ${sel.label}`;
   }
   searchEl.addEventListener("input", renderList);
 
@@ -398,7 +489,7 @@
   }
   bT.onclick = () => setMode("topic"); bD.onclick = () => setMode("district");
 
-  document.getElementById("reset").onclick = () => { selTopic = null; syncTopics(); fit(); };
+  document.getElementById("reset").onclick = () => { sel = null; open.clear(); syncTopics(); fit(); };
 
   // mobile sheet toggle
   const rail = document.getElementById("rail");
@@ -413,6 +504,6 @@
 
   // ---- boot --------------------------------------------------------------
   window.addEventListener("resize", () => { resize(); });
-  resize(); fit(); renderList(); rebuildBatches();
+  resize(); fit(); syncTopics(); rebuildBatches();
 })();
 </script>
