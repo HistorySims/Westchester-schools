@@ -138,26 +138,39 @@ def umap_reduce(embeddings: np.ndarray, params: ClusterParams) -> np.ndarray:
     return np.asarray(reducer.fit_transform(embeddings), dtype=np.float32)
 
 
-def umap_project(coords: np.ndarray, params: ClusterParams) -> np.ndarray:
-    """Lay the (already reduced) clustering space out in 2D for display.
-
-    Fed the ``cluster_dims`` output of ``umap_reduce`` so the map you see is
-    a projection *of the space the topics were found in* — the colored
-    regions correspond to the clusters. Cheap (small input dim).
-    """
-    import umap
-
-    reducer = umap.UMAP(
-        n_components=2, n_neighbors=params.umap_neighbors,
-        min_dist=params.umap_min_dist, metric="euclidean",
-        random_state=42, low_memory=True,
-    )
-    xy = np.asarray(reducer.fit_transform(coords), dtype=np.float32)
-    for dim in range(2):  # normalize each axis to [0, 1] for the renderer
+def _normalize01(xy: np.ndarray) -> np.ndarray:
+    """Scale each axis to [0, 1] for the renderer (preserving aspect roughly)."""
+    xy = np.asarray(xy, dtype=np.float32).copy()
+    for dim in range(xy.shape[1]):
         col = xy[:, dim]
         lo, hi = float(col.min()), float(col.max())
         xy[:, dim] = (col - lo) / (hi - lo) if hi - lo > 1e-10 else 0.5
     return xy
+
+
+def project_topics(centroids: np.ndarray, params: ClusterParams) -> np.ndarray:
+    """Lay the *topic centroids* out in 2D for the bubble map.
+
+    One position per topic, from a **cosine** UMAP of the (L2-normalized) leaf
+    centroids — the map is a layout of topics, not of 23k chunks. Cosine on the
+    real semantic centroids keeps related topics together; a chunk-level layout
+    (or a euclidean projection of an already-reduced space) scatters a single
+    topic's passages across the plane. Small input (one row per topic), so it's
+    cheap and stable.
+    """
+    import umap
+
+    n = len(centroids)
+    if n == 0:
+        return np.zeros((0, 2), dtype=np.float32)
+    if n <= 2:                                   # nothing to lay out
+        return _normalize01(np.array([[0.35, 0.5], [0.65, 0.5]][:n], dtype=np.float32))
+
+    reducer = umap.UMAP(
+        n_components=2, n_neighbors=min(params.umap_neighbors, n - 1),
+        min_dist=0.15, metric="cosine", random_state=42, low_memory=True,
+    )
+    return _normalize01(reducer.fit_transform(centroids))
 
 
 def representative_indices(
@@ -301,40 +314,75 @@ def _tooltip(row: ChunkRow) -> str:
 
 
 def build_export(
-    rows: list[ChunkRow], labels: np.ndarray, xy: np.ndarray,
-    cluster_labels: dict[int, str], hierarchy: list[dict] | None = None,
+    rows: list[ChunkRow], labels: np.ndarray, leaf_ids: list[int],
+    topic_xy: np.ndarray, cluster_labels: dict[int, str],
+    hierarchy: list[dict] | None = None,
     hierarchy_labels: list[dict[int, str]] | None = None,
+    rep_idx: dict[int, list[int]] | None = None,
 ) -> dict:
-    """Compact, columnar JSON for the renderer (arrays, not per-point objects)."""
+    """Compact JSON for the bubble map — one object per *topic*, not per chunk.
+
+    Each leaf topic becomes a bubble: a 2D position (``x``/``y`` from
+    ``project_topics``), a ``size``, its ``theme``/``mid`` hierarchy parents, a
+    per-district passage histogram (``dist``, for district coloring/filtering),
+    and a representative ``tip``. The 23k individual chunks are aggregated away,
+    so the export is small.
+    """
     districts = sorted({r.district for r in rows})
     doc_types = sorted({r.doc_type or "other" for r in rows})
     d_idx = {s: i for i, s in enumerate(districts)}
-    t_idx = {s: i for i, s in enumerate(doc_types)}
+    pos = {lid: i for i, lid in enumerate(leaf_ids)}
+    rep_idx = rep_idx or {}
 
+    # leaf -> hierarchy parents (tier 0 = theme, tier 1 = mid), from the groups
+    theme_of: dict[int, int] = {}
+    mid_of: dict[int, int] = {}
+    if hierarchy:
+        if len(hierarchy) >= 1:
+            for pid, leaves in hierarchy[0]["groups"].items():
+                for leaf in leaves:
+                    theme_of[leaf] = pid
+        if len(hierarchy) >= 2:
+            for pid, leaves in hierarchy[1]["groups"].items():
+                for leaf in leaves:
+                    mid_of[leaf] = pid
+
+    # per-leaf size + district histogram in one pass
     sizes: dict[int, int] = defaultdict(int)
-    for lab in labels:
-        sizes[int(lab)] += 1
-    clusters = [
-        {"id": lab, "label": cluster_labels.get(lab, f"Topic {lab}"), "size": sizes[lab]}
-        for lab in sorted(sizes)
-        if lab >= 0
-    ]
+    dist_hist: dict[int, list[int]] = {lid: [0] * len(districts) for lid in leaf_ids}
+    n_noise = 0
+    for r, lab in zip(rows, labels, strict=False):
+        lab = int(lab)
+        if lab < 0:
+            n_noise += 1
+            continue
+        sizes[lab] += 1
+        dist_hist[lab][d_idx[r.district]] += 1
+
+    clusters = []
+    for lid in leaf_ids:
+        i = pos[lid]
+        rep = rep_idx.get(lid) or []
+        clusters.append({
+            "id": lid,
+            "label": cluster_labels.get(lid, f"Topic {lid}"),
+            "size": sizes[lid],
+            "x": round(float(topic_xy[i, 0]), 4),
+            "y": round(float(topic_xy[i, 1]), 4),
+            "theme": theme_of.get(lid, -1),
+            "mid": mid_of.get(lid, -1),
+            "dist": dist_hist[lid],
+            "tip": _tooltip(rows[rep[0]]) if rep else "",
+        })
 
     out = {
         "generated_at": _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds"),
         "n_points": len(rows),
         "n_clusters": len(clusters),
-        "n_noise": sizes.get(-1, 0),
+        "n_noise": n_noise,
         "districts": districts,
         "doc_types": doc_types,
         "clusters": clusters,
-        "x": [round(float(v), 4) for v in xy[:, 0]],
-        "y": [round(float(v), 4) for v in xy[:, 1]],
-        "cluster": [int(v) for v in labels],
-        "district": [d_idx[r.district] for r in rows],
-        "doc_type": [t_idx[r.doc_type or "other"] for r in rows],
-        "month": [r.meeting_date.strftime("%Y-%m") if r.meeting_date else "" for r in rows],
-        "tip": [_tooltip(r) for r in rows],
     }
 
     if hierarchy:
@@ -343,10 +391,15 @@ def build_export(
         for level, (tier, hl) in enumerate(zip(hierarchy, labels_per_tier, strict=False)):
             tclusters = []
             for pid, leaves in sorted(tier["groups"].items()):
+                total = sum(sizes[leaf] for leaf in leaves) or 1
+                cx = sum(topic_xy[pos[leaf], 0] * sizes[leaf] for leaf in leaves) / total
+                cy = sum(topic_xy[pos[leaf], 1] * sizes[leaf] for leaf in leaves) / total
                 tclusters.append({
                     "id": pid,
                     "label": hl.get(pid, f"Group {pid}"),
                     "size": sum(sizes[leaf] for leaf in leaves),
+                    "x": round(float(cx), 4),
+                    "y": round(float(cy), 4),
                     "leaves": sorted(leaves),
                 })
             tiers_out.append({"level": level, "target": tier["target"], "clusters": tclusters})
@@ -383,12 +436,13 @@ def run_clustering(
     api_key: str | None = None, hierarchy_targets: list[int] | None = None,
     on_progress=lambda s: None,
 ) -> dict:
-    """Cluster ``rows`` and build the export.
+    """Cluster ``rows`` and build the bubble-map export.
 
-    UMAP-reduce to ``cluster_dims`` → HDBSCAN there → project that reduced
-    space to 2D for display. ``embeddings`` overrides ``rows``' stored
-    vectors (e.g. content-only). ``hierarchy_targets`` (e.g. ``[15, 60]``)
-    merges the leaf centroids into coarser browsable tiers.
+    UMAP-reduce to ``cluster_dims`` → HDBSCAN there → **project the topic
+    centroids** (not the chunks) to 2D for the bubble layout. ``embeddings``
+    overrides ``rows``' stored vectors (e.g. content-only).
+    ``hierarchy_targets`` (e.g. ``[15, 60]``) merges the leaf centroids into
+    coarser browsable tiers.
     """
     if embeddings is None:
         embeddings = np.vstack([r.embedding for r in rows]).astype(np.float32)
@@ -397,13 +451,14 @@ def run_clustering(
     on_progress(f"HDBSCAN on {params.cluster_dims}D (min_cluster_size={params.min_cluster_size}, "
                 f"min_samples={params.min_samples})")
     labels = hdbscan_labels(reduced, params)
-    on_progress("UMAP → 2D for display")
-    xy = umap_project(reduced, params)
     n_clusters = len({int(x) for x in labels if x >= 0})
     n_noise = int((labels < 0).sum())
     pct = 100 * n_noise / max(len(rows), 1)
     on_progress(f"  {n_clusters} topics, {n_noise} noise ({pct:.0f}%)")
 
+    leaf_ids, cents = leaf_centroids(embeddings, labels)
+    on_progress(f"projecting {len(leaf_ids)} topic centroids → 2D (cosine)")
+    topic_xy = project_topics(cents, params)
     rep_idx = representative_indices(embeddings, labels) if n_clusters else {}
     cluster_labels: dict[int, str] = {}
     if api_key and n_clusters:
@@ -415,14 +470,14 @@ def run_clustering(
     hierarchy = hierarchy_labels = None
     if hierarchy_targets and n_clusters >= 3:
         on_progress(f"building hierarchy (merge {n_clusters} leaf centroids → {hierarchy_targets})")
-        leaf_ids, cents = leaf_centroids(embeddings, labels)
         hierarchy = build_hierarchy(leaf_ids, cents, hierarchy_targets)
         on_progress(f"  {len(hierarchy)} tier(s): " +
                     ", ".join(str(len(t['groups'])) for t in hierarchy))
         if api_key and hierarchy:
             leaf_reps = {lab: [rows[i].content for i in idxs] for lab, idxs in rep_idx.items()}
             hierarchy_labels = asyncio.run(label_hierarchy(api_key, hierarchy, leaf_reps))
-    return build_export(rows, labels, xy, cluster_labels, hierarchy, hierarchy_labels)
+    return build_export(rows, labels, leaf_ids, topic_xy, cluster_labels,
+                        hierarchy, hierarchy_labels, rep_idx=rep_idx)
 
 
 # ---- parameter sweep ---------------------------------------------------

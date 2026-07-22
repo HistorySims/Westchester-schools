@@ -44,29 +44,30 @@ def test_representative_indices_picks_nearest_centroid():
     assert len(reps[0]) == 2 and len(reps[1]) == 2
 
 
-def test_build_export_columnar_shape():
+def test_build_export_topic_bubbles():
     rows = [
         _row(0, "peekskill", [1, 0]),
-        _row(1, "ossining", [0, 1], doc_type=None),
+        _row(1, "peekskill", [1, 0]),
+        _row(2, "ossining", [0, 1], doc_type=None),   # noise
     ]
-    labels = np.array([0, -1])
-    xy = np.array([[0.25, 0.75], [0.5, 0.5]], dtype=np.float32)
-    out = build_export(rows, labels, xy, {0: "Cell phone policy"})
-    assert out["n_points"] == 2 and out["n_clusters"] == 1 and out["n_noise"] == 1
+    labels = np.array([0, 0, -1])
+    leaf_ids = [0]
+    topic_xy = np.array([[0.25, 0.75]], dtype=np.float32)
+    out = build_export(rows, labels, leaf_ids, topic_xy, {0: "Cell phone policy"},
+                       rep_idx={0: [0]})
+    assert out["n_points"] == 3 and out["n_clusters"] == 1 and out["n_noise"] == 1
     assert out["districts"] == ["ossining", "peekskill"]
     assert out["doc_types"] == ["other", "policy"]
-    assert out["clusters"] == [{"id": 0, "label": "Cell phone policy", "size": 1}]
-    # columnar arrays all aligned
-    for key in ("x", "y", "cluster", "district", "doc_type", "month", "tip"):
-        assert len(out[key]) == 2
-    assert out["cluster"] == [0, -1]
-    assert out["district"] == [1, 0]          # peekskill, ossining -> indices
-    assert out["month"] == ["2026-03", "2026-03"]
-    assert "Consent Agenda" in out["tip"][0]
+    (c,) = out["clusters"]
+    assert c["id"] == 0 and c["label"] == "Cell phone policy" and c["size"] == 2
+    assert c["x"] == 0.25 and c["y"] == 0.75
+    assert c["dist"] == [0, 2]                 # ossining=0, peekskill=2 (noise excluded)
+    assert "Consent Agenda" in c["tip"]
+    assert c["theme"] == -1 and c["mid"] == -1  # no hierarchy passed
 
 
 def test_run_clustering_end_to_end_synthetic():
-    # two well-separated blobs in 8 dims -> HDBSCAN finds 2 topics, no API key
+    # two well-separated blobs in 8 dims -> HDBSCAN finds topics, no API key
     rng = np.random.default_rng(7)
     a = rng.normal(0, 0.02, (30, 8)) + np.eye(8)[0]
     b = rng.normal(0, 0.02, (30, 8)) + np.eye(8)[1]
@@ -77,12 +78,14 @@ def test_run_clustering_end_to_end_synthetic():
     params = ClusterParams(min_cluster_size=5, min_samples=2, umap_neighbors=5, cluster_dims=4)
     out = run_clustering(rows, params, api_key=None)
     assert out["n_points"] == 60
-    # clusters on the 2D projection of tiny data — count isn't guaranteed, but
-    # the pipeline must produce a valid, aligned, in-range export
     assert out["n_clusters"] >= 1
-    assert all(c["label"].startswith("Topic ") for c in out["clusters"])   # unlabeled fallback
-    assert len(out["x"]) == 60 and len(out["cluster"]) == 60
-    assert all(0.0 <= v <= 1.0 for v in out["x"] + out["y"])
+    # one bubble per topic: aligned fields, positions in range, sizes sum sanely
+    for c in out["clusters"]:
+        assert c["label"].startswith("Topic ")            # unlabeled fallback
+        assert 0.0 <= c["x"] <= 1.0 and 0.0 <= c["y"] <= 1.0
+        assert len(c["dist"]) == len(out["districts"])
+        assert c["size"] == sum(c["dist"])
+    assert sum(c["size"] for c in out["clusters"]) == out["n_points"] - out["n_noise"]
 
     # explicit `embeddings=` override is honored (content-only path)
     out2 = run_clustering(rows, params, embeddings=np.vstack([r.embedding for r in rows]),
@@ -165,11 +168,15 @@ def test_run_clustering_with_hierarchy_export_shape():
         assert tier["level"] == 0 and tier["target"] == 2
         # tier cluster sizes sum to the clustered (non-noise) points
         assert sum(c["size"] for c in tier["clusters"]) == out["n_points"] - out["n_noise"]
-        # leaves referenced are real leaf ids, unlabelled fallback name
         leaf_ids = {c["id"] for c in out["clusters"]}
         for c in tier["clusters"]:
             assert set(c["leaves"]) <= leaf_ids
             assert c["label"].startswith("Group ")
+            assert 0.0 <= c["x"] <= 1.0 and 0.0 <= c["y"] <= 1.0   # tier bubble position
+        # leaves carry their theme parent (tier 0)
+        theme_ids = {c["id"] for c in tier["clusters"]}
+        for leaf in out["clusters"]:
+            assert leaf["theme"] in theme_ids
 
 
 def test_label_clusters_uses_real_teardown(monkeypatch):
