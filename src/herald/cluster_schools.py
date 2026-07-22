@@ -202,13 +202,21 @@ def build_hierarchy(
     where the partitions need not agree). Tiers coarser than the leaf set
     only (``target >= n_leaves`` is the leaf tier itself, so it's dropped);
     smallest target = level 0 (broadest themes).
+
+    Uses **Ward** linkage: ``average``/``complete`` linkage in high-D chains
+    badly — it peels outlier leaves off one at a time (a long tail of
+    singleton "themes") while dumping the dense mass into a few giant blobs.
+    Ward minimizes within-tier variance, giving balanced, browsable themes.
+    The centroids are L2-normalized, so squared Euclidean distance is an affine
+    function of cosine (2 - 2*cos) — Ward's required Euclidean metric therefore
+    clusters in cosine space.
     """
     from scipy.cluster.hierarchy import fcluster, linkage
 
     n = len(leaf_ids)
     if n < 3:
         return []
-    z = linkage(centroids, method="average", metric="cosine")
+    z = linkage(centroids, method="ward", metric="euclidean")
     tiers: list[dict] = []
     for k in sorted({int(t) for t in targets}):
         if k < 2 or k >= n:          # coarser-than-leaves only
@@ -262,15 +270,24 @@ async def label_clusters(
 async def label_hierarchy(
     api_key: str, tiers: list[dict], leaf_reps: dict[int, list[str]]
 ) -> list[dict[int, str]]:
-    """Haiku-label each hierarchy tier, pooling passages from its child leaves."""
+    """Haiku-label each hierarchy tier, pooling passages from its child leaves.
+
+    Draws *one* passage from as many distinct child leaves as possible (up to
+    16) rather than several from a few — a balanced theme spans ~40 leaves, so
+    a broad cross-section names the umbrella better than a deep sample of two.
+    """
     out: list[dict[int, str]] = []
     for tier in tiers:
         reps: dict[int, list[str]] = {}
         for pid, leaves in tier["groups"].items():
             pooled: list[str] = []
-            for lid in leaves:
-                pooled.extend(leaf_reps.get(lid, [])[:2])
-            reps[pid] = pooled[:12]
+            for lid in leaves:                       # one per leaf, widest coverage
+                got = leaf_reps.get(lid, [])
+                if got:
+                    pooled.append(got[0])
+                if len(pooled) >= 16:
+                    break
+            reps[pid] = pooled
         out.append(await label_clusters(api_key, reps))
     return out
 

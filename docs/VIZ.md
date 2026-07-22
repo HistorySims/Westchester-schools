@@ -41,8 +41,13 @@ content embed ─► UMAP (→10-D) ─► HDBSCAN ─► leaf topics ─┐
   gives the best DBCV and lowest noise but ~200 topics on a sample (~500 on the
   full corpus), while coarse clustering is legible but noisier. So we cluster
   *fine* for clean leaves, then **merge the leaf centroids** upward
-  (`herald.cluster_schools.build_hierarchy`: one agglomerative linkage, cut at
-  each `--tiers` count, default `15,60`). Because every tier is a cut of the
+  (`herald.cluster_schools.build_hierarchy`: one **Ward** agglomerative linkage,
+  cut at each `--tiers` count, default `15,60`). Ward matters: `average`/
+  `complete` linkage chains in high-D — it peels outlier leaves off as
+  singleton "themes" while dumping the mass into a few 200-leaf blobs (the
+  first full run did exactly this); Ward minimizes within-tier variance for
+  balanced, browsable themes. Leaf centroids are L2-normalized so Ward's
+  Euclidean metric clusters in cosine space. Because every tier is a cut of the
   *same* linkage, the tiers **strictly nest** — a leaf's ancestors are
   well-defined (unlike re-running HDBSCAN per level, whose partitions needn't
   agree). Each tier is labelled by Haiku from passages pooled across its child
