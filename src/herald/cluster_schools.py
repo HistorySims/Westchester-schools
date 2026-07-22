@@ -60,6 +60,7 @@ class ClusterParams:
     min_samples: int = 5
     umap_neighbors: int = 15
     umap_min_dist: float = 0.1
+    cluster_dims: int = 10       # UMAP target dim for HDBSCAN (not 2 — 2D over-merges)
 
 
 @dataclass
@@ -119,15 +120,38 @@ def hdbscan_labels(embeddings: np.ndarray, params: ClusterParams) -> np.ndarray:
     return clusterer.fit_predict(embeddings)
 
 
-def umap_project(embeddings: np.ndarray, params: ClusterParams) -> np.ndarray:
+def umap_reduce(embeddings: np.ndarray, params: ClusterParams) -> np.ndarray:
+    """Reduce to ``cluster_dims`` for HDBSCAN — the clustering space.
+
+    Straight to 2D over-merges topics (the 2D layout optimizes visual
+    separation, not density); the raw 1024-D drowns points in noise. A
+    mid-dimensional cosine UMAP (``min_dist=0`` packs points for density
+    clustering) is the standard middle ground.
+    """
+    import umap
+
+    reducer = umap.UMAP(
+        n_components=params.cluster_dims, n_neighbors=params.umap_neighbors,
+        min_dist=0.0, metric="cosine", random_state=42, low_memory=True,
+    )
+    return np.asarray(reducer.fit_transform(embeddings), dtype=np.float32)
+
+
+def umap_project(coords: np.ndarray, params: ClusterParams) -> np.ndarray:
+    """Lay the (already reduced) clustering space out in 2D for display.
+
+    Fed the ``cluster_dims`` output of ``umap_reduce`` so the map you see is
+    a projection *of the space the topics were found in* — the colored
+    regions correspond to the clusters. Cheap (small input dim).
+    """
     import umap
 
     reducer = umap.UMAP(
         n_components=2, n_neighbors=params.umap_neighbors,
-        min_dist=params.umap_min_dist, metric="cosine",
+        min_dist=params.umap_min_dist, metric="euclidean",
         random_state=42, low_memory=True,
     )
-    xy = np.asarray(reducer.fit_transform(embeddings), dtype=np.float32)
+    xy = np.asarray(reducer.fit_transform(coords), dtype=np.float32)
     for dim in range(2):  # normalize each axis to [0, 1] for the renderer
         col = xy[:, dim]
         lo, hi = float(col.min()), float(col.max())
@@ -269,11 +293,13 @@ def run_clustering(
     """
     if embeddings is None:
         embeddings = np.vstack([r.embedding for r in rows]).astype(np.float32)
-    on_progress(f"UMAP → 2D over {len(rows)} chunks")
-    xy = umap_project(embeddings, params)
-    on_progress(f"HDBSCAN on the projection (min_cluster_size={params.min_cluster_size}, "
+    on_progress(f"UMAP → {params.cluster_dims}D over {len(rows)} chunks (clustering space)")
+    reduced = umap_reduce(embeddings, params)
+    on_progress(f"HDBSCAN on {params.cluster_dims}D (min_cluster_size={params.min_cluster_size}, "
                 f"min_samples={params.min_samples})")
-    labels = hdbscan_labels(xy, params)
+    labels = hdbscan_labels(reduced, params)
+    on_progress("UMAP → 2D for display")
+    xy = umap_project(reduced, params)
     n_clusters = len({int(x) for x in labels if x >= 0})
     n_noise = int((labels < 0).sum())
     pct = 100 * n_noise / max(len(rows), 1)
@@ -308,6 +334,9 @@ def run(
     min_cluster_size: int = typer.Option(15, help="HDBSCAN min_cluster_size."),
     min_samples: int = typer.Option(5, help="HDBSCAN min_samples."),
     umap_neighbors: int = typer.Option(15, help="UMAP n_neighbors."),
+    cluster_dims: int = typer.Option(
+        10, help="UMAP dim to cluster in (mid-dim; 2 over-merges topics)."
+    ),
     embeddings: str = typer.Option(
         "content", help="'content' (re-embed content-only for topics) or 'stored' "
         "(reuse the district-prefixed retrieval vectors)."
@@ -333,7 +362,7 @@ def run(
 
     params = ClusterParams(
         min_cluster_size=min_cluster_size, min_samples=min_samples,
-        umap_neighbors=umap_neighbors,
+        umap_neighbors=umap_neighbors, cluster_dims=cluster_dims,
     )
     with schools_db.connect(db_url) as conn:
         rows = load_chunks(conn.cursor(), sample=sample)

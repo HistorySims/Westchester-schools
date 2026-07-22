@@ -12,18 +12,20 @@ chunks.embedding  ──►  UMAP (2D)          ─┐
                   ──►  Haiku (topic labels)─┘        (artifact)     (canvas scatter)
 ```
 
-- **`herald.cluster_schools`** loads active chunks, projects to 2D with UMAP
-  (cosine, normalized to `[0,1]`), clusters with HDBSCAN **on the 2D
-  projection** (leaf method, `-1` noise preserved), picks the chunks nearest
-  each cluster's embedding centroid as representatives, and labels each topic
-  with Haiku. Export-only (writes no cluster tables — the map reads a JSON
-  artifact, not the DB).
+- **`herald.cluster_schools`** loads active chunks, **UMAP-reduces to a
+  mid dimensionality (`cluster_dims`, default 10)**, clusters that with
+  HDBSCAN (leaf method, `-1` noise preserved), projects the *same reduced
+  space* to 2D for display, picks the chunks nearest each cluster's embedding
+  centroid as representatives, and labels each topic with Haiku. Export-only
+  (writes no cluster tables — the map reads a JSON artifact, not the DB).
 
-  **Two learnings from the first real run** (baked into the defaults):
-  - *Cluster on the 2D projection, not the raw 1024-D vectors.* HDBSCAN in
-    1024-D drowns ~60% of points in the noise bin (distance concentration);
-    on the projection the noise collapses and the colored regions line up
-    with the blobs you see.
+  **Learnings from the first real run** (baked into the defaults):
+  - *Cluster in ~10-D, not 1024-D and not 2-D.* Raw 1024-D drowns ~60% of
+    points in the noise bin (distance concentration); straight-to-2D
+    over-merges (the 2D layout optimizes visual separation, not cluster
+    density). A mid-dimensional cosine UMAP (`min_dist=0`) is the standard
+    middle ground. The 2D display is a projection *of* that reduced space,
+    so the colored regions correspond to the clusters.
   - *Cluster on **content-only** embeddings.* The stored `chunks.embedding`
     carries the contextual prefix (`"{district} · {date} · …"`) — right for
     retrieval, but it makes the map cluster by *district* (the first run's

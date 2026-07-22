@@ -65,7 +65,7 @@ def test_run_clustering_end_to_end_synthetic():
         _row(i, "peekskill" if i < 30 else "ossining", v)
         for i, v in enumerate(np.vstack([a, b]))
     ]
-    params = ClusterParams(min_cluster_size=5, min_samples=2, umap_neighbors=5)
+    params = ClusterParams(min_cluster_size=5, min_samples=2, umap_neighbors=5, cluster_dims=4)
     out = run_clustering(rows, params, api_key=None)
     assert out["n_points"] == 60
     # clusters on the 2D projection of tiny data — count isn't guaranteed, but
