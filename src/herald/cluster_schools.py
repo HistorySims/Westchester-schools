@@ -15,6 +15,7 @@ newspaper ``cluster.py``; this module is the schools-schema, export-only cut
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as _dt
 import json
 import logging
@@ -252,7 +253,9 @@ async def label_clusters(
     try:
         await asyncio.gather(*(one(lab, ps) for lab, ps in reps.items()))
     finally:
-        await client.aclose()
+        # a teardown error must never discard labels we already computed
+        with contextlib.suppress(Exception):
+            await client.close()
     return labels
 
 

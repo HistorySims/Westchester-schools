@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
+import types
 
 import numpy as np
 
+from herald import cluster_schools
 from herald.cluster_schools import (
     ChunkRow,
     ClusterParams,
     SweepResult,
     build_export,
     build_hierarchy,
+    label_clusters,
     leaf_centroids,
     load_chunks,
     render_sweep,
@@ -166,6 +170,39 @@ def test_run_clustering_with_hierarchy_export_shape():
         for c in tier["clusters"]:
             assert set(c["leaves"]) <= leaf_ids
             assert c["label"].startswith("Group ")
+
+
+def test_label_clusters_uses_real_teardown(monkeypatch):
+    # regression: teardown must call the method AsyncAnthropic actually has
+    # (close, not aclose) and must not discard labels if teardown raises.
+    calls = {"closed": 0}
+
+    class FakeMsg:
+        def __init__(self):
+            self.content = [types.SimpleNamespace(text="Cell phone policy")]
+
+    class FakeMessages:
+        async def create(self, **kw):
+            return FakeMsg()
+
+    class FakeClient:
+        def __init__(self, **kw):
+            self.messages = FakeMessages()
+        async def close(self):
+            calls["closed"] += 1
+            raise RuntimeError("boom")             # teardown blows up
+
+    fake = types.ModuleType("anthropic")
+    fake.AsyncAnthropic = FakeClient
+    monkeypatch.setitem(__import__("sys").modules, "anthropic", fake)
+
+    labels = asyncio.run(label_clusters("k", {0: ["a passage"], 1: ["another"]}))
+    assert labels == {0: "Cell phone policy", 1: "Cell phone policy"}
+    assert calls["closed"] == 1                     # close() was awaited despite raising
+
+
+def test_haiku_model_id_is_current():
+    assert cluster_schools.HAIKU_MODEL == "claude-haiku-4-5-20251001"
 
 
 class FakeCursor:
