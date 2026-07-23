@@ -14,6 +14,10 @@ Everything is designed to run from a phone: acquisition is GitHub Actions
 `workflow_dispatch` matrix workflows (one job per district = one runner
 IP), no local machine required.
 
+For where this is headed — the move to Vercel and the **monthly ingest +
+brief** cycle (freeze-and-assign, 6-month/​signal re-cluster, seasonal
+year-over-year drift signals) — see [`ROADMAP.md`](ROADMAP.md).
+
 ---
 
 ## Where we are right now

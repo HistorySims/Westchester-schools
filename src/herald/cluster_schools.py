@@ -138,26 +138,34 @@ def umap_reduce(embeddings: np.ndarray, params: ClusterParams) -> np.ndarray:
     return np.asarray(reducer.fit_transform(embeddings), dtype=np.float32)
 
 
-def umap_project(coords: np.ndarray, params: ClusterParams) -> np.ndarray:
-    """Lay the (already reduced) clustering space out in 2D for display.
+def _normalize01(xy: np.ndarray) -> np.ndarray:
+    """Scale each axis to [0, 1] for the renderer (preserving aspect roughly)."""
+    xy = np.asarray(xy, dtype=np.float32).copy()
+    for dim in range(xy.shape[1]):
+        col = xy[:, dim]
+        lo, hi = float(col.min()), float(col.max())
+        xy[:, dim] = (col - lo) / (hi - lo) if hi - lo > 1e-10 else 0.5
+    return xy
 
-    Fed the ``cluster_dims`` output of ``umap_reduce`` so the map you see is
-    a projection *of the space the topics were found in* — the colored
-    regions correspond to the clusters. Cheap (small input dim).
+
+def project_chunks(embeddings: np.ndarray, params: ClusterParams) -> np.ndarray:
+    """Lay *every chunk* out in 2D — a cosine UMAP straight on the embeddings.
+
+    This mirrors the newspaper map (one dot per chunk): with a direct cosine
+    projection, a topic's chunks co-locate into a visual "bubble", and — the
+    property worth keeping — *semantic neighborhoods are real*, so a keyword's
+    matches sit together on the map even when they span several clusters. The
+    earlier chained projection (euclidean UMAP of the already-reduced 10-D
+    space) destroyed that locality and scattered topics across the plane.
     """
     import umap
 
     reducer = umap.UMAP(
         n_components=2, n_neighbors=params.umap_neighbors,
-        min_dist=params.umap_min_dist, metric="euclidean",
+        min_dist=params.umap_min_dist, metric="cosine",
         random_state=42, low_memory=True,
     )
-    xy = np.asarray(reducer.fit_transform(coords), dtype=np.float32)
-    for dim in range(2):  # normalize each axis to [0, 1] for the renderer
-        col = xy[:, dim]
-        lo, hi = float(col.min()), float(col.max())
-        xy[:, dim] = (col - lo) / (hi - lo) if hi - lo > 1e-10 else 0.5
-    return xy
+    return _normalize01(reducer.fit_transform(embeddings))
 
 
 def representative_indices(
@@ -202,13 +210,21 @@ def build_hierarchy(
     where the partitions need not agree). Tiers coarser than the leaf set
     only (``target >= n_leaves`` is the leaf tier itself, so it's dropped);
     smallest target = level 0 (broadest themes).
+
+    Uses **Ward** linkage: ``average``/``complete`` linkage in high-D chains
+    badly — it peels outlier leaves off one at a time (a long tail of
+    singleton "themes") while dumping the dense mass into a few giant blobs.
+    Ward minimizes within-tier variance, giving balanced, browsable themes.
+    The centroids are L2-normalized, so squared Euclidean distance is an affine
+    function of cosine (2 - 2*cos) — Ward's required Euclidean metric therefore
+    clusters in cosine space.
     """
     from scipy.cluster.hierarchy import fcluster, linkage
 
     n = len(leaf_ids)
     if n < 3:
         return []
-    z = linkage(centroids, method="average", metric="cosine")
+    z = linkage(centroids, method="ward", metric="euclidean")
     tiers: list[dict] = []
     for k in sorted({int(t) for t in targets}):
         if k < 2 or k >= n:          # coarser-than-leaves only
@@ -262,15 +278,24 @@ async def label_clusters(
 async def label_hierarchy(
     api_key: str, tiers: list[dict], leaf_reps: dict[int, list[str]]
 ) -> list[dict[int, str]]:
-    """Haiku-label each hierarchy tier, pooling passages from its child leaves."""
+    """Haiku-label each hierarchy tier, pooling passages from its child leaves.
+
+    Draws *one* passage from as many distinct child leaves as possible (up to
+    16) rather than several from a few — a balanced theme spans ~40 leaves, so
+    a broad cross-section names the umbrella better than a deep sample of two.
+    """
     out: list[dict[int, str]] = []
     for tier in tiers:
         reps: dict[int, list[str]] = {}
         for pid, leaves in tier["groups"].items():
             pooled: list[str] = []
-            for lid in leaves:
-                pooled.extend(leaf_reps.get(lid, [])[:2])
-            reps[pid] = pooled[:12]
+            for lid in leaves:                       # one per leaf, widest coverage
+                got = leaf_reps.get(lid, [])
+                if got:
+                    pooled.append(got[0])
+                if len(pooled) >= 16:
+                    break
+            reps[pid] = pooled
         out.append(await label_clusters(api_key, reps))
     return out
 
@@ -284,23 +309,53 @@ def _tooltip(row: ChunkRow) -> str:
 
 
 def build_export(
-    rows: list[ChunkRow], labels: np.ndarray, xy: np.ndarray,
-    cluster_labels: dict[int, str], hierarchy: list[dict] | None = None,
+    rows: list[ChunkRow], labels: np.ndarray, chunk_xy: np.ndarray,
+    leaf_ids: list[int], cluster_labels: dict[int, str],
+    hierarchy: list[dict] | None = None,
     hierarchy_labels: list[dict[int, str]] | None = None,
+    rep_idx: dict[int, list[int]] | None = None,
 ) -> dict:
-    """Compact, columnar JSON for the renderer (arrays, not per-point objects)."""
+    """Columnar JSON for the map — **one point per chunk** (like the newspaper).
+
+    The parallel arrays (``x``/``y``/``cluster``/``district``/``month``) carry
+    every chunk; the cosine projection keeps semantic neighborhoods intact, so a
+    topic's points co-locate and a keyword's matches sit together on the map
+    even across cluster lines. ``clusters`` (leaf topics, with ``theme``/``mid``
+    parents) and ``hierarchy`` let the renderer recolor the *same* points at
+    Fine / Medium / Broad levels and drive the drill-down legend.
+    """
     districts = sorted({r.district for r in rows})
     doc_types = sorted({r.doc_type or "other" for r in rows})
     d_idx = {s: i for i, s in enumerate(districts)}
-    t_idx = {s: i for i, s in enumerate(doc_types)}
+    rep_idx = rep_idx or {}
+
+    # leaf -> hierarchy parents (tier 0 = theme, tier 1 = mid)
+    theme_of: dict[int, int] = {}
+    mid_of: dict[int, int] = {}
+    if hierarchy:
+        if len(hierarchy) >= 1:
+            for pid, leaves in hierarchy[0]["groups"].items():
+                for leaf in leaves:
+                    theme_of[leaf] = pid
+        if len(hierarchy) >= 2:
+            for pid, leaves in hierarchy[1]["groups"].items():
+                for leaf in leaves:
+                    mid_of[leaf] = pid
 
     sizes: dict[int, int] = defaultdict(int)
     for lab in labels:
         sizes[int(lab)] += 1
+
     clusters = [
-        {"id": lab, "label": cluster_labels.get(lab, f"Topic {lab}"), "size": sizes[lab]}
-        for lab in sorted(sizes)
-        if lab >= 0
+        {
+            "id": lid,
+            "label": cluster_labels.get(lid, f"Topic {lid}"),
+            "size": sizes[lid],
+            "theme": theme_of.get(lid, -1),
+            "mid": mid_of.get(lid, -1),
+            "tip": _tooltip(rows[(rep_idx.get(lid) or [0])[0]]) if rep_idx.get(lid) else "",
+        }
+        for lid in leaf_ids
     ]
 
     out = {
@@ -311,27 +366,26 @@ def build_export(
         "districts": districts,
         "doc_types": doc_types,
         "clusters": clusters,
-        "x": [round(float(v), 4) for v in xy[:, 0]],
-        "y": [round(float(v), 4) for v in xy[:, 1]],
+        "x": [round(float(v), 4) for v in chunk_xy[:, 0]],
+        "y": [round(float(v), 4) for v in chunk_xy[:, 1]],
         "cluster": [int(v) for v in labels],
         "district": [d_idx[r.district] for r in rows],
-        "doc_type": [t_idx[r.doc_type or "other"] for r in rows],
         "month": [r.meeting_date.strftime("%Y-%m") if r.meeting_date else "" for r in rows],
-        "tip": [_tooltip(r) for r in rows],
     }
 
     if hierarchy:
         labels_per_tier = hierarchy_labels or [{} for _ in hierarchy]
         tiers_out = []
         for level, (tier, hl) in enumerate(zip(hierarchy, labels_per_tier, strict=False)):
-            tclusters = []
-            for pid, leaves in sorted(tier["groups"].items()):
-                tclusters.append({
+            tclusters = [
+                {
                     "id": pid,
                     "label": hl.get(pid, f"Group {pid}"),
                     "size": sum(sizes[leaf] for leaf in leaves),
                     "leaves": sorted(leaves),
-                })
+                }
+                for pid, leaves in sorted(tier["groups"].items())
+            ]
             tiers_out.append({"level": level, "target": tier["target"], "clusters": tclusters})
         out["hierarchy"] = tiers_out
 
@@ -366,12 +420,13 @@ def run_clustering(
     api_key: str | None = None, hierarchy_targets: list[int] | None = None,
     on_progress=lambda s: None,
 ) -> dict:
-    """Cluster ``rows`` and build the export.
+    """Cluster ``rows`` and build the per-chunk map export.
 
-    UMAP-reduce to ``cluster_dims`` → HDBSCAN there → project that reduced
-    space to 2D for display. ``embeddings`` overrides ``rows``' stored
-    vectors (e.g. content-only). ``hierarchy_targets`` (e.g. ``[15, 60]``)
-    merges the leaf centroids into coarser browsable tiers.
+    UMAP-reduce to ``cluster_dims`` → HDBSCAN there → **project every chunk** to
+    2D with a direct cosine UMAP (preserves semantic locality). ``embeddings``
+    overrides ``rows``' stored vectors (e.g. content-only). ``hierarchy_targets``
+    (e.g. ``[15, 60]``) merges the leaf centroids into coarser tiers, which the
+    map uses to recolor the points at Fine / Medium / Broad levels.
     """
     if embeddings is None:
         embeddings = np.vstack([r.embedding for r in rows]).astype(np.float32)
@@ -380,13 +435,14 @@ def run_clustering(
     on_progress(f"HDBSCAN on {params.cluster_dims}D (min_cluster_size={params.min_cluster_size}, "
                 f"min_samples={params.min_samples})")
     labels = hdbscan_labels(reduced, params)
-    on_progress("UMAP → 2D for display")
-    xy = umap_project(reduced, params)
     n_clusters = len({int(x) for x in labels if x >= 0})
     n_noise = int((labels < 0).sum())
     pct = 100 * n_noise / max(len(rows), 1)
     on_progress(f"  {n_clusters} topics, {n_noise} noise ({pct:.0f}%)")
 
+    on_progress(f"projecting {len(rows)} chunks → 2D (cosine, direct)")
+    chunk_xy = project_chunks(embeddings, params)
+    leaf_ids, cents = leaf_centroids(embeddings, labels)
     rep_idx = representative_indices(embeddings, labels) if n_clusters else {}
     cluster_labels: dict[int, str] = {}
     if api_key and n_clusters:
@@ -398,14 +454,14 @@ def run_clustering(
     hierarchy = hierarchy_labels = None
     if hierarchy_targets and n_clusters >= 3:
         on_progress(f"building hierarchy (merge {n_clusters} leaf centroids → {hierarchy_targets})")
-        leaf_ids, cents = leaf_centroids(embeddings, labels)
         hierarchy = build_hierarchy(leaf_ids, cents, hierarchy_targets)
         on_progress(f"  {len(hierarchy)} tier(s): " +
                     ", ".join(str(len(t['groups'])) for t in hierarchy))
         if api_key and hierarchy:
             leaf_reps = {lab: [rows[i].content for i in idxs] for lab, idxs in rep_idx.items()}
             hierarchy_labels = asyncio.run(label_hierarchy(api_key, hierarchy, leaf_reps))
-    return build_export(rows, labels, xy, cluster_labels, hierarchy, hierarchy_labels)
+    return build_export(rows, labels, chunk_xy, leaf_ids, cluster_labels,
+                        hierarchy, hierarchy_labels, rep_idx=rep_idx)
 
 
 # ---- parameter sweep ---------------------------------------------------

@@ -1,14 +1,16 @@
 <!--
   Westchester Schools — Topic Map renderer.
 
-  Self-contained (no external libs — CSP-safe). Reads a compact columnar JSON
-  (herald-cluster export) from the #map-data script tag. Canvas 2D scatter of
-  every chunk, laid out by UMAP similarity, colored by discovered topic or by
-  district. Pan / zoom / pinch; the legend is a drill-down tree (theme → topic
-  → leaf, from the export's `hierarchy`) — tap to open a branch and isolate it;
-  filter by district; tap a point for its detail. Written as Artifact body (the
-  host wraps it in <!doctype><head><body>); the __MAP_DATA__ token is replaced
-  with the exported JSON at publish time.
+  Self-contained (no external libs — CSP-safe). Reads the herald-cluster export
+  from the #map-data script tag. Canvas 2D scatter: **one dot per chunk**, laid
+  out by a direct cosine UMAP so semantic neighborhoods are real (a topic's
+  points co-locate; a search's matches sit together even across clusters).
+  Recolor the same points by Theme / Topic / District. Pan / zoom / pinch; the
+  legend is a drill-down tree (theme → topic → leaf, from `hierarchy`) — tap to
+  open a branch, which isolates + frames it; search highlights matching topics'
+  points; filter by district; tap a dot for its topic · district · date. Written
+  as Artifact body (host wraps it in <!doctype><head><body>); __MAP_DATA__ is
+  replaced at publish time.
 -->
 <style>
   :root {
@@ -165,7 +167,8 @@
       <div>
         <div class="label">Color by</div>
         <div class="seg" role="group" aria-label="Color mode">
-          <button id="byTopic" aria-pressed="true">Topic</button>
+          <button id="byTheme" aria-pressed="true">Theme</button>
+          <button id="byTopic" aria-pressed="false">Topic</button>
           <button id="byDistrict" aria-pressed="false">District</button>
         </div>
       </div>
@@ -203,75 +206,84 @@
   "use strict";
   const DATA = JSON.parse(document.getElementById("map-data").textContent);
   const N = DATA.n_points;
-  const X = DATA.x, Y = DATA.y, C = DATA.cluster, D = DATA.district,
-        T = DATA.doc_type, MON = DATA.month, TIP = DATA.tip;
+  const X = DATA.x, Y = DATA.y, C = DATA.cluster, D = DATA.district, MON = DATA.month;
+  const DISTRICTS = DATA.districts;
+  const HAS_TREE = !!(DATA.hierarchy && DATA.hierarchy.length);
+  const N_THEMES = HAS_TREE ? DATA.hierarchy[0].clusters.length : 0;
+
+  const leafById = {}; DATA.clusters.forEach(c => leafById[c.id] = c);
+  function leafTheme(cid) { const c = leafById[cid]; return c ? c.theme : -1; }
+  function labelOf(cid) { const c = leafById[cid]; return c ? c.label : ("Topic " + cid); }
 
   // ---- colors ------------------------------------------------------------
-  const DIST_HUES = [4, 32, 45, 130, 190, 210, 265, 320]; // 8 distinct hues
+  const DIST_HUES = [4, 32, 45, 130, 190, 210, 265, 320];
   const dark = () => {
     const t = document.documentElement.getAttribute("data-theme");
     if (t) return t === "dark";
     return matchMedia("(prefers-color-scheme: dark)").matches;
   };
+  const noiseColor = () => dark() ? "#39424e" : "#c7cdd6";
+  function themeColor(tid) {
+    if (tid < 0) return noiseColor();
+    const h = N_THEMES ? (tid * 360 / N_THEMES) : (tid * 137.508) % 360;
+    return dark() ? `hsl(${h} 64% 62%)` : `hsl(${h} 58% 47%)`;
+  }
   function topicColor(cid) {
-    if (cid < 0) return dark() ? "#3a434f" : "#c2cad4";      // noise
-    const h = (cid * 137.508) % 360;                          // golden angle
-    return dark() ? `hsl(${h} 62% 62%)` : `hsl(${h} 58% 46%)`;
+    if (cid < 0) return noiseColor();
+    const h = (cid * 137.508) % 360;
+    return dark() ? `hsl(${h} 60% 62%)` : `hsl(${h} 55% 47%)`;
   }
   function distColor(di) {
     const h = DIST_HUES[di % DIST_HUES.length];
-    return dark() ? `hsl(${h} 60% 62%)` : `hsl(${h} 55% 45%)`;
+    return dark() ? `hsl(${h} 60% 62%)` : `hsl(${h} 55% 46%)`;
+  }
+  function pointColor(i) {
+    if (mode === "district") return distColor(D[i]);
+    if (mode === "topic") return topicColor(C[i]);
+    return themeColor(leafTheme(C[i]));
   }
 
-  const clusters = DATA.clusters.slice().sort((a, b) => b.size - a.size);
-  const labelById = {}; DATA.clusters.forEach(c => labelById[c.id] = c.label);
-  const leafById = {}; DATA.clusters.forEach(c => leafById[c.id] = c);
-
-  // ---- topic hierarchy (cluster-of-clusters) ----------------------------
-  // DATA.hierarchy: coarsest-first tiers of {id, label, size, leaves:[leafId]}.
-  // Build a nesting tree: broad theme -> mid topic -> leaf topic. Each node
-  // carries the *set* of leaf ids under it, so isolating a group isolates all
-  // its leaves. Guaranteed-nesting (each tier is a cut of one linkage) means a
-  // child's leaves sit entirely within one parent — we test one leaf to nest.
+  // ---- topic hierarchy tree (drives the legend + isolation) --------------
   let uid = 0;
   function leafNode(c) {
     return { key: ++uid, kind: "leaf", cid: c.id, label: c.label, size: c.size,
-             leaves: new Set([c.id]), children: null };
+             theme: c.theme, leaves: new Set([c.id]), children: null };
   }
   function buildRoots() {
-    const H = DATA.hierarchy;
-    if (!H || !H.length) return clusters.map(leafNode);   // flat fallback
-    const tiers = H.map((tier, lvl) => tier.clusters.map(g => ({
-      key: ++uid, kind: "group", lvl, label: g.label, size: g.size,
+    const Hh = DATA.hierarchy;
+    if (!Hh || !Hh.length) return DATA.clusters.slice().sort((a,b)=>b.size-a.size).map(leafNode);
+    const tiers = Hh.map((tier, lvl) => tier.clusters.map(g => ({
+      key: ++uid, kind: "group", lvl, gid: g.id, label: g.label, size: g.size,
       leaves: new Set(g.leaves), first: g.leaves[0], children: null, _leaves: g.leaves,
     })));
     for (let i = 0; i < tiers.length; i++) {
       for (const g of tiers[i]) {
         const kids = (i + 1 < tiers.length)
           ? tiers[i + 1].filter(h => g.leaves.has(h.first))
-          : g._leaves.map(id => leafNode(leafById[id] || { id, label: "Topic " + id, size: 0 }));
+          : g._leaves.map(id => leafNode(leafById[id] || { id, label: "Topic " + id, size: 0, theme: -1 }));
         g.children = kids.sort((a, b) => b.size - a.size);
       }
     }
     return tiers[0].slice().sort((a, b) => b.size - a.size);
   }
   const ROOTS = buildRoots();
-  const HAS_TREE = !!(DATA.hierarchy && DATA.hierarchy.length);
 
   // ---- state -------------------------------------------------------------
-  let mode = "topic";                       // "topic" | "district"
-  const distOn = DATA.districts.map(() => true);
-  let sel = null;                            // { label, leaves:Set<cid> } | null
-  const open = new Set();                    // expanded group node keys
-  let batches = [];                          // [{color, idx:[...]}]
+  let mode = "theme";                        // "theme" | "topic" | "district"
+  const distOn = DISTRICTS.map(() => true);
+  let sel = null;                            // { key, label, leaves:Set<cid> } | null
+  let hi = null;                             // search highlight: Set<cid> | null
+  const open = new Set();
+  let batches = [];
 
-  function pointColor(i) {
-    return mode === "topic" ? topicColor(C[i]) : distColor(D[i]);
+  // focus = points to light up (isolation ∩ search); null = everything lit
+  function focusSet() {
+    if (sel && hi) { const s = new Set(); for (const c of hi) if (sel.leaves.has(c)) s.add(c); return s; }
+    return sel ? sel.leaves : hi;
   }
   function rebuildBatches() {
     const groups = new Map();
     for (let i = 0; i < N; i++) {
-      if (!distOn[D[i]]) continue;
       const col = pointColor(i);
       let g = groups.get(col); if (!g) { g = []; groups.set(col, g); }
       g.push(i);
@@ -283,7 +295,7 @@
   // ---- canvas + transform ------------------------------------------------
   const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
   let W = 0, H = 0, DPR = 1;
-  const view = { k: 1, tx: 0, ty: 0 };       // world[0..1] -> screen
+  const view = { k: 1, tx: 0, ty: 0 };
   function resize() {
     DPR = Math.min(devicePixelRatio || 1, 2);
     const r = cv.getBoundingClientRect(); W = r.width; H = r.height;
@@ -292,7 +304,7 @@
     draw();
   }
   function fit() {
-    const pad = 28, s = Math.min(W, H) - pad * 2;
+    const pad = 30, s = Math.min(W, H) - pad * 2;
     view.k = s; view.tx = (W - s) / 2; view.ty = (H - s) / 2; draw();
   }
   const sx = i => X[i] * view.k + view.tx;
@@ -303,15 +315,27 @@
   function render() {
     raf = 0;
     ctx.clearRect(0, 0, W, H);
-    const r = Math.max(1.1, Math.min(3.4, view.k / 260)); // point size vs zoom
+    const focus = focusSet();
+    const r = Math.max(1.1, Math.min(3.6, view.k / 240));
     const s = r * 2;
+    // faint context pass (only when something is focused)
+    if (focus) {
+      ctx.globalAlpha = 0.09;
+      for (const b of batches) {
+        ctx.fillStyle = b.color;
+        for (const i of b.idx) {
+          if (!distOn[D[i]] || focus.has(C[i])) continue;
+          ctx.fillRect(sx(i) - r, sy(i) - r, s, s);
+        }
+      }
+    }
+    // bright pass
+    ctx.globalAlpha = 0.82;
     for (const b of batches) {
-      const dim = sel !== null;
       ctx.fillStyle = b.color;
       for (const i of b.idx) {
-        const on = sel === null || sel.leaves.has(C[i]);
-        if (dim && !on) continue;
-        ctx.globalAlpha = 0.82;
+        if (!distOn[D[i]]) continue;
+        if (focus && !focus.has(C[i])) continue;
         ctx.fillRect(sx(i) - r, sy(i) - r, s, s);
       }
     }
@@ -330,11 +354,11 @@
   }, { passive: false });
 
   const pts = new Map();
-  let panLast = null, pinchLast = 0;
+  let panLast = null, pinchLast = 0, moved = false;
   cv.addEventListener("pointerdown", e => {
     cv.setPointerCapture(e.pointerId);
     pts.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
-    if (pts.size === 1) panLast = { x: e.offsetX, y: e.offsetY };
+    if (pts.size === 1) { panLast = { x: e.offsetX, y: e.offsetY }; moved = false; }
     hideTip();
   });
   cv.addEventListener("pointermove", e => {
@@ -343,79 +367,90 @@
       const [a, b] = [...pts.values()];
       const d = Math.hypot(a.x - b.x, a.y - b.y);
       if (pinchLast) zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, d / pinchLast);
-      pinchLast = d; panLast = null;
+      pinchLast = d; panLast = null; moved = true;
     } else if (pts.size === 1 && panLast) {
-      view.tx += e.offsetX - panLast.x; view.ty += e.offsetY - panLast.y;
+      const dx = e.offsetX - panLast.x, dy = e.offsetY - panLast.y;
+      if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+      view.tx += dx; view.ty += dy;
       panLast = { x: e.offsetX, y: e.offsetY }; draw();
     } else if (pts.size === 0) {
       hover(e.offsetX, e.offsetY);
     }
   });
   function endPtr(e) {
+    const wasTap = pts.size === 1 && !moved;
+    const p = pts.get(e.pointerId);
     pts.delete(e.pointerId);
     if (pts.size < 2) pinchLast = 0;
-    if (pts.size === 1) { const p = [...pts.values()][0]; panLast = { x: p.x, y: p.y }; }
+    if (pts.size === 1) { const q = [...pts.values()][0]; panLast = { x: q.x, y: q.y }; }
     if (pts.size === 0) panLast = null;
+    if (wasTap && p) { const i = nearest(p.x, p.y); if (i >= 0) showTip(i, p.x, p.y); else hideTip(); }
   }
   cv.addEventListener("pointerup", endPtr);
   cv.addEventListener("pointercancel", endPtr);
-  cv.addEventListener("pointerleave", () => hideTip());
+  cv.addEventListener("pointerleave", () => { if (pts.size === 0) hideTip(); });
   document.getElementById("zin").onclick = () => zoomAt(W / 2, H / 2, 1.4);
   document.getElementById("zout").onclick = () => zoomAt(W / 2, H / 2, 1 / 1.4);
 
   // ---- hit testing + tooltip --------------------------------------------
   const tip = document.getElementById("tip");
   function nearest(px, py) {
-    let best = -1, bd = 12 * 12;
+    const focus = focusSet();
+    let best = -1, bd = 14 * 14;
     for (let i = 0; i < N; i++) {
       if (!distOn[D[i]]) continue;
-      if (sel !== null && !sel.leaves.has(C[i])) continue;
+      if (focus && !focus.has(C[i])) continue;
       const dx = sx(i) - px, dy = sy(i) - py, d = dx * dx + dy * dy;
       if (d < bd) { bd = d; best = i; }
     }
     return best;
   }
-  function hover(px, py) {
-    const i = nearest(px, py);
-    if (i < 0) return hideTip();
-    const col = pointColor(i), cid = C[i];
+  function showTip(i, px, py) {
+    const cid = C[i], c = leafById[cid];
     tip.innerHTML =
-      `<div class="t-top"><span class="t-swatch" style="background:${col}"></span>` +
-      `<span class="t-topic">${esc(cid < 0 ? "Unclustered" : labelById[cid] || ("Topic " + cid))}</span></div>` +
-      `<div class="t-meta">${esc(DATA.districts[D[i]])} · ${esc(MON[i] || "undated")} · ${esc(DATA.doc_types[T[i]])}</div>` +
-      `<div class="t-body">${esc(TIP[i] || "")}</div>`;
+      `<div class="t-top"><span class="t-swatch" style="background:${pointColor(i)}"></span>` +
+      `<span class="t-topic">${esc(cid < 0 ? "Unclustered" : labelOf(cid))}</span></div>` +
+      `<div class="t-meta">${esc(DISTRICTS[D[i]])} · ${esc(MON[i] || "undated")}</div>` +
+      (c && c.tip ? `<div class="t-body">${esc(c.tip)}</div>` : "");
     tip.style.left = px + "px"; tip.style.top = py + "px"; tip.classList.add("on");
   }
+  function hover(px, py) { const i = nearest(px, py); if (i >= 0) showTip(i, px, py); else hideTip(); }
   function hideTip() { tip.classList.remove("on"); }
   function esc(s) { return String(s).replace(/[&<>"]/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
-  // tap-to-inspect on touch
-  cv.addEventListener("pointerup", e => {
-    if (e.pointerType !== "mouse" && pts.size === 0) hover(e.offsetX, e.offsetY);
-  });
-
   // ---- rail: stats, chips, topics ---------------------------------------
   document.getElementById("stat").innerHTML =
     `<b>${N.toLocaleString()}</b> passages · <b>${DATA.n_clusters}</b> topics` +
-    (HAS_TREE ? ` in <b>${DATA.hierarchy[0].clusters.length}</b> themes` : "") +
+    (HAS_TREE ? ` in <b>${N_THEMES}</b> themes` : "") +
     (DATA.n_noise ? ` · ${DATA.n_noise.toLocaleString()} unclustered` : "");
 
   const chipsEl = document.getElementById("chips");
-  DATA.districts.forEach((slug, di) => {
+  DISTRICTS.forEach((slug, di) => {
     const b = document.createElement("button");
     b.className = "chip"; b.setAttribute("aria-pressed", "true");
     b.innerHTML = `<span class="dot" style="background:${distColor(di)}"></span>${esc(slug)}`;
-    b.onclick = () => { distOn[di] = !distOn[di]; b.setAttribute("aria-pressed", distOn[di]); rebuildBatches(); };
+    b.onclick = () => { distOn[di] = !distOn[di]; b.setAttribute("aria-pressed", distOn[di]); draw(); };
     chipsEl.appendChild(b);
   });
 
   const listEl = document.getElementById("list"), searchEl = document.getElementById("search");
 
+  function frame(leaves) {
+    let minX = 1, maxX = 0, minY = 1, maxY = 0, any = false;
+    for (let i = 0; i < N; i++) if (leaves.has(C[i]) && distOn[D[i]]) {
+      any = true; if (X[i] < minX) minX = X[i]; if (X[i] > maxX) maxX = X[i];
+      if (Y[i] < minY) minY = Y[i]; if (Y[i] > maxY) maxY = Y[i];
+    }
+    if (!any) return;
+    const pad = 0.06, w = Math.max(maxX - minX + pad * 2, 0.04), h = Math.max(maxY - minY + pad * 2, 0.04);
+    view.k = Math.min(W, H) * 0.92 / Math.max(w, h);
+    const cxw = (minX + maxX) / 2, cyw = (minY + maxY) / 2;
+    view.tx = W / 2 - cxw * view.k; view.ty = H / 2 - (1 - cyw) * view.k; draw();
+  }
   function isolate(node) {
-    // toggle: same selection off, else isolate this node's leaves
     if (sel && sel.key === node.key) sel = null;
-    else sel = { key: node.key, label: node.label, leaves: node.leaves };
+    else { sel = { key: node.key, label: node.label, leaves: node.leaves }; frame(node.leaves); }
     syncTopics(); draw();
   }
   function selected(node) { return sel && sel.key === node.key; }
@@ -424,7 +459,7 @@
     const b = document.createElement("button");
     b.className = "topic leaf"; b.setAttribute("aria-pressed", selected(node));
     b.style.paddingLeft = (8 + depth * 15) + "px";
-    b.innerHTML = `<span class="swatch" style="background:${topicColor(node.cid)}"></span>` +
+    b.innerHTML = `<span class="swatch" style="background:${themeColor(node.theme)}"></span>` +
       `<span class="name">${esc(node.label)}</span><span class="n">${node.size}</span>`;
     b.onclick = () => isolate(node);
     return b;
@@ -435,17 +470,12 @@
     b.className = `topic group lvl${node.lvl}` + (isOpen ? " open" : "");
     b.setAttribute("aria-pressed", selected(node));
     b.style.paddingLeft = (8 + depth * 15) + "px";
-    b.innerHTML = `<span class="tw">▶</span>` +
+    const twStyle = node.lvl === 0 ? ` style="color:${themeColor(node.gid)}"` : "";
+    b.innerHTML = `<span class="tw"${twStyle}>▶</span>` +
       `<span class="name">${esc(node.label)}</span><span class="n">${node.size}</span>`;
     b.onclick = () => {
-      // open a theme -> isolate it; collapse -> clear that isolation
-      if (isOpen) {
-        open.delete(node.key);
-        if (selected(node)) sel = null;
-      } else {
-        open.add(node.key);
-        sel = { key: node.key, label: node.label, leaves: node.leaves };
-      }
+      if (isOpen) { open.delete(node.key); if (selected(node)) sel = null; }
+      else { open.add(node.key); sel = { key: node.key, label: node.label, leaves: node.leaves }; frame(node.leaves); }
       syncTopics(); draw();
     };
     return b;
@@ -458,7 +488,6 @@
     }
   }
   function renderFlat(q) {
-    // search matches leaf labels; show flat, ignoring the tree
     const seen = new Set();
     const walk = ns => ns.forEach(n => n.kind === "leaf"
       ? (n.label.toLowerCase().includes(q) && !seen.has(n.cid)
@@ -473,36 +502,52 @@
     listEl.innerHTML = "";
     if (q) renderFlat(q); else renderTree(ROOTS, 0);
   }
-  function syncTopics() {
-    renderList();
-    document.getElementById("footNote").textContent =
-      sel === null ? (HAS_TREE ? "Tap a theme to open · tap to isolate" : "Tap a topic to isolate it")
-        : `Isolated: ${sel.label}`;
+  function footText() {
+    if (sel) return `Isolated: ${sel.label}`;
+    if (hi) {
+      const p = [...hi].reduce((n, c) => n + (leafById[c] ? leafById[c].size : 0), 0);
+      return `Highlighting ${hi.size} topic${hi.size === 1 ? "" : "s"} · ${p.toLocaleString()} passages`;
+    }
+    return HAS_TREE ? "Tap a theme to open · tap to isolate" : "Tap a topic to isolate";
   }
-  searchEl.addEventListener("input", renderList);
+  function syncTopics() { renderList(); document.getElementById("footNote").textContent = footText(); }
+  searchEl.addEventListener("input", () => {
+    const q = searchEl.value.trim().toLowerCase();
+    hi = null;
+    if (q) {
+      hi = new Set();
+      for (const c of DATA.clusters) if (c.label.toLowerCase().includes(q)) hi.add(c.id);
+      if (hi.size) frame(hi);
+    }
+    syncTopics(); draw();
+  });
 
   // ---- color mode toggle -------------------------------------------------
-  const bT = document.getElementById("byTopic"), bD = document.getElementById("byDistrict");
+  const bTh = document.getElementById("byTheme"), bTo = document.getElementById("byTopic"),
+        bD = document.getElementById("byDistrict");
   function setMode(m) {
-    mode = m; bT.setAttribute("aria-pressed", m === "topic"); bD.setAttribute("aria-pressed", m === "district");
+    mode = m;
+    bTh.setAttribute("aria-pressed", m === "theme");
+    bTo.setAttribute("aria-pressed", m === "topic");
+    bD.setAttribute("aria-pressed", m === "district");
     rebuildBatches();
   }
-  bT.onclick = () => setMode("topic"); bD.onclick = () => setMode("district");
+  bTh.onclick = () => setMode("theme"); bTo.onclick = () => setMode("topic");
+  bD.onclick = () => setMode("district");
 
-  document.getElementById("reset").onclick = () => { sel = null; open.clear(); syncTopics(); fit(); };
+  document.getElementById("reset").onclick = () => {
+    sel = null; hi = null; open.clear(); searchEl.value = ""; syncTopics(); fit();
+  };
 
-  // mobile sheet toggle
   const rail = document.getElementById("rail");
   document.getElementById("head").addEventListener("click", () => {
     if (matchMedia("(max-width: 720px)").matches) rail.classList.toggle("open");
   });
 
-  // theme changes recolor
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { renderList(); rebuildBatches(); });
   new MutationObserver(() => { renderList(); rebuildBatches(); })
     .observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
-  // ---- boot --------------------------------------------------------------
   window.addEventListener("resize", () => { resize(); });
   resize(); fit(); syncTopics(); rebuildBatches();
 })();

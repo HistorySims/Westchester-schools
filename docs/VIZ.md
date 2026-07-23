@@ -8,27 +8,34 @@ are in the corpus, and which districts sit where."
 
 ```
 content embed ─► UMAP (→10-D) ─► HDBSCAN ─► leaf topics ─┐
-                                    │                     ├─► compact JSON ─► cluster_map.html
-                        merge centroids (agglomerative)   │      (artifact)   (canvas + drill-down)
-                        → coarse tiers (themes)  ─────────┤
-                                 Haiku labels (all tiers) ─┘
-              UMAP (10-D → 2-D) for the display layout ───┘
+                                    │                     ├─► chunk JSON ─► cluster_map.html
+                    Ward-merge centroids → theme tiers    │   (artifact)   (canvas point cloud,
+                                 Haiku labels (all tiers) ─┤                 recolor by level
+        project *every chunk* → 2-D (cosine, direct) ─────┘                 + drill-down tree)
 ```
 
 - **`herald.cluster_schools`** loads active chunks, **UMAP-reduces to a
   mid dimensionality (`cluster_dims`, default 10)**, clusters that with
-  HDBSCAN (leaf method, `-1` noise preserved), projects the *same reduced
-  space* to 2D for display, picks the chunks nearest each cluster's embedding
-  centroid as representatives, and labels each topic with Haiku. Export-only
-  (writes no cluster tables — the map reads a JSON artifact, not the DB).
+  HDBSCAN (leaf method, `-1` noise preserved), **projects every chunk to 2D**
+  with a direct cosine UMAP for the map, picks the chunks nearest each cluster's
+  embedding centroid as representatives, and labels each topic with Haiku.
+  Export-only (writes no cluster tables — the map reads a JSON artifact).
 
-  **Learnings from the first real run** (baked into the defaults):
+  **Learnings from the first real runs** (baked into the defaults):
   - *Cluster in ~10-D, not 1024-D and not 2-D.* Raw 1024-D drowns ~60% of
     points in the noise bin (distance concentration); straight-to-2D
     over-merges (the 2D layout optimizes visual separation, not cluster
     density). A mid-dimensional cosine UMAP (`min_dist=0`) is the standard
-    middle ground. The 2D display is a projection *of* that reduced space,
-    so the colored regions correspond to the clusters.
+    middle ground for the *clustering* space.
+  - *Project chunks directly, with cosine.* The map is **one dot per chunk**
+    (like the inherited newspaper map). The projection is a **cosine** UMAP
+    straight on the embeddings (`project_chunks`) — that preserves semantic
+    locality, so a topic's passages co-locate into a visible cluster *and* a
+    keyword's matches sit together even across cluster lines. An earlier attempt
+    projected the *already-reduced 10-D* space with a euclidean metric; that
+    chaining destroyed locality and scattered a single topic across the plane.
+    (Aggregating to one bubble per topic hid that scatter but also threw away
+    the point-level locality that makes search-on-the-map work.)
   - *Cluster on **content-only** embeddings.* The stored `chunks.embedding`
     carries the contextual prefix (`"{district} · {date} · …"`) — right for
     retrieval, but it makes the map cluster by *district* (the first run's
@@ -41,20 +48,26 @@ content embed ─► UMAP (→10-D) ─► HDBSCAN ─► leaf topics ─┐
   gives the best DBCV and lowest noise but ~200 topics on a sample (~500 on the
   full corpus), while coarse clustering is legible but noisier. So we cluster
   *fine* for clean leaves, then **merge the leaf centroids** upward
-  (`herald.cluster_schools.build_hierarchy`: one agglomerative linkage, cut at
-  each `--tiers` count, default `15,60`). Because every tier is a cut of the
+  (`herald.cluster_schools.build_hierarchy`: one **Ward** agglomerative linkage,
+  cut at each `--tiers` count, default `15,60`). Ward matters: `average`/
+  `complete` linkage chains in high-D — it peels outlier leaves off as
+  singleton "themes" while dumping the mass into a few 200-leaf blobs (the
+  first full run did exactly this); Ward minimizes within-tier variance for
+  balanced, browsable themes. Leaf centroids are L2-normalized so Ward's
+  Euclidean metric clusters in cosine space. Because every tier is a cut of the
   *same* linkage, the tiers **strictly nest** — a leaf's ancestors are
   well-defined (unlike re-running HDBSCAN per level, whose partitions needn't
   agree). Each tier is labelled by Haiku from passages pooled across its child
   leaves. This is why the merge beats independent HDBSCAN runs at 15/30/60:
   nesting is guaranteed by construction and it costs one small linkage, not
   three full re-clusters.
-- **Output** is deliberately *columnar* JSON (parallel arrays, not per-point
-  objects) to keep ~23k points small: `x`, `y`, `cluster`, `district`,
-  `doc_type`, `month`, `tip`, plus a `clusters` list of `{id, label, size}`
-  (the leaf topics), the `hierarchy` (coarsest-first tiers of
-  `{id, label, size, leaves}`), and the district / doc-type index tables. A
-  full run is ~2 MB.
+- **Output** is columnar per-chunk JSON: parallel arrays `x`, `y`, `cluster`
+  (leaf id), `district`, `month`, one entry per chunk (~a few hundred KB — plain
+  numbers compress well). `clusters` lists the leaf topics
+  `{id, label, size, theme, mid, tip}` (`theme`/`mid` are the hierarchy parents,
+  `tip` a representative snippet); `hierarchy` carries the coarsest-first tiers
+  of `{id, label, size, leaves}`. The renderer recolors the *same* points by
+  theme / topic / district and drives the legend from `clusters` + `hierarchy`.
 
 ## Running it
 
@@ -107,28 +120,35 @@ CSP-safe). It reads the JSON from its `#map-data` script tag; the
 page. To get it on a phone: run the `cluster` workflow, share the
 `cluster-map.json` back, and it's published as a private Artifact link.
 
-**The map**: canvas scatter, pan / zoom / pinch. The legend is a **drill-down
-tree** — broad themes expand to topics expand to leaf topics (from the export's
-`hierarchy`); tapping a branch opens it *and* isolates its points on the map,
-so you narrow from "Personnel & labor" down to "Substitute & coaching stipends"
-in two taps. Searching flattens the tree to matching leaf topics. Also: filter
-by district chips, toggle color between topic and district, hover or tap a
-point for its district · date · doc-type · snippet. Dark and light themes;
-mobile-first (the control rail becomes a bottom sheet).
+**The map**: **one dot per chunk**, pan / zoom / pinch. **Color by** recolors
+the *same* points three ways — **Theme** (~15 hues → clear regions), **Topic**
+(the fine leaf clusters), or **District**. The legend is a **drill-down tree** —
+broad themes expand to topics expand to leaf topics (from the export's
+`hierarchy`); tapping a branch isolates its points *and frames them* (the map
+pans/zooms to the selection), so you narrow from "Personnel & labor" to
+"Substitute & coaching stipends" in two taps. **Search** highlights every point
+whose topic label matches and dims the rest — because the projection preserves
+locality, the matches show up as a tight region (the "426 Oregon matches land
+together" behavior). Also: filter by district chips, tap a dot for its topic ·
+district · date · snippet. Dark and light themes; mobile-first (the control rail
+becomes a bottom sheet).
 
 ## Design notes
 
-- **Topic colors** use a golden-angle HSL rotation so adjacent topics
-  separate; there are more topics than any categorical palette can hold, so
-  spatial position disambiguates. **District colors** use a fixed 8-hue set.
+- **Theme colors** are evenly spaced around the HSL wheel (themes are few — ~15
+  — so they stay far apart); **Topic colors** use a golden-angle rotation (many
+  leaves, so spatial position disambiguates); **District colors** a fixed 8-hue
+  set. Noise (`-1`) is a neutral gray.
 - Rendering is Canvas 2D with color-batched draw (one `fillStyle` per color
-  group), which handles ~23k points at interactive frame rates without WebGL.
+  group). When a focus is active (isolation ∩ search), a faint context pass
+  draws the rest at low alpha so you keep the shape of the whole corpus — this
+  handles ~23k points at interactive frame rates without WebGL.
 - Verified headless (Playwright + the pre-installed Chromium) across
   desktop/mobile and both themes before shipping.
 
 ## Next views (build on this)
 
-The `clusters` + per-point `district`/`month` in the export already support
-the other three planned views without re-clustering: topic-over-time
-(trajectory), district comparison, single-topic dossier. See the options in
-the project history; this map is their shared substrate.
+The per-chunk `district` / `month` arrays and the hierarchy in the export
+already support the other planned views without re-clustering: district
+comparison, single-topic dossier, and topic-over-time (trajectory). This map is
+their shared substrate.
