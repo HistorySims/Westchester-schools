@@ -613,14 +613,23 @@ def run(
     )
 
     if publish:
-        with schools_db.connect(db_url) as conn:
-            conn.execute(
-                "insert into cluster_maps (generated_at, n_points, n_clusters, data) "
-                "values (%s, %s, %s, %s::jsonb)",
-                (export["generated_at"], export["n_points"], export["n_clusters"], blob),
+        # Resilient: a forgotten migration (missing table) must not discard an
+        # expensive run — the JSON artifact is already written above.
+        try:
+            with schools_db.connect(db_url) as conn:
+                conn.execute(
+                    "insert into cluster_maps (generated_at, n_points, n_clusters, data) "
+                    "values (%s, %s, %s, %s::jsonb)",
+                    (export["generated_at"], export["n_points"], export["n_clusters"], blob),
+                )
+                conn.commit()
+            console.print("[green]published[/green] to cluster_maps (web /explore will show it)")
+        except Exception as exc:
+            console.print(
+                f"[yellow]publish skipped[/yellow]: {exc}\n"
+                "  Run web/supabase/migrations/20260725_cluster_maps.sql, then re-run "
+                "(the artifact above is still valid)."
             )
-            conn.commit()
-        console.print("[green]published[/green] to cluster_maps (web /explore will show it)")
 
 
 def _ints(s: str) -> list[int]:
