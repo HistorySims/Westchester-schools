@@ -35,6 +35,10 @@ on:
         description: "Label topics with Haiku (needs ANTHROPIC_API_KEY)"
         type: boolean
         default: true
+      publish:
+        description: "Publish to the cluster_maps table (the web /explore page reads it)"
+        type: boolean
+        default: true
 
 concurrency:
   group: cluster
@@ -71,7 +75,8 @@ jobs:
             --tiers "${{ inputs.tiers }}" \
             --embeddings "${{ inputs.embeddings }}" \
             ${{ inputs.sample && format('--sample "{0}"', inputs.sample) || '' }} \
-            ${{ inputs.label && '--labels' || '--no-labels' }}
+            ${{ inputs.label && '--labels' || '--no-labels' }} \
+            ${{ inputs.publish && '--publish' || '--no-publish' }}
       - name: Summarize topics in the run log
         if: always()
         run: |

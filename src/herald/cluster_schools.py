@@ -568,6 +568,10 @@ def run(
     labels: bool = typer.Option(
         True, "--labels/--no-labels", help="Label topics with Haiku (needs ANTHROPIC_API_KEY)."
     ),
+    publish: bool = typer.Option(
+        False, "--publish/--no-publish",
+        help="Also insert the map into the cluster_maps table (the web /explore page reads it)."
+    ),
 ) -> None:
     """Load embeddings → UMAP + HDBSCAN → Haiku labels → JSON for the map."""
     from herald import schools_db
@@ -600,12 +604,32 @@ def run(
     export = run_clustering(rows, params, embeddings=emb, api_key=api_key,
                             hierarchy_targets=_ints(tiers) or None,
                             on_progress=lambda s: console.print(s))
-    Path(out).write_text(json.dumps(export, separators=(",", ":")), encoding="utf-8")
-    size_kb = Path(out).stat().st_size / 1024
+    blob = json.dumps(export, separators=(",", ":"))
+    Path(out).write_text(blob, encoding="utf-8")
+    size_kb = len(blob.encode("utf-8")) / 1024
     console.print(
         f"[green]wrote[/green] {out} — {export['n_clusters']} topics, "
         f"{export['n_points']} points ({size_kb:.0f} KB)"
     )
+
+    if publish:
+        # Resilient: a forgotten migration (missing table) must not discard an
+        # expensive run — the JSON artifact is already written above.
+        try:
+            with schools_db.connect(db_url) as conn:
+                conn.execute(
+                    "insert into cluster_maps (generated_at, n_points, n_clusters, data) "
+                    "values (%s, %s, %s, %s::jsonb)",
+                    (export["generated_at"], export["n_points"], export["n_clusters"], blob),
+                )
+                conn.commit()
+            console.print("[green]published[/green] to cluster_maps (web /explore will show it)")
+        except Exception as exc:
+            console.print(
+                f"[yellow]publish skipped[/yellow]: {exc}\n"
+                "  Run web/supabase/migrations/20260725_cluster_maps.sql, then re-run "
+                "(the artifact above is still valid)."
+            )
 
 
 def _ints(s: str) -> list[int]:
