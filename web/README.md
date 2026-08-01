@@ -16,6 +16,10 @@ map is v2).
 - **`/api/search`** — global Postgres full-text search (the "every mention of X"
   box). Cheap; runs entirely in the database.
 - **`/api/districts`** — the district roster for the filter chips.
+- **`/explore`** — the topic map. Reuses the standalone canvas renderer
+  (`public/cluster_map.html`) in an iframe, fed the latest snapshot from
+  **`/api/map`** (the `cluster_maps` table) via `postMessage`. Populate it with
+  `herald-cluster run --publish`.
 
 Retrieval ranks per district in SQL, so one verbose district can't crowd out the
 panel and districts with no evidence are reported — the same design as the CLI.
@@ -30,7 +34,9 @@ panel and districts with no evidence are reported — the same design as the CLI
 
    It creates `match_school_chunks_semantic`, `match_school_chunks_fts`, and
    `search_school_chunks`. The `chunks` FTS index and HNSW index already exist
-   from `db/migrations/0001_schools_init.sql`.
+   from `db/migrations/0001_schools_init.sql`. For the topic map, also run
+   `20260725_cluster_maps.sql` (creates the `cluster_maps` table `/explore`
+   reads).
 
 2. **Set environment variables** (locally in `.env.local`, and in the Vercel
    project settings):
@@ -53,10 +59,9 @@ npm run dev     # http://localhost:3000
 npm run build   # production build (what Vercel runs)
 ```
 
-## Not yet wired (v2+)
+## Not yet wired
 
-The topic **map**, the monthly **brief**, and **trajectory** views. The map
-needs the clustering persisted to Supabase (today `herald-cluster` only emits a
-JSON artifact). `package.json` still lists `deck.gl`/`luma.gl` from the
-newspaper app — unused in v1, kept for when the map lands; they tree-shake out
-of the client bundle.
+The monthly **brief** and **trajectory** views (see `../docs/ROADMAP.md`).
+`package.json` still lists `deck.gl`/`luma.gl` from the newspaper app — unused
+(our map is the vanilla-canvas renderer), kept out of harm's way; they
+tree-shake out of the client bundle.

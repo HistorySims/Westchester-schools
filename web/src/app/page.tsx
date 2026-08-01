@@ -183,8 +183,13 @@ export default function Home() {
   return (
     <main className="mx-auto max-w-3xl px-4 py-8 sm:py-12">
       <header className="mb-6">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-800">
-          Westchester Schools
+        <div className="flex items-center justify-between">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-800">
+            Westchester Schools
+          </div>
+          <a href="/explore" className="text-sm text-amber-800 hover:underline">
+            Topic map →
+          </a>
         </div>
         <h1 className="font-serif text-3xl leading-tight sm:text-4xl">
           Ask the district record
