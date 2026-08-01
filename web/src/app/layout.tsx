@@ -18,9 +18,9 @@ const jetbrains = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Herald — Historic Newspaper Research",
+  title: "Westchester Schools — Ask the district record",
   description:
-    "Semantic search and AI-powered synthesis over the New-York Daily Tribune and Albany Evening Journal, 1842-1846.",
+    "Semantic Q&A and full-text search over board agendas, minutes, policies, contracts, and budgets from eight Westchester County school districts.",
 };
 
 export default function RootLayout({

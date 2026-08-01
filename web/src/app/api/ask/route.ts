@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
-import { retrieve, retrieveScoped } from "@/lib/retrieval";
-import { synthesizeStream } from "@/lib/synth";
-import type { AskRequest } from "@/lib/types";
+import { retrievePanel } from "@/lib/schools-retrieval";
+import { synthesizeStream } from "@/lib/schools-synth";
 import {
   checkRateLimit,
   clientIp,
@@ -11,45 +10,45 @@ import {
 
 const MAX_QUESTION_LENGTH = 500;
 
-export async function POST(req: NextRequest) {
-  if (!checkRateLimit("ask", clientIp(req))) {
-    return rateLimitResponse();
-  }
+export const maxDuration = 120; // Vercel function timeout (Sonnet + rerank)
 
-  let body: AskRequest;
+interface AskBody {
+  question?: string;
+  districts?: string[] | null;
+  doc_type?: string | null;
+  date_from?: string | null;
+  date_to?: string | null;
+}
+
+export async function POST(req: NextRequest) {
+  if (!checkRateLimit("ask", clientIp(req))) return rateLimitResponse();
+
+  let body: AskBody;
   try {
     body = await req.json();
   } catch {
     return jsonError("Invalid JSON body", 400);
   }
 
-  const { question, mode, paper_lccn, date_from, date_to, scope_tier, scope_label } = body;
-
+  const { question, districts, doc_type, date_from, date_to } = body;
   if (!question || typeof question !== "string") {
     return jsonError("Missing or invalid 'question' field", 400);
   }
-
   if (question.length > MAX_QUESTION_LENGTH) {
     return jsonError(`Question exceeds ${MAX_QUESTION_LENGTH} character limit`, 400);
   }
 
   const encoder = new TextEncoder();
-
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        const isScoped =
-          scope_tier !== null && scope_tier !== undefined &&
-          scope_label !== null && scope_label !== undefined;
-        const chunks = isScoped
-          ? await retrieveScoped(question, scope_tier!, scope_label!)
-          : await retrieve(question, {
-              paperLccn: paper_lccn ?? null,
-              dateFrom: date_from ?? null,
-              dateTo: date_to ?? null,
-            });
-
-        for await (const event of synthesizeStream(question, chunks, mode)) {
+        const panel = await retrievePanel(question, {
+          districts: districts ?? null,
+          docType: doc_type ?? null,
+          dateFrom: date_from ?? null,
+          dateTo: date_to ?? null,
+        });
+        for await (const event of synthesizeStream(panel)) {
           if (event.type === "token") {
             controller.enqueue(
               encoder.encode(`event: token\ndata: ${JSON.stringify({ text: event.text })}\n\n`)
@@ -61,8 +60,7 @@ export async function POST(req: NextRequest) {
           }
         }
       } catch (err) {
-        const message =
-          err instanceof Error ? err.message : "Internal server error";
+        const message = err instanceof Error ? err.message : "Internal server error";
         controller.enqueue(
           encoder.encode(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`)
         );
