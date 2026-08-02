@@ -108,7 +108,13 @@ def score_chunk(content: str) -> ScoreResult:
 
 # ---- CLI ---------------------------------------------------------------
 
-app = typer.Typer(help="Score schools chunks for OCR legibility + boilerplate.")
+app = typer.Typer(help="Score schools chunks for OCR legibility + boilerplate.",
+                  no_args_is_help=True)
+
+
+@app.callback()
+def _main() -> None:
+    """Group callback so ``run`` stays a named subcommand (room to grow)."""
 
 
 @app.command()
