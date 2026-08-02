@@ -33,8 +33,9 @@ export default function Explore() {
     window.addEventListener("message", onMessage);
 
     fetch("/api/map")
-      .then((r) => r.json())
-      .then((d) => {
+      .then(async (r) => {
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || `Request failed (${r.status})`);
         if (d.map) {
           mapRef.current = d.map;
           setGeneratedAt(d.generated_at ?? null);
