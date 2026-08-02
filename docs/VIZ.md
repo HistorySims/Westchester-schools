@@ -98,12 +98,29 @@ Before committing to a granularity, run the **`cluster-sweep`** workflow
 reporting **topic count**, **noise %**, and **DBCV** (density-based cluster
 validity — HDBSCAN's `relative_validity_`, higher = cleaner separation). It
 runs on a `sample` (default 8k chunks — the *relative* ranking holds on a
-sample, and it's faster/cheaper). Defaults: `dims=5,10,15,20`,
-`min_cluster_sizes=15,30,60,100`. Output is a markdown table (`cluster-sweep.md`,
-printed to the run summary, ranked by DBCV). Pick the cell that trades off
-clean separation against a legible topic count, then feed those numbers into
-the `cluster` workflow. CLI: `herald-cluster sweep [--sample N] [--dims …]
-[--min-cluster-sizes …] [--embeddings content|stored]`.
+sample, and it's faster/cheaper). Defaults: `dims=0,5,10,15,20`,
+`min_cluster_sizes=15,30,60,100`. **`dims=0` clusters the raw 1024-D embeddings
+with no UMAP reduction** — the newspaper engine's strategy — so the sweep
+compares raw vs reduced head-to-head (our first raw run drowned ~60% in noise,
+but that predates the quality gate below; worth re-testing). Output is a
+markdown table (`cluster-sweep.md`, ranked by DBCV). Pick the cell that trades
+clean separation against a legible topic count. CLI: `herald-cluster sweep
+[--sample N] [--dims 0,5,10,…] [--min-cluster-sizes …] [--embeddings content|stored]`.
+
+## Quality gate (feed it cleaner input)
+
+The biggest lever isn't the algorithm, it's the input. Governance corpora are
+thick with **procedural boilerplate** — roll calls, "moved by X, seconded by Y,
+carried 5-0", minutes approvals, adjournments — which is near-identical across
+every district and topic, so it inflates the noise bin and muddies topics. The
+**`score`** workflow (`herald-score`) tags each chunk for OCR legibility and
+procedural boilerplate and flips the junk to `status='quarantined'`. Because
+both the map (`load_chunks`) *and* Ask retrieval filter `status='active'`, one
+pass cleans both surfaces. Run it with `dry_run` first — it prints what *would*
+be quarantined, with samples, before writing. Conservative by design:
+procedural quarantine needs a *short* chunk hitting *multiple* procedural
+families, so a substantive budget motion stays active. This is the schools
+rewrite of the newspaper's `classify.py` content/quality gate.
 
 **On hierarchy** (asked during design): for nested topics — broad themes that
 split into sub-topics — prefer **cluster-of-clusters** (agglomerative merge on

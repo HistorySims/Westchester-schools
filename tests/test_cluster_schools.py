@@ -123,6 +123,19 @@ def test_render_sweep_tolerates_nan_dbcv():
     assert "nan" in r.lower()                      # doesn't crash on NaN DBCV
 
 
+def test_sweep_raw_dims_clusters_unreduced():
+    # dims=0 clusters the raw embeddings (no UMAP) — the newspaper strategy
+    rng = np.random.default_rng(4)
+    a = rng.normal(0, 0.02, (40, 8)) + np.eye(8)[0]
+    b = rng.normal(0, 0.02, (40, 8)) + np.eye(8)[1]
+    emb = np.vstack([a, b]).astype(np.float32)
+
+    results = sweep_clustering(emb, dims_list=[0], mcs_list=[5], min_samples=2, umap_neighbors=5)
+    assert len(results) == 1 and results[0].cluster_dims == 0
+    assert results[0].n_clusters >= 1
+    assert "raw" in render_sweep(results)          # rendered as 'raw', not '0'
+
+
 def test_build_hierarchy_nests_and_cuts():
     # six leaf centroids in two well-separated families of three
     fam_a = np.array([[1, 0, 0], [0.98, 0.05, 0], [0.97, 0, 0.05]], dtype=np.float32)

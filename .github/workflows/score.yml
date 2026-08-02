@@ -1,0 +1,56 @@
+name: score
+
+# Quality / boilerplate gate: score every chunk for OCR legibility and
+# procedural boilerplate (roll calls, motions, adjournments) and flip the junk
+# to status='quarantined'. Both the topic map and Ask retrieval filter
+# status='active', so this cleans both at once. Reversible — re-run to re-score.
+#
+#   Actions -> score -> Run workflow
+#
+# Run with 'dry_run' first to see what WOULD be quarantined (with samples) in
+# the run log, then run again with dry_run off to write.
+#
+# Required secret: SUPABASE_DB_URL.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Report what would change (samples in the log) without writing"
+        type: boolean
+        default: true
+      rescore_all:
+        description: "Re-score every chunk, not just currently-active ones"
+        type: boolean
+        default: false
+
+concurrency:
+  group: score
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  score:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Sanity-check secrets
+        run: |
+          [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
+      - name: Score
+        run: |
+          uv run herald-score run \
+            ${{ inputs.dry_run && '--dry-run' || '--write' }} \
+            ${{ inputs.rescore_all && '--rescore-all' || '' }}
