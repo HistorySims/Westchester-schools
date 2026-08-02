@@ -371,6 +371,7 @@ def build_export(
         "cluster": [int(v) for v in labels],
         "district": [d_idx[r.district] for r in rows],
         "month": [r.meeting_date.strftime("%Y-%m") if r.meeting_date else "" for r in rows],
+        "cid": [r.chunk_id for r in rows],   # chunk id, for click-to-read-passage
     }
 
     if hierarchy:
@@ -491,10 +492,16 @@ def sweep_clustering(
 
     results: list[SweepResult] = []
     for dims in dims_list:
-        p = ClusterParams(cluster_dims=dims, umap_neighbors=umap_neighbors,
-                          min_samples=min_samples)
-        on_progress(f"UMAP → {dims}D")
-        reduced = umap_reduce(embeddings, p)
+        if dims <= 0:
+            # dims=0 → cluster the *raw* embeddings, no UMAP reduction (the
+            # newspaper engine's strategy; test it head-to-head with reduced).
+            on_progress("raw embeddings (no UMAP reduction)")
+            reduced = np.ascontiguousarray(embeddings, dtype=np.float32)
+        else:
+            p = ClusterParams(cluster_dims=dims, umap_neighbors=umap_neighbors,
+                              min_samples=min_samples)
+            on_progress(f"UMAP → {dims}D")
+            reduced = umap_reduce(embeddings, p)
         for mcs in mcs_list:
             cl = hdbscan.HDBSCAN(
                 min_cluster_size=mcs, min_samples=min_samples, metric="euclidean",
@@ -528,8 +535,9 @@ def render_sweep(results: list[SweepResult]) -> str:
         "|---:|---:|---:|---:|---:|---:|",
     ]
     for r in ranked:
+        dims = "raw" if r.cluster_dims <= 0 else str(r.cluster_dims)
         lines.append(
-            f"| {r.cluster_dims} | {r.min_cluster_size} | {r.n_clusters} | "
+            f"| {dims} | {r.min_cluster_size} | {r.n_clusters} | "
             f"{r.noise_pct:.0f}% | {r.dbcv:+.3f} | {r.median_size} |"
         )
     return "\n".join(lines) + "\n"
@@ -642,7 +650,9 @@ def sweep(
     sample: int = typer.Option(
         8000, help="Sweep on this many random chunks (relative ranking holds; faster/cheaper)."
     ),
-    dims: str = typer.Option("5,10,15,20", help="cluster_dims values to try."),
+    dims: str = typer.Option(
+        "0,5,10,15,20", help="cluster_dims values to try (0 = raw, no UMAP reduction)."
+    ),
     min_cluster_sizes: str = typer.Option("15,30,60,100", help="HDBSCAN sizes to try."),
     min_samples: int = typer.Option(5, help="HDBSCAN min_samples (held fixed across the grid)."),
     embeddings: str = typer.Option("content", help="'content' or 'stored'."),

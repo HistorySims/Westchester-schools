@@ -56,9 +56,10 @@ def test_build_export_per_chunk_columns():
     assert out["n_points"] == 3 and out["n_clusters"] == 1 and out["n_noise"] == 1
     assert out["districts"] == ["ossining", "peekskill"]
     # per-chunk parallel arrays, all length n_points
-    for key in ("x", "y", "cluster", "district", "month"):
+    for key in ("x", "y", "cluster", "district", "month", "cid"):
         assert len(out[key]) == 3
     assert out["cluster"] == [0, 0, -1]
+    assert out["cid"] == ["c0", "c1", "c2"]     # chunk ids, aligned to points
     assert out["district"] == [1, 1, 0]         # peekskill=1, ossining=0
     assert out["month"] == ["2026-03", "2026-03", "2026-03"]
     # leaf topic carries label + rep tip, no hierarchy parents here
@@ -121,6 +122,19 @@ def test_sweep_clustering_grid_and_render():
 def test_render_sweep_tolerates_nan_dbcv():
     r = render_sweep([SweepResult(10, 15, 3, 12.0, float("nan"), 40)])
     assert "nan" in r.lower()                      # doesn't crash on NaN DBCV
+
+
+def test_sweep_raw_dims_clusters_unreduced():
+    # dims=0 clusters the raw embeddings (no UMAP) — the newspaper strategy
+    rng = np.random.default_rng(4)
+    a = rng.normal(0, 0.02, (40, 8)) + np.eye(8)[0]
+    b = rng.normal(0, 0.02, (40, 8)) + np.eye(8)[1]
+    emb = np.vstack([a, b]).astype(np.float32)
+
+    results = sweep_clustering(emb, dims_list=[0], mcs_list=[5], min_samples=2, umap_neighbors=5)
+    assert len(results) == 1 and results[0].cluster_dims == 0
+    assert results[0].n_clusters >= 1
+    assert "raw" in render_sweep(results)          # rendered as 'raw', not '0'
 
 
 def test_build_hierarchy_nests_and_cuts():
