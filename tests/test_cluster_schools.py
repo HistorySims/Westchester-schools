@@ -56,9 +56,10 @@ def test_build_export_per_chunk_columns():
     assert out["n_points"] == 3 and out["n_clusters"] == 1 and out["n_noise"] == 1
     assert out["districts"] == ["ossining", "peekskill"]
     # per-chunk parallel arrays, all length n_points
-    for key in ("x", "y", "cluster", "district", "month"):
+    for key in ("x", "y", "cluster", "district", "month", "cid"):
         assert len(out[key]) == 3
     assert out["cluster"] == [0, 0, -1]
+    assert out["cid"] == ["c0", "c1", "c2"]     # chunk ids, aligned to points
     assert out["district"] == [1, 1, 0]         # peekskill=1, ossining=0
     assert out["month"] == ["2026-03", "2026-03", "2026-03"]
     # leaf topic carries label + rep tip, no hierarchy parents here

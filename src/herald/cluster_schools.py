@@ -371,6 +371,7 @@ def build_export(
         "cluster": [int(v) for v in labels],
         "district": [d_idx[r.district] for r in rows],
         "month": [r.meeting_date.strftime("%Y-%m") if r.meeting_date else "" for r in rows],
+        "cid": [r.chunk_id for r in rows],   # chunk id, for click-to-read-passage
     }
 
     if hierarchy:

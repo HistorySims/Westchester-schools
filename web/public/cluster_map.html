@@ -129,6 +129,24 @@
     letter-spacing: .01em; }
   #tip .t-body { color: var(--ink); margin-top: 4px; line-height: 1.35; }
 
+  /* ---- click-to-read detail panel ---- */
+  #detail { position: absolute; z-index: 6; right: 12px; bottom: 12px; width: min(380px, calc(100% - 24px));
+    max-height: 46%; overflow-y: auto; background: var(--panel-solid); border: 1px solid var(--line);
+    border-radius: 12px; box-shadow: var(--shadow); padding: 14px 16px 16px; font-size: 13px;
+    transform: translateY(8px); opacity: 0; pointer-events: none; transition: opacity .12s, transform .12s; }
+  #detail.on { opacity: 1; transform: translateY(0); pointer-events: auto; }
+  #detail-close { position: absolute; top: 8px; right: 10px; border: 0; background: transparent;
+    color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; }
+  #detail .d-topic { display: flex; align-items: center; gap: 7px; font-weight: 600; padding-right: 20px; }
+  #detail .d-topic .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+  #detail .d-meta { font-family: var(--mono); font-size: 11px; color: var(--muted); margin: 3px 0 8px; }
+  #detail .d-src { font-size: 12px; margin-bottom: 8px; }
+  #detail .d-src a { color: var(--accent); }
+  #detail .d-text { color: var(--ink); line-height: 1.5; white-space: pre-wrap; }
+  @media (max-width: 720px) {
+    #detail { right: 8px; left: 8px; width: auto; bottom: 60px; max-height: 40vh; }
+  }
+
   /* floating controls on desktop stage */
   .stage-btns { position: absolute; top: 12px; right: 12px; z-index: 4; display: flex;
     gap: 6px; }
@@ -197,6 +215,7 @@
       <button id="zout" title="Zoom out">−</button>
     </div>
     <div id="tip"></div>
+    <div id="detail"><button id="detail-close" aria-label="Close">×</button><div id="detail-body"></div></div>
   </div>
 </div>
 
@@ -207,6 +226,7 @@
   function boot(DATA) {
   const N = DATA.n_points;
   const X = DATA.x, Y = DATA.y, C = DATA.cluster, D = DATA.district, MON = DATA.month;
+  const CID = DATA.cid || null;   // per-point chunk id (click-to-read; absent in older maps)
   const DISTRICTS = DATA.districts;
   const HAS_TREE = !!(DATA.hierarchy && DATA.hierarchy.length);
   const N_THEMES = HAS_TREE ? DATA.hierarchy[0].clusters.length : 0;
@@ -339,6 +359,26 @@
         ctx.fillRect(sx(i) - r, sy(i) - r, s, s);
       }
     }
+    // outline the focused topic's points in black — only when the selection is
+    // small enough that rings read as circles, not a black blob
+    if (focus) {
+      let n = 0;
+      for (const cid of focus) n += (leafById[cid] ? leafById[cid].size : 0);
+      if (n > 0 && n <= 700) {
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = dark() ? "#000" : "#0a0a0a";
+        ctx.lineWidth = 1.25;
+        const rr = r + 1.6;
+        for (const b of batches) {
+          for (const i of b.idx) {
+            if (!distOn[D[i]] || !focus.has(C[i])) continue;
+            ctx.beginPath();
+            ctx.arc(sx(i), sy(i), rr, 0, 6.2832);
+            ctx.stroke();
+          }
+        }
+      }
+    }
     ctx.globalAlpha = 1;
   }
 
@@ -384,7 +424,7 @@
     if (pts.size < 2) pinchLast = 0;
     if (pts.size === 1) { const q = [...pts.values()][0]; panLast = { x: q.x, y: q.y }; }
     if (pts.size === 0) panLast = null;
-    if (wasTap && p) { const i = nearest(p.x, p.y); if (i >= 0) showTip(i, p.x, p.y); else hideTip(); }
+    if (wasTap && p) { const i = nearest(p.x, p.y); if (i >= 0) showDetail(i); else detail.classList.remove("on"); }
   }
   cv.addEventListener("pointerup", endPtr);
   cv.addEventListener("pointercancel", endPtr);
@@ -418,6 +458,50 @@
   function hideTip() { tip.classList.remove("on"); }
   function esc(s) { return String(s).replace(/[&<>"]/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+  // ---- click-to-read passage detail -------------------------------------
+  const detail = document.getElementById("detail");
+  const detailBody = document.getElementById("detail-body");
+  let detailReq = 0;
+  document.getElementById("detail-close").onclick = () => detail.classList.remove("on");
+  function showDetail(i) {
+    hideTip();
+    const cid = C[i], c = leafById[cid];
+    const label = cid < 0 ? "Unclustered" : labelOf(cid);
+    const chunkId = CID ? CID[i] : null;
+    const fallback = c && c.tip ? esc(c.tip) : "";
+    detailBody.innerHTML =
+      `<div class="d-topic"><span class="sw" style="background:${pointColor(i)}"></span>${esc(label)}</div>` +
+      `<div class="d-meta">${esc(DISTRICTS[D[i]])} · ${esc(MON[i] || "undated")}</div>` +
+      `<div class="d-body" id="d-body">${chunkId ? "Loading passage…" : fallback}</div>`;
+    detail.classList.add("on");
+    if (!chunkId) return;
+    const req = ++detailReq;
+    fetch("/api/chunk?id=" + encodeURIComponent(chunkId))
+      .then(r => r.ok ? r.json() : Promise.reject(new Error("http " + r.status)))
+      .then(d => {
+        if (req !== detailReq) return;                 // a newer click superseded this
+        const body = document.getElementById("d-body");
+        if (!body) return;
+        const src = d.source_url
+          ? `<a href="${esc(d.source_url)}" target="_blank" rel="noreferrer">${esc(d.doc_title || "source")}</a>`
+          : esc(d.doc_title || "");
+        const bits = [src,
+          d.doc_type ? esc(d.doc_type) : "",
+          d.section_path ? "§" + esc(d.section_path) : "",
+          d.heading ? esc(d.heading) : ""].filter(Boolean).join(" · ");
+        body.innerHTML =
+          (bits ? `<div class="d-src">${bits}</div>` : "") +
+          `<div class="d-text">${esc(d.content || "")}</div>`;
+      })
+      .catch(() => {
+        if (req !== detailReq) return;
+        const body = document.getElementById("d-body");
+        if (body) body.innerHTML = fallback
+          ? `<div class="d-text">${fallback}</div><div class="d-meta">(full passage unavailable)</div>`
+          : "(couldn't load the passage — is this map from before click-to-read?)";
+      });
+  }
 
   // ---- rail: stats, chips, topics ---------------------------------------
   document.getElementById("stat").innerHTML =
