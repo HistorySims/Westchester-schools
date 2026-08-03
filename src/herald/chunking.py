@@ -46,6 +46,9 @@ class Chunk:
     section_type: str          # e.g. "Consent Agenda - Business/Finance"
     heading: str
     order_index: int
+    # 'prose' (the default) or 'table' — a whole detected grid kept intact for
+    # retrieval and structured extraction (docs/STRUCTURED.md).
+    kind: str = "prose"
     # doc-level, denormalized so chronology + district filter are 1-column ops
     district: str | None = None
     meeting_date: date | None = None

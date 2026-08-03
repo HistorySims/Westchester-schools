@@ -42,6 +42,7 @@ class SchoolChunkRow:
     embedding: list[float] | None
     meeting_date: _dt.date | None
     doc_type: str | None
+    kind: str = "prose"   # 'prose' | 'table'
 
 
 def upsert_district(
@@ -155,15 +156,15 @@ def insert_chunks(
         return 0
     params: list[tuple[Any, ...]] = [
         (document_id, r.chunk_index, r.section_path, r.section_type, r.heading,
-         r.content, r.embedding, district_id, r.meeting_date, r.doc_type)
+         r.content, r.embedding, district_id, r.meeting_date, r.doc_type, r.kind)
         for r in rows
     ]
     cur.executemany(
         """
         insert into chunks
             (document_id, chunk_index, section_path, section_type, heading,
-             content, embedding, district_id, meeting_date, doc_type)
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             content, embedding, district_id, meeting_date, doc_type, kind)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         on conflict (document_id, chunk_index) do nothing
         """,
         params,

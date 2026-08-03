@@ -29,7 +29,7 @@ from rich.table import Table
 
 from herald.chunking import Chunk, chunk_agenda_text, classify_doc_type, parse_meeting_date
 from herald.embed import VoyageEmbedder
-from herald.pdf_text import extract_pdf_text
+from herald.pdf_text import ExtractedDoc, TableBlock, extract_pdf
 from herald.scrape.models import ManifestEntry
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,7 @@ console = Console()
 
 MIN_TEXT_CHARS = 200   # below this the "PDF" is likely scanned/empty
 MIN_CHUNK_CHARS = 40   # drop fragments too small to mean anything
+TABLE_MAX_CHARS = 24000  # safety cap on a single table chunk (well above real grids)
 DEFAULT_WAVE = 512     # chunks buffered before an embed+write flush
 
 
@@ -93,12 +94,42 @@ def embed_input(chunk: Chunk) -> str:
     return f"{crumb}\n\n{chunk.content}"
 
 
-def prepare_document(entry: ManifestEntry, text: str) -> tuple[list[Chunk], _dt.date | None, str]:
-    """Chunk one document's text; returns (chunks, meeting_date, doc_type).
+def _table_chunks(
+    tables: list[TableBlock], *, start_order: int, **doc_meta: object
+) -> list[Chunk]:
+    """One whole-table chunk per detected grid (kind='table').
 
-    The scrape-time date is a placeholder on some sources (BoardDocs stamps
-    the school-year end on every file), so the title and the document header
-    are authoritative and the manifest date is only a last resort.
+    Kept intact — no MIN_CHUNK_CHARS floor, no window-splitting — so retrieval
+    finds the whole grid and structured extraction (docs/STRUCTURED.md) reads a
+    header-bearing table. ``order_index`` continues past the prose chunks so it
+    stays unique per document (the chunks PK is (document_id, chunk_index))."""
+    out: list[Chunk] = []
+    for i, tb in enumerate(tables):
+        content = tb.markdown[:TABLE_MAX_CHARS]
+        if not content.strip():
+            continue
+        out.append(Chunk(
+            content=content,
+            section_path=f"T{tb.page}#{i + 1}",
+            section_type="Table",
+            heading=f"Table (p. {tb.page})",
+            order_index=start_order + i,
+            kind="table",
+            **doc_meta,  # type: ignore[arg-type]
+        ))
+    return out
+
+
+def prepare_document(
+    entry: ManifestEntry, text: str, tables: list[TableBlock] | None = None,
+) -> tuple[list[Chunk], _dt.date | None, str]:
+    """Chunk one document; returns (chunks, meeting_date, doc_type).
+
+    Prose is chunked on the agenda outline; each detected table is appended as
+    a single ``kind='table'`` chunk. The scrape-time date is a placeholder on
+    some sources (BoardDocs stamps the school-year end on every file), so the
+    title and the document header are authoritative and the manifest date is
+    only a last resort.
     """
     meeting_date = (
         parse_meeting_date(entry.title)
@@ -108,14 +139,19 @@ def prepare_document(entry: ManifestEntry, text: str) -> tuple[list[Chunk], _dt.
     doc_type = str(entry.doc_type)
     if doc_type == "other":
         doc_type = classify_doc_type(entry.title)
-    chunks = chunk_agenda_text(
-        text,
+    doc_meta = dict(
         district=entry.district,
         meeting_date=meeting_date,
         doc_type=doc_type,
         source_url=entry.source_url,
     )
-    return [c for c in chunks if len(c.content) >= MIN_CHUNK_CHARS], meeting_date, doc_type
+    chunks = chunk_agenda_text(text, **doc_meta)
+    prose = [c for c in chunks if len(c.content) >= MIN_CHUNK_CHARS]
+    # Table order_index continues past *every* prose chunk emitted (including
+    # ones filtered out above), so table chunk_index never collides with prose.
+    next_order = max((c.order_index for c in chunks), default=-1) + 1
+    tables_out = _table_chunks(tables or [], start_order=next_order, **doc_meta)
+    return prose + tables_out, meeting_date, doc_type
 
 
 # ---- orchestration -----------------------------------------------------
@@ -198,6 +234,7 @@ async def ingest_manifests(
                         embedding=vectors[i],
                         meeting_date=c.meeting_date,
                         doc_type=c.doc_type,
+                        kind=c.kind,
                     ))
                     i += 1
                 with conn.transaction():
@@ -267,7 +304,7 @@ async def ingest_manifests(
                 continue
 
             try:
-                extracted = extract_pdf_text(path)
+                extracted = extract_pdf(path)
             except Exception as exc:
                 stats.docs_error += 1
                 note = f"error: {exc}"
@@ -276,8 +313,9 @@ async def ingest_manifests(
                 continue
 
             if ocr_mode:
-                if len(extracted.text) >= MIN_TEXT_CHARS:
-                    # already has a text layer — nothing for OCR to do
+                # A table-only born-digital PDF has little prose but real table
+                # content, so "has text" is judged on total recovered chars.
+                if extracted.content_chars >= MIN_TEXT_CHARS:
                     stats.docs_skipped += 1
                     note = "has-text"
                     continue
@@ -288,7 +326,10 @@ async def ingest_manifests(
                     note = "ocr-candidate"
                     continue
                 try:
-                    extracted = ocr_fn(path)
+                    ocr_text = ocr_fn(path)   # ExtractedText — no table structure
+                    extracted = ExtractedDoc(
+                        text=ocr_text.text, tables=[], page_count=ocr_text.page_count
+                    )
                 except Exception as exc:
                     stats.docs_error += 1
                     note = f"ocr-error: {exc}"
@@ -296,8 +337,10 @@ async def ingest_manifests(
                     mark(doc_id, "error", error=str(exc)[:500])
                     continue
 
-            chunks, meeting_date, doc_type = prepare_document(entry, extracted.text)
-            if len(extracted.text) < MIN_TEXT_CHARS or not chunks:
+            chunks, meeting_date, doc_type = prepare_document(
+                entry, extracted.text, extracted.tables
+            )
+            if extracted.content_chars < MIN_TEXT_CHARS or not chunks:
                 stats.docs_no_text += 1
                 note = "no_text"      # in OCR mode: OCR recovered nothing usable
                 mark(doc_id, "no_text")
@@ -306,7 +349,7 @@ async def ingest_manifests(
             wave.append(_DocWork(
                 entry=entry, chunks=chunks, meeting_date=meeting_date,
                 doc_type=doc_type, page_count=extracted.page_count,
-                text_chars=len(extracted.text), document_id=doc_id,
+                text_chars=extracted.content_chars, document_id=doc_id,
             ))
             if sum(len(w.chunks) for w in wave) >= wave_size:
                 await flush()

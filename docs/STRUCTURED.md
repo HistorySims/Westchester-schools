@@ -47,17 +47,33 @@ pass that fills structured tables, **(3)** a router + analytical path in Ask.
 
 ---
 
-## 1. Table-aware chunking (prerequisite)
+## 1. Table-aware chunking (prerequisite) — **done**
 
-At ingest, detect tables (PyMuPDF `page.find_tables()`, or a grid/number-density
-heuristic) and keep **each table as one chunk** — never split a grid across
-chunks. Store it as markdown with headers intact, tagged `kind='table'`. Two
-payoffs: retrieval finds a whole schedule, and the extraction pass (below) gets
-a clean, header-bearing input. Add a `kind text` column to `chunks`
-(`'prose' | 'table'`), default `'prose'`.
+At ingest, detect tables (PyMuPDF `page.find_tables()`) and keep **each table as
+one chunk** — never split a grid across chunks. Store it as markdown with headers
+intact, tagged `kind='table'`. Two payoffs: retrieval finds a whole schedule, and
+the extraction pass (below) gets a clean, header-bearing input.
+
+Implemented:
+- `db/migrations/0002_chunk_kind.sql` — `kind text not null default 'prose'` on
+  `chunks`, a `check (kind in ('prose','table'))` constraint, and a partial index
+  on `kind='table'`.
+- `pdf_text.extract_pdf()` — table-aware extraction: per page, real grids (≥2×2)
+  are pulled out whole as `to_markdown()` `TableBlock`s and their region removed
+  from the prose stream; prose-only pages extract byte-for-byte as before. Guarded
+  so a detection failure degrades to plain text rather than losing the page. The
+  no-text gate now counts table content (`content_chars`), so an all-table
+  born-digital PDF isn't misfiled as scanned.
+- `ingest_schools.prepare_document()` — appends one `kind='table'` chunk per grid
+  (no `MIN_CHUNK_CHARS` floor, no window-splitting), with `order_index` continuing
+  past the prose so `(document_id, chunk_index)` stays unique.
 
 Cheap and useful on its own — even before extraction, a single-district table
 question can now retrieve the whole grid and let the model read it.
+
+**Apply the migration before the next ingest** (`psql "$SUPABASE_DB_URL" -f
+db/migrations/0002_chunk_kind.sql`); already-ingested documents keep `kind='prose'`
+until re-ingested.
 
 ---
 
@@ -279,8 +295,8 @@ the CBA page it came from. Same bar as the cited RAG answers.
 
 ## Sequencing
 
-1. **This doc** — schema + flow agreed.
-2. **Table-aware chunking** in ingest (`kind='table'`) — also improves retrieval.
+1. **This doc** — schema + flow agreed. ✅
+2. **Table-aware chunking** in ingest (`kind='table'`) — also improves retrieval. ✅
 3. **`herald-extract`** for salary + stipend schedules → structured tables,
    with a `--dry-run` audit.
 4. **Router + analytical path** in Ask (CLI first, then `/api/ask`).

@@ -19,7 +19,7 @@ from herald.ingest_schools import (
     render_report,
     resolve_local_path,
 )
-from herald.pdf_text import extract_pdf_text, sanitize
+from herald.pdf_text import TableBlock, extract_pdf, extract_pdf_text, sanitize
 from herald.schools_db import (
     SchoolChunkRow,
     find_or_insert_document,
@@ -80,6 +80,18 @@ def test_extract_pdf_text(tmp_path):
     assert "Jane Smith" in got.text
 
 
+def test_extract_pdf_prose_only(tmp_path):
+    # A document with no detectable grid extracts exactly like plain text:
+    # all prose, no tables, and content_chars == the prose length.
+    pdf = tmp_path / "agenda.pdf"
+    _make_pdf(pdf, AGENDA_TEXT)
+    doc = extract_pdf(pdf)
+    assert doc.page_count == 1
+    assert doc.tables == []
+    assert "Jane Smith" in doc.text
+    assert doc.content_chars == len(doc.text)
+
+
 def test_sanitize_strips_nul():
     # PyMuPDF occasionally emits NUL bytes; Postgres text columns reject them.
     assert sanitize("Board\x00 of\x00 Ed") == "Board of Ed"
@@ -96,6 +108,31 @@ def test_prepare_document_dates_types_and_outline():
     paths = [c.section_path for c in chunks]
     assert any(p.startswith("P2") for p in paths)   # outline captured
     assert all(c.district == "peekskill" for c in chunks)
+
+
+def test_prepare_document_appends_whole_table_chunks():
+    # Detected tables ride along as single kind='table' chunks: kept whole (no
+    # MIN_CHUNK_CHARS floor, no splitting), with order_index continuing past the
+    # prose so chunk_index stays unique, and doc metadata stamped like any chunk.
+    entry = _entry("x.pdf")
+    tables = [
+        TableBlock(page=4, markdown="| lane | step | salary |\n|---|---|---|\n| MA | 5 | 65,000 |"),
+        TableBlock(page=4, markdown="| tier | stipend |\n|---|---|\n| Head Coach | 8,500 |"),
+    ]
+    chunks, _, _ = prepare_document(entry, AGENDA_TEXT, tables)
+    prose = [c for c in chunks if c.kind == "prose"]
+    tbl = [c for c in chunks if c.kind == "table"]
+    assert len(tbl) == 2
+    assert prose, "prose chunks should still be present"
+    # tables come after every prose chunk_index and don't collide
+    idxs = [c.order_index for c in chunks]
+    assert len(idxs) == len(set(idxs))
+    assert min(c.order_index for c in tbl) > max(c.order_index for c in prose)
+    # whole grid preserved verbatim; section metadata marks it as a table
+    assert tbl[0].content.startswith("| lane | step | salary |")
+    assert all(c.section_type == "Table" for c in tbl)
+    assert {c.section_path for c in tbl} == {"T4#1", "T4#2"}
+    assert all(c.district == "peekskill" for c in tbl)
 
 
 def test_prepare_document_date_priority():
@@ -284,8 +321,14 @@ def test_schools_db_sql_shapes():
         SchoolChunkRow(chunk_index=0, section_path="P1", section_type="Call to Order",
                        heading="Call to Order", content="x" * 50, embedding=None,
                        meeting_date=None, doc_type="agenda"),
+        SchoolChunkRow(chunk_index=1, section_path="T4#1", section_type="Table",
+                       heading="Table (p. 4)", content="| a | b |", embedding=None,
+                       meeting_date=None, doc_type="agenda", kind="table"),
     ])
-    assert n == 1
+    assert n == 2
     sql, rows = conn.many[0]
     assert "on conflict (document_id, chunk_index) do nothing" in sql
+    assert "kind" in sql
     assert rows[0][0] == doc_id
+    assert rows[0][-1] == "prose"   # default kind
+    assert rows[1][-1] == "table"   # explicit table chunk
