@@ -1,6 +1,6 @@
 name: score
 
-# Quality / boilerplate gate: score every chunk for OCR legibility and
+# Quality / boilerplate gate: score every chunk for readability (garbled) and
 # procedural boilerplate (roll calls, motions, adjournments) and flip the junk
 # to status='quarantined'. Both the topic map and Ask retrieval filter
 # status='active', so this cleans both at once. Reversible — re-run to re-score.

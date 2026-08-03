@@ -113,7 +113,8 @@ The biggest lever isn't the algorithm, it's the input. Governance corpora are
 thick with **procedural boilerplate** — roll calls, "moved by X, seconded by Y,
 carried 5-0", minutes approvals, adjournments — which is near-identical across
 every district and topic, so it inflates the noise bin and muddies topics. The
-**`score`** workflow (`herald-score`) tags each chunk for OCR legibility and
+**`score`** workflow (`herald-score`) tags each chunk for readability (garbled
+extraction junk) and
 procedural boilerplate and flips the junk to `status='quarantined'`. Because
 both the map (`load_chunks`) *and* Ask retrieval filter `status='active'`, one
 pass cleans both surfaces. Run it with `dry_run` first — it prints what *would*

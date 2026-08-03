@@ -4,8 +4,13 @@ The clustering and retrieval quality gate the newspaper engine had, rewritten
 for governance documents (the `classify.py` FORK TODO). Two kinds of junk
 dilute the map and pollute Ask evidence, and both get `status='quarantined'`:
 
-1. **Illegible OCR** — scanned pages that didn't transcribe. Reuses the
-   corpus-agnostic OCR legibility scorer from ``herald.classify``.
+1. **Garbled text** — genuinely unreadable chunks: PDF-extraction junk
+   (mojibake, control-character soup) or the occasional badly-scanned
+   attachment. Judged by whether the *words* are real (English or Spanish),
+   after stripping invisible control/bidi characters — NOT by alpha ratio, so
+   number-heavy budget tables and data rows are never mistaken for junk. (This
+   corpus is born-digital, so "bad OCR" was the wrong frame; some scanned
+   attachments exist, but garble is garble regardless of origin.)
 2. **Procedural boilerplate** — roll calls, motions ("moved by X, seconded by
    Y, carried 5-0"), minutes approvals, adjournments, public-comment notices.
    This text is near-identical across every district and topic, so it either
@@ -26,11 +31,10 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 import typer
 from rich.console import Console
-
-from herald.classify import classify_quality, compute_quality_scores
 
 console = Console()
 
@@ -74,26 +78,56 @@ TOO_SHORT_WORDS = 8
 _ES_COMMON = frozenset(
     ["de", "la", "que", "el", "en", "y", "a", "los", "del", "se", "las", "por", "un", "para", "con", "no", "una", "su", "al", "es", "lo", "como", "más", "pero", "sus", "le", "ya", "o", "este", "sí", "porque", "esta", "entre", "cuando", "todo", "también", "fue", "había", "año", "años", "muy", "dos", "ser", "son", "hasta", "desde", "está", "están", "nuestra", "nuestro", "nuestros", "escuela", "escuelas", "distrito", "junta", "educación", "estudiantes", "estudiante", "estudiantil", "presupuesto", "escolar", "reunión", "propone", "suma", "impuestos", "misión", "visión", "aprendizaje", "enseñanza", "logro", "grados", "resultados", "matemáticas", "ciencias", "seguridad", "edificios", "votación", "papeleta", "comunidad", "familias", "maestros", "programa", "servicios", "reflejan", "mantener", "excelencia"]  # noqa: E501
 )
-ES_MIN_RATIO = 0.12          # >= this share of Spanish function words → Spanish prose
-_TOKEN_STRIP = ".,;:!?\"'()-*\u2013\u2014\u2022"   # incl. en/em dash, bullet
-
-
-def spanish_ratio(content: str) -> float:
-    """Fraction of tokens that are common Spanish words."""
-    words = content.split()
-    if not words:
-        return 0.0
-    hits = sum(1 for w in words if w.lower().strip(_TOKEN_STRIP) in _ES_COMMON)
-    return hits / len(words)
-
-
+# Invisible control / bidi / zero-width characters PDF extraction sometimes
+# injects between words: they wreck naive scoring but the text reads fine once
+# removed.
+_CTRL_RE = re.compile(
+    "[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff\x00-\x08\x0b\x0c\x0e-\x1f]"
+)
+# Alphabetic word tokens (Unicode letters, length >= 2): excludes numbers,
+# currency, and punctuation, so a budget table is not judged as prose.
+_WORD_RE = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
 _MONEY_RE = re.compile(r"\$\s?\d")
+
+# Known words: bundled English common list + Spanish common list. A real passage
+# in either language clears the bar; genuine garble does not.
+_EN_PATH = Path(__file__).parent / "wordlist.txt"
+
+
+def _load_known() -> frozenset[str]:
+    en: set[str] = set()
+    if _EN_PATH.exists():
+        en = {w.strip().lower() for w in _EN_PATH.read_text().splitlines() if w.strip()}
+    return frozenset(en | set(_ES_COMMON))
+
+
+_KNOWN = _load_known()
+
+MIN_WORDS_TO_JUDGE = 5   # fewer alpha words than this = a data row, not prose
+GARBLE_RATIO = 0.16      # below this share of real words = garbled
+
+
+def normalize(content: str) -> str:
+    return _CTRL_RE.sub("", content)
+
+
+def readability(content: str) -> float | None:
+    """Share of *word* tokens that are real (EN or ES); None if too few words.
+
+    None for number/label rows (budget tables, form fields) means structured
+    data is never called garbled: only genuine prose can fail.
+    """
+    words = _WORD_RE.findall(normalize(content).lower())
+    if len(words) < MIN_WORDS_TO_JUDGE:
+        return None
+    known = sum(1 for w in words if w in _KNOWN)
+    return known / len(words)
 
 
 @dataclass(frozen=True)
 class ScoreResult:
     status: str            # 'active' | 'quarantined'
-    reason: str | None     # e.g. 'ocr_illegible', 'procedural', 'too_short'
+    reason: str | None     # 'garbled' | 'procedural' | 'too_short' | None
     quality_score: float   # [0,1]; lower = worse
 
 
@@ -104,46 +138,35 @@ def procedural_families(content: str) -> int:
 
 def score_chunk(content: str) -> ScoreResult:
     """Quality/boilerplate verdict for one chunk."""
-    scores = compute_quality_scores(content)
-    word_count = scores.word_count
-    base_quality = scores.composite()
+    word_count = len(normalize(content).split())
+    read = readability(content)      # None = data row (too few words to judge)
 
-    # 1) OCR legibility (unconditional floors live in classify_quality) — but
-    # Spanish prose fails the English-dictionary check while being perfectly
-    # legible. Only trust the illegible verdict if the text is *also*
-    # structurally broken (language-agnostic) or isn't Spanish.
-    status, reason = classify_quality(scores)
-    if status == "quarantined" and reason == "ocr_illegible":
-        structurally_broken = (
-            scores.non_alpha_ratio > 0.5
-            or scores.avg_word_len < 2.0
-            or scores.avg_word_len > 16.0
-        )
-        if spanish_ratio(content) >= ES_MIN_RATIO and not structurally_broken:
-            status, reason = "active", "spanish"   # legible non-English, keep it
-    if status == "quarantined":
-        return ScoreResult("quarantined", reason, base_quality)
+    # 1) Garbled: real prose whose words mostly aren't real (in EN or ES).
+    # Number/label rows (read is None) can't be garbled — they're data.
+    if read is not None and read < GARBLE_RATIO:
+        return ScoreResult("quarantined", "garbled", round(read, 3))
 
     # 2) Fragments / headers-footers — but keep short $-lines (budget rows are
     # potential evidence for spending questions).
     if word_count < TOO_SHORT_WORDS and not _MONEY_RE.search(content):
-        return ScoreResult("quarantined", "too_short", base_quality)
+        return ScoreResult("quarantined", "too_short", 0.2)
 
     # 3) Procedural boilerplate: short AND hits multiple families.
     families = procedural_families(content)
     if word_count <= PROC_MAX_WORDS and families >= PROC_MIN_FAMILIES:
-        # scale quality down by how procedural it is
-        return ScoreResult("quarantined", "procedural", base_quality * 0.4)
+        return ScoreResult("quarantined", "procedural", 0.2)
 
-    # Active. Nudge quality down a little for single-family procedural chunks
-    # so downstream ranking can prefer substance without dropping them.
-    q = base_quality * (0.85 if families == 1 and word_count <= PROC_MAX_WORDS else 1.0)
-    return ScoreResult("active", reason, q)
+    # Active. quality_score = readability (or a neutral 0.6 for data rows),
+    # nudged down for single-family procedural chunks so ranking prefers
+    # substance without dropping them.
+    base = read if read is not None else 0.6
+    penalty = 0.85 if families == 1 and word_count <= PROC_MAX_WORDS else 1.0
+    return ScoreResult("active", None, round(min(1.0, base) * penalty, 3))
 
 
 # ---- CLI ---------------------------------------------------------------
 
-app = typer.Typer(help="Score schools chunks for OCR legibility + boilerplate.",
+app = typer.Typer(help="Score schools chunks for readability + boilerplate.",
                   no_args_is_help=True)
 
 
