@@ -66,6 +66,29 @@ PROC_MAX_WORDS = 180
 PROC_MIN_FAMILIES = 2
 TOO_SHORT_WORDS = 8
 
+# Spanish is not illegible OCR. Districts here (Elmsford, Port Chester, Ossining,
+# …) publish full Spanish translations — mission statements, budget propositions,
+# achievement data. The English wordlist scores them near-zero, so guard the
+# OCR-illegible verdict with a Spanish function-word check: legible Spanish stays
+# active; genuine garble (broken structure in *any* language) still quarantines.
+_ES_COMMON = frozenset(
+    ["de", "la", "que", "el", "en", "y", "a", "los", "del", "se", "las", "por", "un", "para", "con", "no", "una", "su", "al", "es", "lo", "como", "más", "pero", "sus", "le", "ya", "o", "este", "sí", "porque", "esta", "entre", "cuando", "todo", "también", "fue", "había", "año", "años", "muy", "dos", "ser", "son", "hasta", "desde", "está", "están", "nuestra", "nuestro", "nuestros", "escuela", "escuelas", "distrito", "junta", "educación", "estudiantes", "estudiante", "estudiantil", "presupuesto", "escolar", "reunión", "propone", "suma", "impuestos", "misión", "visión", "aprendizaje", "enseñanza", "logro", "grados", "resultados", "matemáticas", "ciencias", "seguridad", "edificios", "votación", "papeleta", "comunidad", "familias", "maestros", "programa", "servicios", "reflejan", "mantener", "excelencia"]  # noqa: E501
+)
+ES_MIN_RATIO = 0.12          # >= this share of Spanish function words → Spanish prose
+_TOKEN_STRIP = ".,;:!?\"'()-*\u2013\u2014\u2022"   # incl. en/em dash, bullet
+
+
+def spanish_ratio(content: str) -> float:
+    """Fraction of tokens that are common Spanish words."""
+    words = content.split()
+    if not words:
+        return 0.0
+    hits = sum(1 for w in words if w.lower().strip(_TOKEN_STRIP) in _ES_COMMON)
+    return hits / len(words)
+
+
+_MONEY_RE = re.compile(r"\$\s?\d")
+
 
 @dataclass(frozen=True)
 class ScoreResult:
@@ -85,13 +108,25 @@ def score_chunk(content: str) -> ScoreResult:
     word_count = scores.word_count
     base_quality = scores.composite()
 
-    # 1) OCR legibility (unconditional floors live in classify_quality).
+    # 1) OCR legibility (unconditional floors live in classify_quality) — but
+    # Spanish prose fails the English-dictionary check while being perfectly
+    # legible. Only trust the illegible verdict if the text is *also*
+    # structurally broken (language-agnostic) or isn't Spanish.
     status, reason = classify_quality(scores)
+    if status == "quarantined" and reason == "ocr_illegible":
+        structurally_broken = (
+            scores.non_alpha_ratio > 0.5
+            or scores.avg_word_len < 2.0
+            or scores.avg_word_len > 16.0
+        )
+        if spanish_ratio(content) >= ES_MIN_RATIO and not structurally_broken:
+            status, reason = "active", "spanish"   # legible non-English, keep it
     if status == "quarantined":
         return ScoreResult("quarantined", reason, base_quality)
 
-    # 2) Fragments / headers-footers.
-    if word_count < TOO_SHORT_WORDS:
+    # 2) Fragments / headers-footers — but keep short $-lines (budget rows are
+    # potential evidence for spending questions).
+    if word_count < TOO_SHORT_WORDS and not _MONEY_RE.search(content):
         return ScoreResult("quarantined", "too_short", base_quality)
 
     # 3) Procedural boilerplate: short AND hits multiple families.

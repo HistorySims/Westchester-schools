@@ -18,6 +18,12 @@ PROCEDURAL = (
 
 GIBBERISH = "xqz vbn mnp qwrt zxcv plok jhgf tred wsxa lkjh gfds"
 
+SPANISH = (
+    "Nuestra misión es optimizar la enseñanza y el aprendizaje para el logro "
+    "estudiantil de todos los estudiantes del distrito, tal como lo propone la "
+    "Junta de Educación para el año escolar 2026-2027, por la suma de $48,098,741."
+)
+
 
 def test_clean_content_stays_active():
     r = score_chunk(CLEAN)
@@ -39,6 +45,18 @@ def test_illegible_ocr_quarantined():
 def test_too_short_quarantined():
     r = score_chunk("Board of Education Regular Meeting")  # 5 words
     assert r.status == "quarantined" and r.reason == "too_short"
+
+
+def test_spanish_content_not_illegible():
+    # legible Spanish must survive the English-dictionary OCR check
+    r = score_chunk(SPANISH)
+    assert r.status == "active"
+
+
+def test_short_budget_line_survives():
+    # a short line is normally too_short, but budget rows are kept as evidence
+    r = score_chunk("Support Services, Student Transportation $3,312.07")
+    assert r.status == "active"
 
 
 def test_long_substantive_motion_survives():
