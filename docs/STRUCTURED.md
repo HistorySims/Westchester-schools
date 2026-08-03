@@ -105,6 +105,15 @@ create table salary_schedule (
 **Canonical lanes** (define once): `BA, BA+15, BA+30, MA, MA+15, MA+30, MA+45,
 MA+60, MA+75, Doctorate`. Anything unmapped → `lane='other'`, keep `lane_raw`.
 
+**Lane crosswalk file (decided).** Some districts label lanes opaquely
+("Column V", "Level 4") whose meaning lives elsewhere in the CBA — or nowhere in
+the grid. The model can't infer those from the table alone. Keep a small,
+hand-maintained per-district crosswalk (`data/lane_crosswalk.csv`:
+`district_slug, lane_raw, lane_canonical`) that `herald-extract` consults before
+falling back to `lane='other'`. At n=8 districts this is far more auditable than
+hoping the model guesses. Same pattern available for opaque stipend tiers if
+needed.
+
 ### Stipend schedules (coaches, co-curricular, extra-duty)
 
 Directly serves *"which schools pay coaches an unusual amount."*
@@ -120,13 +129,25 @@ create table stipend_schedule (
   position     text not null,   -- canonical, e.g. 'Head Football Coach'
   position_raw text not null,
   tier         text,        -- level/experience tier if the schedule has one
-  amount       numeric,     -- flat amount, or the low end of a range
+  amount       numeric,     -- flat dollars, or the low end of a range
   amount_high  numeric,     -- high end if a range
+  amount_pct   numeric,     -- the percent, when amount_basis = 'percent_of_base'
   amount_basis text,        -- 'flat' | 'range' | 'percent_of_base'
   notes        text,
   unique (district_id, school_year, position, tier)
 );
 ```
+
+**`percent_of_base` convention (decided).** Some districts express a stipend as
+a percent of a base salary. The real dollar figure depends on *who holds the
+position* (their own salary), which the schedule doesn't fix — so a percent
+stipend is **not directly comparable** to a flat-dollar one. Rule: store
+`amount_pct` + `amount_basis='percent_of_base'` and **exclude these rows from
+flat-dollar rankings**, reporting them separately in the answer ("District X
+pays this as N% of base — not directly comparable to flat stipends"). We do
+*not* silently invent a dollar amount. (A future opt-in could convert at a
+single disclosed reference — the district's own BA step-1 for that year — but
+labeled illustrative, never mixed into the ranking.)
 
 ### Budgets (phase 2b — messier, defer)
 
@@ -150,9 +171,20 @@ robust table parser (brittle); a careful per-artifact extraction we can audit.
    school_year, keep raw labels" instruction. Validate against the schema.
 3. **Load** — upsert rows into the structured tables with provenance. Idempotent
    on the unique keys, so re-runs correct rather than duplicate.
-4. **Audit** — because `lane_raw`/`position_raw` are kept and the count is
-   small, spot-check the normalization; a `--dry-run` prints extracted rows for
-   review before writing (same discipline as `herald-score`).
+4. **Audit — automated checks, not just eyeballing.** A wall of numbers hides
+   transposition and header-misalignment errors that spot-checks miss, so
+   `--dry-run` runs invariants and flags violations loudly before any write:
+   - salary **monotonic non-decreasing** as `step` increases within a
+     `(district, school_year, lane)`
+   - **`MA+30 ≥ MA`** (and each higher lane ≥ the lane left of it) at the same
+     step
+   - a **later `school_year` grid ≥ the earlier** one, cell for cell (raises,
+     not cuts — a drop signals a misread grid or a swapped year header)
+   - sanity bounds (salary within a plausible $30k–$250k band; stipend ≥ 0)
+
+   A violation doesn't auto-reject — it surfaces the exact cells for a human to
+   confirm (some are real: a genuine one-year freeze, a lane that truly dips).
+   But it turns "trust the model on 400 numbers" into "review the 3 it flagged."
 
 Runs in GitHub Actions (`extract.yml`), needs `ANTHROPIC_API_KEY`. Cost is
 trivial — a handful of Claude calls.
@@ -172,12 +204,31 @@ Classification: a cheap Claude (Haiku) call that returns
 `{mode, dataset, params}` — e.g. `{analytical, salary_schedule, {lane:'MA+30',
 step_from:10, step_to:20, metric:'slope', group_by:'district', rank:'desc'}}`.
 
-**Query execution** — recommend **text-to-SQL against the fixed schema** with
-guardrails: a read-only DB role, schema-scoped prompt, generated SQL validated
-(SELECT-only, known tables) before running. The rows come back, and Claude
-writes the prose answer **citing the source documents/pages** each row carries.
-Templated queries for the top few question shapes are a safer fallback if
-text-to-SQL proves flaky.
+**Query execution — templated, not text-to-SQL.** That router output *is* a
+filled template; Haiku already did the hard part (understanding the question).
+The SQL for our handful of question shapes is static, so we hand-write it. Start
+with the top shapes:
+
+- **step-slope ranking** — delta (or max step-over-step) in a lane between two
+  steps/years, ranked across districts (the salary-step question)
+- **max-at-step** — highest/lowest salary at a given lane+step
+- **stipend comparison** — a position's stipend across districts, ranked
+- **delta-over-years** — change in a cell across school years
+
+Each is a parameterized query filled from `params`. The rows come back and
+Claude writes the prose answer **citing the source documents/pages** each row
+carries. **Failure mode is "I can't answer that yet," not plausible-but-wrong
+SQL** — if a question doesn't map to a template, say so. We add text-to-SQL only
+if a genuine long tail of expressible-but-untemplated questions shows up; until
+then, wrong-and-confident is the failure we refuse to ship.
+
+**Step vs year (correctness rule).** Analytical queries use `years_service`
+when it's populated; otherwise they fall back to `step` **and the prose answer
+says so explicitly** ("figures assume step = year of service"). Never silently
+treat step as year — across districts that would rank different quantities
+against each other. A district whose schedule has neither mapped years nor a
+usable step for the requested range is reported as "not comparable on this
+metric," not dropped silently.
 
 **Honesty about absence** carries over: if a district's schedule isn't extracted
 yet, the answer says so — never implies "$0" or "no steep steps."
@@ -208,14 +259,23 @@ stores `document_id` + `page`; every computed answer links back to them, so a
 claim like "District X's MA+30 step jumps $6,200 at year 15" is one click from
 the CBA page it came from. Same bar as the cited RAG answers.
 
-## Open decisions
+## Decisions (locked)
 
-1. **Text-to-SQL vs templated queries** for the analytical path (recommend
-   text-to-SQL with read-only guardrails; templates as fallback).
-2. **Budgets now or later** (recommend later — start salary + stipend).
-3. **Multi-year contracts**: store every contract year's grid (recommend yes;
-   it enables year-over-year and the monthly brief later).
-4. **Lane/position taxonomies**: lock the canonical label sets before extracting.
+1. **Templated queries, not text-to-SQL.** The router output is a filled
+   template; SQL for our shapes is static. Failure mode = "unsupported
+   question," never plausible-but-wrong SQL. Add text-to-SQL only if a real long
+   tail appears.
+2. **Salary + stipend first; budgets deferred** (2b).
+3. **Every contract year's grid** is stored (feeds year-over-year + the brief).
+4. **Taxonomies locked before extraction** — canonical lanes + coach positions.
+5. **Lane crosswalk file** (`data/lane_crosswalk.csv`) — hand-maintained
+   per-district raw→canonical mapping for opaque lanes.
+6. **Step vs year** — queries prefer `years_service`, fall back to `step` with
+   an explicit caveat in prose; never silently equate them.
+7. **`percent_of_base` stipends** — stored as a percent, excluded from
+   flat-dollar rankings, reported separately as non-comparable.
+8. **Automated audit invariants** in `--dry-run` (monotonic salary, lane
+   ordering, year-over-year non-decreasing, sanity bounds).
 
 ## Sequencing
 
