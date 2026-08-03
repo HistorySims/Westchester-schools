@@ -8,6 +8,12 @@ name: ingest
 # manifest.jsonl, and ingests the documents they record. Re-runs are cheap:
 # already-ingested documents (by content hash) are skipped.
 #
+# 'tables_backfill' inverts that: instead of skipping ingested docs, it
+# reprocesses them and adds ONLY their whole-table (kind='table') chunks —
+# a non-destructive backfill for a corpus ingested before table-aware
+# chunking existed. Prose chunks are left untouched; re-running is safe.
+# Dry-run first to see the per-district table counts.
+#
 #   Actions -> ingest -> Run workflow
 #
 # Required secrets (Settings -> Secrets and variables -> Actions):
@@ -34,6 +40,10 @@ on:
         default: ""
       init_db:
         description: "Apply the schema first (safe to re-run; needed once on a fresh DB)"
+        type: boolean
+        default: false
+      tables_backfill:
+        description: "Backfill table chunks into already-ingested docs (adds kind='table' only)"
         type: boolean
         default: false
       dry_run:
@@ -82,7 +92,7 @@ jobs:
         run: uv run herald-ingest init-db
       - name: Ingest
         run: |
-          uv run herald-ingest run \
+          uv run herald-ingest ${{ inputs.tables_backfill && 'tables' || 'run' }} \
             --root data/artifacts \
             ${{ inputs.district && format('--district "{0}"', inputs.district) || '' }} \
             ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
