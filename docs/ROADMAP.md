@@ -7,7 +7,10 @@ plan and the design decisions behind it, so it's the reference when we start
 building.
 
 See [`STATUS.md`](STATUS.md) for what's done today, [`VIZ.md`](VIZ.md) for the
-map, [`ASK.md`](ASK.md) for the ask layer.
+map, [`ASK.md`](ASK.md) for the ask layer, and [`STRUCTURED.md`](STRUCTURED.md)
+for the structured-table extraction + analytical query path (the fix for
+parametric questions RAG can't answer, e.g. "which district has the steepest
+salary steps for MA+30").
 
 ---
 
