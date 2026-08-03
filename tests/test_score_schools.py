@@ -37,9 +37,9 @@ def test_procedural_boilerplate_quarantined():
     assert r.status == "quarantined" and r.reason == "procedural"
 
 
-def test_illegible_ocr_quarantined():
+def test_garbled_quarantined():
     r = score_chunk(GIBBERISH)
-    assert r.status == "quarantined" and r.reason == "ocr_illegible"
+    assert r.status == "quarantined" and r.reason == "garbled"
 
 
 def test_too_short_quarantined():
@@ -47,8 +47,8 @@ def test_too_short_quarantined():
     assert r.status == "quarantined" and r.reason == "too_short"
 
 
-def test_spanish_content_not_illegible():
-    # legible Spanish must survive the English-dictionary OCR check
+def test_spanish_content_not_garbled():
+    # legible Spanish must survive the English-dictionary check
     r = score_chunk(SPANISH)
     assert r.status == "active"
 
@@ -56,6 +56,22 @@ def test_spanish_content_not_illegible():
 def test_short_budget_line_survives():
     # a short line is normally too_short, but budget rows are kept as evidence
     r = score_chunk("Support Services, Student Transportation $3,312.07")
+    assert r.status == "active"
+
+
+def test_budget_table_row_not_garbled():
+    # number-heavy budget line with real labels — data, not junk
+    r = score_chunk(
+        "Total Proposed School Year Tax Levy (A + B + C - D) "
+        "$ 35,702,827 $ 36,411,500 $ 35,702,827"
+    )
+    assert r.status == "active"
+
+
+def test_bidi_control_chars_stripped():
+    # PDF extraction injected LTR-override marks between words; still real text
+    raw = "‭those‬ ‭protections‬ ‭extend‬ to students with a disability"
+    r = score_chunk(raw)
     assert r.status == "active"
 
 
