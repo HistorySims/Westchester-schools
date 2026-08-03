@@ -19,7 +19,7 @@ from herald.ingest_schools import (
     render_report,
     resolve_local_path,
 )
-from herald.pdf_text import TableBlock, extract_pdf, extract_pdf_text, sanitize
+from herald.pdf_text import ExtractedDoc, TableBlock, extract_pdf, extract_pdf_text, sanitize
 from herald.schools_db import (
     SchoolChunkRow,
     find_or_insert_document,
@@ -283,6 +283,77 @@ def test_ingest_real_run_writes_chunks_and_marks_document(tmp_path):
     assert any("insert into chunks" in sql for sql, _ in conn.many)
     marks = [p for sql, p in conn.calls if "update documents set" in sql]
     assert marks and marks[0][0] == "ingested"
+
+
+def test_tables_backfill_adds_only_table_chunks(tmp_path, monkeypatch):
+    # A corpus ingested before table-aware chunking: the backfill reprocesses
+    # an already-ingested doc and inserts ONLY its table chunk — prose and the
+    # document row are left alone.
+    from herald import ingest_schools
+
+    raw = tmp_path / "data" / "raw"
+    pdf = raw / "peekskill" / "agenda" / "ab.pdf"
+    pdf.parent.mkdir(parents=True)
+    _make_pdf(pdf, AGENDA_TEXT)
+
+    def fake_extract(_path):
+        return ExtractedDoc(
+            text=AGENDA_TEXT,
+            tables=[TableBlock(page=2, markdown="| lane | step |\n|---|---|\n| MA | 5 |")],
+            page_count=2,
+        )
+    monkeypatch.setattr(ingest_schools, "extract_pdf", fake_extract)
+
+    class IngestedCursor(FakeCursor):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            if "insert into documents" in sql.lower():
+                self._conn._fetch = None                     # conflict
+            elif "select id, ingest_status" in sql.lower():
+                self._conn._fetch = (DOC_UUID, "ingested")   # already ingested
+
+    class IngestedConn(FakeConn):
+        def cursor(self):
+            return IngestedCursor(self)
+
+    conn, voyage = IngestedConn(), FakeVoyage()
+    stats = asyncio.run(ingest_manifests(
+        [(_entry(str(pdf)), raw / "manifest.jsonl")],
+        conn=conn, voyage=voyage, tables_only=True,
+    ))
+    assert stats.docs_tables_backfilled == 1
+    assert stats.docs_skipped == 0
+    # only the whole-table chunk was embedded + inserted, not the prose
+    assert stats.chunks_written == 1
+    assert len(voyage.texts) == 1
+    _, rows = conn.many[0]
+    assert len(rows) == 1
+    assert rows[0][-1] == "table"     # kind column
+    # backfill leaves the already-ingested document row untouched
+    assert [p for sql, p in conn.calls if "update documents set" in sql] == []
+
+
+def test_tables_backfill_skips_not_yet_ingested(tmp_path, monkeypatch):
+    # A doc not yet in the corpus is left for a normal ingest pass, not backfilled.
+    from herald import ingest_schools
+
+    raw = tmp_path / "data" / "raw"
+    pdf = raw / "peekskill" / "agenda" / "ab.pdf"
+    pdf.parent.mkdir(parents=True)
+    _make_pdf(pdf, AGENDA_TEXT)
+
+    def fake_extract(_path):
+        return ExtractedDoc(text=AGENDA_TEXT, tables=[], page_count=1)
+    monkeypatch.setattr(ingest_schools, "extract_pdf", fake_extract)
+
+    conn = FakeConn()   # find_or_insert returns (DOC_UUID, "pending")
+    stats = asyncio.run(ingest_manifests(
+        [(_entry(str(pdf)), raw / "manifest.jsonl")],
+        conn=conn, voyage=FakeVoyage(), tables_only=True,
+    ))
+    assert stats.docs_tables_backfilled == 0
+    assert stats.docs_skipped == 1        # not-ingested → left alone
+    assert conn.many == []                # nothing inserted
 
 
 def test_ingest_skips_already_ingested(tmp_path):

@@ -165,6 +165,8 @@ class IngestStats:
     docs_error: int = 0
     docs_ingested: int = 0
     docs_ocr_candidate: int = 0     # OCR dry-run: a no-text doc that would be OCR'd
+    docs_tables_backfilled: int = 0  # tables-only: ingested docs that gained table chunks
+    docs_no_tables: int = 0          # tables-only: ingested docs with no detectable table
     chunks_written: int = 0
     by_district: Counter[str] = field(default_factory=Counter)
     by_doc_type: Counter[str] = field(default_factory=Counter)
@@ -191,6 +193,7 @@ async def ingest_manifests(
     on_doc=None,                     # callback(entry, status) for progress
     ocr_mode: bool = False,          # only (re)process no-text docs, via OCR
     ocr_fn=None,                     # callable(path)->ExtractedText; None = dry count
+    tables_only: bool = False,       # backfill: add table chunks to already-ingested docs
 ) -> IngestStats:
     """Ingest manifest entries. ``conn is None`` means dry-run (no writes).
 
@@ -200,6 +203,14 @@ async def ingest_manifests(
     written; with ``ocr_fn=None`` (the fast dry pass) they're merely
     tallied as candidates so you can see the per-district count without
     paying for OCR.
+
+    In ``tables_only`` mode the roles invert the other way: only *already-
+    ingested* documents are processed, and only their ``kind='table'`` chunks
+    are embedded and inserted — a non-destructive backfill that adds whole-table
+    chunks to a corpus ingested before table-aware chunking existed. Existing
+    prose chunks, their embeddings, scores and cluster assignments are untouched
+    (``insert_chunks`` is ``on conflict do nothing``, so re-running is safe), and
+    the document's ``ingested`` status is left as-is.
     """
     from herald import schools_db
 
@@ -245,17 +256,23 @@ async def ingest_manifests(
                         district_id=districts[w.entry.district],
                         rows=rows,
                     )
-                    schools_db.mark_document(
-                        cur,
-                        document_id=w.document_id,
-                        status="ingested",
-                        meeting_date=w.meeting_date,
-                        doc_type=w.doc_type,
-                        page_count=w.page_count,
-                        text_chars=w.text_chars,
-                    )
+                    # Backfill leaves the already-ingested document row alone;
+                    # a normal ingest stamps it 'ingested' with what it learned.
+                    if not tables_only:
+                        schools_db.mark_document(
+                            cur,
+                            document_id=w.document_id,
+                            status="ingested",
+                            meeting_date=w.meeting_date,
+                            doc_type=w.doc_type,
+                            page_count=w.page_count,
+                            text_chars=w.text_chars,
+                        )
         for w in wave:
-            stats.docs_ingested += 1
+            if tables_only:
+                stats.docs_tables_backfilled += 1
+            else:
+                stats.docs_ingested += 1
             stats.chunks_written += len(w.chunks)
             stats.by_district[w.entry.district] += len(w.chunks)
             stats.by_doc_type[w.doc_type] += len(w.chunks)
@@ -291,7 +308,14 @@ async def ingest_manifests(
                     fetched_at=entry.fetched_at,
                 )
                 conn.commit()
-                if existing == "ingested":
+                if tables_only:
+                    # backfill only augments docs already in the corpus; a
+                    # not-yet-ingested doc belongs to a normal ingest pass.
+                    if existing != "ingested":
+                        stats.docs_skipped += 1
+                        note = "not-ingested"
+                        continue
+                elif existing == "ingested":
                     stats.docs_skipped += 1
                     note = "skipped"
                     continue
@@ -340,7 +364,17 @@ async def ingest_manifests(
             chunks, meeting_date, doc_type = prepare_document(
                 entry, extracted.text, extracted.tables
             )
-            if extracted.content_chars < MIN_TEXT_CHARS or not chunks:
+
+            if tables_only:
+                # Add only the whole-table chunks; leave prose (already ingested)
+                # and the document row untouched.
+                chunks = [c for c in chunks if c.kind == "table"]
+                if not chunks:
+                    stats.docs_no_tables += 1
+                    note = "no-tables"
+                    continue
+                note = f"{len(chunks)} table(s)"
+            elif extracted.content_chars < MIN_TEXT_CHARS or not chunks:
                 stats.docs_no_text += 1
                 note = "no_text"      # in OCR mode: OCR recovered nothing usable
                 mark(doc_id, "no_text")
@@ -363,7 +397,31 @@ async def ingest_manifests(
 
 # ---- reporting ---------------------------------------------------------
 
-def render_report(stats: IngestStats, *, dry_run: bool, ocr: bool = False) -> str:
+def render_report(
+    stats: IngestStats, *, dry_run: bool, ocr: bool = False, tables: bool = False
+) -> str:
+    if tables:
+        mode = "DRY RUN — nothing written" if dry_run else "written to database"
+        lines = [
+            "# Table backfill report",
+            "",
+            f"_{mode}_",
+            "",
+            "| docs seen | backfilled | no tables | not ingested | missing | errors "
+            "| table chunks |",
+            "|---|---|---|---|---|---|---|",
+            f"| {stats.docs_seen} | {stats.docs_tables_backfilled} | {stats.docs_no_tables} "
+            f"| {stats.docs_skipped} | {stats.docs_missing} | {stats.docs_error} "
+            f"| {stats.chunks_written} |",
+            "",
+            "## Table chunks by district",
+            "",
+            "| district | table chunks |",
+            "|---|---|",
+        ]
+        lines += [f"| {d} | {n} |" for d, n in stats.by_district.most_common()]
+        return "\n".join(lines) + "\n"
+
     title = "OCR report" if ocr else "Ingest report"
     mode = "DRY RUN — nothing written" if dry_run else "written to database"
     lines = [
@@ -524,6 +582,93 @@ def run(
 
     if report:
         Path(report).write_text(render_report(stats, dry_run=dry_run), encoding="utf-8")
+        console.print(f"report: {report}")
+
+
+@app.command()
+def tables(
+    root: str = typer.Option(
+        "data", help="Directory searched for **/manifest.jsonl (scrape artifacts)."
+    ),
+    manifest: str | None = typer.Option(
+        None, help="Explicit manifest path(s), comma-separated; adds to --root's finds."
+    ),
+    district: str | None = typer.Option(None, help="Only backfill this district slug."),
+    doc_type: str | None = typer.Option(None, help="Only backfill this doc type."),
+    limit: int | None = typer.Option(None, help="Stop after N manifest entries."),
+    dry_run: bool = typer.Option(
+        True, help="Detect + count tables only; no DB, no Voyage."
+    ),
+    wave_size: int = typer.Option(DEFAULT_WAVE, help="Chunks per embed/write flush."),
+    report: str | None = typer.Option(None, help="Write a markdown report here."),
+) -> None:
+    """Backfill whole-table (kind='table') chunks into already-ingested documents.
+
+    For a corpus ingested before table-aware chunking existed: reprocess each
+    *already-ingested* document, detect its tables, and add them as whole
+    ``kind='table'`` chunks. Non-destructive — prose chunks, their embeddings,
+    scores and cluster assignments are left alone, and re-running is safe
+    (``on conflict do nothing``). The dry run (default) just counts how many
+    tables each district would gain — fast, no Voyage, no writes.
+    """
+    pairs, _ = _gather_pairs(root=root, manifest=manifest, district=district,
+                             doc_type=doc_type, limit=limit)
+
+    conn = None
+    voyage = None
+    if not dry_run:
+        from herald import schools_db
+
+        conn = schools_db.connect(_db_url())
+        key = os.environ.get("VOYAGE_API_KEY", "")
+        if not key:
+            raise typer.BadParameter("VOYAGE_API_KEY is not set.")
+        voyage = VoyageEmbedder(key)
+
+    done = 0
+
+    def on_doc(entry: ManifestEntry, note: str) -> None:
+        nonlocal done
+        done += 1
+        if note in ("not-ingested", "no-tables"):
+            if done % 100 == 0:
+                console.print(f"[{done}/{len(pairs)}] scanning…")
+            return
+        console.print(f"[{done}/{len(pairs)}] {entry.district} {entry.title[:60]!r} {note}")
+
+    async def go() -> IngestStats:
+        try:
+            return await ingest_manifests(
+                pairs, conn=conn, voyage=voyage, wave_size=wave_size,
+                on_doc=on_doc, tables_only=True,
+            )
+        finally:
+            if voyage is not None:
+                await voyage.aclose()
+
+    try:
+        stats = asyncio.run(go())
+    finally:
+        if conn is not None:
+            conn.close()
+
+    table = Table(title="Table backfill" + (" (dry run)" if dry_run else ""))
+    for col in ("seen", "backfilled", "no_tables", "not_ingested", "missing",
+                "errors", "table chunks"):
+        table.add_column(col, justify="right")
+    table.add_row(
+        str(stats.docs_seen), str(stats.docs_tables_backfilled), str(stats.docs_no_tables),
+        str(stats.docs_skipped), str(stats.docs_missing), str(stats.docs_error),
+        str(stats.chunks_written),
+    )
+    console.print(table)
+    for d, n in stats.by_district.most_common():
+        console.print(f"  {d}: {n} table chunks")
+
+    if report:
+        Path(report).write_text(
+            render_report(stats, dry_run=dry_run, tables=True), encoding="utf-8"
+        )
         console.print(f"report: {report}")
 
 
