@@ -6,11 +6,12 @@ dilute the map and pollute Ask evidence, and both get `status='quarantined'`:
 
 1. **Garbled text** — genuinely unreadable chunks: PDF-extraction junk
    (mojibake, control-character soup) or the occasional badly-scanned
-   attachment. Judged by whether the *words* are real (English or Spanish),
-   after stripping invisible control/bidi characters — NOT by alpha ratio, so
-   number-heavy budget tables and data rows are never mistaken for junk. (This
-   corpus is born-digital, so "bad OCR" was the wrong frame; some scanned
-   attachments exist, but garble is garble regardless of origin.)
+   attachment. Judged by the share of tokens that are *either* real words
+   (English or Spanish) *or* clean numeric data — after stripping invisible
+   control/bidi characters. So budget tables (numbers + account codes + terse
+   labels) read as data and are kept — they're exactly the evidence the
+   spending questions need — while only true symbol-soup fails. (This corpus is
+   born-digital, so "bad OCR" was the wrong frame; garble is garble regardless.)
 2. **Procedural boilerplate** — roll calls, motions ("moved by X, seconded by
    Y, carried 5-0"), minutes approvals, adjournments, public-comment notices.
    This text is near-identical across every district and topic, so it either
@@ -70,11 +71,10 @@ PROC_MAX_WORDS = 180
 PROC_MIN_FAMILIES = 2
 TOO_SHORT_WORDS = 8
 
-# Spanish is not illegible OCR. Districts here (Elmsford, Port Chester, Ossining,
-# …) publish full Spanish translations — mission statements, budget propositions,
-# achievement data. The English wordlist scores them near-zero, so guard the
-# OCR-illegible verdict with a Spanish function-word check: legible Spanish stays
-# active; genuine garble (broken structure in *any* language) still quarantines.
+# Spanish counts as legible. Districts here (Elmsford, Port Chester, Ossining, …)
+# publish full Spanish translations — mission statements, budget propositions,
+# achievement data — which an English-only wordlist scores near-zero. Fold common
+# Spanish words into the "known" set so those passages read as real, not garbled.
 _ES_COMMON = frozenset(
     ["de", "la", "que", "el", "en", "y", "a", "los", "del", "se", "las", "por", "un", "para", "con", "no", "una", "su", "al", "es", "lo", "como", "más", "pero", "sus", "le", "ya", "o", "este", "sí", "porque", "esta", "entre", "cuando", "todo", "también", "fue", "había", "año", "años", "muy", "dos", "ser", "son", "hasta", "desde", "está", "están", "nuestra", "nuestro", "nuestros", "escuela", "escuelas", "distrito", "junta", "educación", "estudiantes", "estudiante", "estudiantil", "presupuesto", "escolar", "reunión", "propone", "suma", "impuestos", "misión", "visión", "aprendizaje", "enseñanza", "logro", "grados", "resultados", "matemáticas", "ciencias", "seguridad", "edificios", "votación", "papeleta", "comunidad", "familias", "maestros", "programa", "servicios", "reflejan", "mantener", "excelencia"]  # noqa: E501
 )
@@ -84,9 +84,6 @@ _ES_COMMON = frozenset(
 _CTRL_RE = re.compile(
     "[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff\x00-\x08\x0b\x0c\x0e-\x1f]"
 )
-# Alphabetic word tokens (Unicode letters, length >= 2): excludes numbers,
-# currency, and punctuation, so a budget table is not judged as prose.
-_WORD_RE = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
 _MONEY_RE = re.compile(r"\$\s?\d")
 
 # Known words: bundled English common list + Spanish common list. A real passage
@@ -103,25 +100,37 @@ def _load_known() -> frozenset[str]:
 
 _KNOWN = _load_known()
 
-MIN_WORDS_TO_JUDGE = 5   # fewer alpha words than this = a data row, not prose
-GARBLE_RATIO = 0.16      # below this share of real words = garbled
+MIN_TOKENS_TO_JUDGE = 5   # fewer tokens than this = a fragment, judged elsewhere
+MEANINGFUL_MIN = 0.25     # below this share of real words / data = garbled
+
+# Well-formed data tokens: 9,200  3.26%  $35,702,827  (54,430)  1621.402.00.6012
+_DATA_RE = re.compile(r"^[($]?-?[\d,]+(?:\.\d+)*\)?%?$")
+_STRIP = ".,;:!?\"'()[]{}*/&%$#=+" + "\u2013\u2014\u2022"
 
 
 def normalize(content: str) -> str:
     return _CTRL_RE.sub("", content)
 
 
-def readability(content: str) -> float | None:
-    """Share of *word* tokens that are real (EN or ES); None if too few words.
+def meaningful_fraction(content: str) -> float | None:
+    """Share of tokens that are real words (EN/ES) or clean numeric data.
 
-    None for number/label rows (budget tables, form fields) means structured
-    data is never called garbled: only genuine prose can fail.
+    Budget tables score high (numbers + codes are data); genuine symbol-soup
+    scores near zero. Returns None for very short fragments (judged as
+    too_short instead). This is what separates "garbled" from "data".
     """
-    words = _WORD_RE.findall(normalize(content).lower())
-    if len(words) < MIN_WORDS_TO_JUDGE:
+    toks = normalize(content).split()
+    if len(toks) < MIN_TOKENS_TO_JUDGE:
         return None
-    known = sum(1 for w in words if w in _KNOWN)
-    return known / len(words)
+    good = 0
+    for t in toks:
+        if _DATA_RE.match(t):
+            good += 1
+            continue
+        w = t.lower().strip(_STRIP)
+        if len(w) >= 2 and w in _KNOWN:
+            good += 1
+    return good / len(toks)
 
 
 @dataclass(frozen=True)
@@ -139,12 +148,12 @@ def procedural_families(content: str) -> int:
 def score_chunk(content: str) -> ScoreResult:
     """Quality/boilerplate verdict for one chunk."""
     word_count = len(normalize(content).split())
-    read = readability(content)      # None = data row (too few words to judge)
+    mf = meaningful_fraction(content)   # None = too short to judge
 
-    # 1) Garbled: real prose whose words mostly aren't real (in EN or ES).
-    # Number/label rows (read is None) can't be garbled — they're data.
-    if read is not None and read < GARBLE_RATIO:
-        return ScoreResult("quarantined", "garbled", round(read, 3))
+    # 1) Garbled: mostly neither real words (EN/ES) nor clean numeric data —
+    # i.e. symbol soup. A budget table scores high on data and is NOT garbled.
+    if mf is not None and mf < MEANINGFUL_MIN:
+        return ScoreResult("quarantined", "garbled", round(mf, 3))
 
     # 2) Fragments / headers-footers — but keep short $-lines (budget rows are
     # potential evidence for spending questions).
@@ -156,10 +165,10 @@ def score_chunk(content: str) -> ScoreResult:
     if word_count <= PROC_MAX_WORDS and families >= PROC_MIN_FAMILIES:
         return ScoreResult("quarantined", "procedural", 0.2)
 
-    # Active. quality_score = readability (or a neutral 0.6 for data rows),
-    # nudged down for single-family procedural chunks so ranking prefers
-    # substance without dropping them.
-    base = read if read is not None else 0.6
+    # Active. quality_score from the meaningful fraction (neutral 0.6 for short
+    # data rows), nudged down for single-family procedural chunks so ranking
+    # prefers substance without dropping them.
+    base = mf if mf is not None else 0.6
     penalty = 0.85 if families == 1 and word_count <= PROC_MAX_WORDS else 1.0
     return ScoreResult("active", None, round(min(1.0, base) * penalty, 3))
 
