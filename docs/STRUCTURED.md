@@ -75,6 +75,18 @@ question can now retrieve the whole grid and let the model read it.
 db/migrations/0002_chunk_kind.sql`); already-ingested documents keep `kind='prose'`
 until re-ingested.
 
+**Backfilling the existing corpus** (docs ingested before table-aware chunking):
+`herald-ingest tables-db` (workflow `tables-db.yml`). It iterates documents
+already in Supabase, re-fetches each PDF straight from its stored `source_url`,
+extracts tables, and attaches them to that same document row — no scrape
+artifacts, no manifests, and **no content-hash matching** (the reason the
+artifact/re-scrape path only reached ~half the corpus: a fresh scrape produces
+different bytes → different sha256, so drifted docs look "new" and get skipped).
+Coverage is every ingested doc whose URL still resolves; idempotent via
+`--only-missing`. Going forward, monthly ingests get tables natively, so this is
+a one-time repair. (The earlier manifest-based `herald-ingest tables` command
+remains, but `tables-db` supersedes it for backfill.)
+
 ---
 
 ## 2. The structured schema (the crux)

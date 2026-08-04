@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import UUID
 
 import fitz
+import pytest
 
 from herald.chunking import Chunk
 from herald.ingest_schools import (
@@ -374,6 +375,56 @@ def test_ingest_skips_already_ingested(tmp_path):
                          conn=DoneConn())
     )
     assert stats.docs_skipped == 1 and stats.docs_ingested == 0
+
+
+# ---- tables-db backfill (re-fetch from source_url) -----------------------
+
+class _FakeResp:
+    def __init__(self, content: bytes, ctype: str = "application/pdf"):
+        self.content = content
+        self.headers = {"content-type": ctype}
+
+
+class _FakeFetcher:
+    def __init__(self, resp: _FakeResp):
+        self._resp = resp
+
+    def get(self, url: str) -> _FakeResp:
+        return self._resp
+
+
+def test_candidate_docs_sql_variants():
+    from herald.ingest_schools import _candidate_docs_sql
+
+    base = _candidate_docs_sql(district=False, only_missing=False, limit=False)
+    assert "d.ingest_status = 'ingested'" in base
+    assert "join districts di" in base
+    assert "%(district)s" not in base
+    assert "limit" not in base.lower()
+
+    full = _candidate_docs_sql(district=True, only_missing=True, limit=True)
+    assert "di.slug = %(district)s" in full
+    assert "not exists" in full and "c.kind = 'table'" in full
+    assert full.strip().endswith("limit %(limit)s")
+
+
+def test_fetch_pdf_tables_rejects_non_pdf():
+    from herald.ingest_schools import _fetch_pdf_tables
+
+    f = _FakeFetcher(_FakeResp(b"<html>not a pdf</html>", ctype="text/html"))
+    with pytest.raises(ValueError):
+        _fetch_pdf_tables(f, "https://example.org/x")
+
+
+def test_fetch_pdf_tables_reads_prose_pdf(tmp_path):
+    # A born-digital prose PDF fetched from its URL parses cleanly to zero tables
+    # (no error) — the accept path, even when a served content-type is generic.
+    from herald.ingest_schools import _fetch_pdf_tables
+
+    pdf = tmp_path / "a.pdf"
+    _make_pdf(pdf, AGENDA_TEXT)
+    f = _FakeFetcher(_FakeResp(pdf.read_bytes(), ctype="application/octet-stream"))
+    assert _fetch_pdf_tables(f, "https://example.org/a.pdf") == []
 
 
 # ---- SQL shapes ----------------------------------------------------------

@@ -672,6 +672,242 @@ def tables(
         console.print(f"report: {report}")
 
 
+@dataclass
+class TableDBStats:
+    seen: int = 0
+    backfilled: int = 0      # docs that gained table chunks
+    no_tables: int = 0       # fetched + parsed, but no detectable grid
+    fetch_failed: int = 0    # URL unreachable / not a PDF
+    chunks_written: int = 0
+    by_district: Counter[str] = field(default_factory=Counter)
+    failures: Counter[str] = field(default_factory=Counter)  # per district
+
+
+def _candidate_docs_sql(*, district: bool, only_missing: bool, limit: bool) -> str:
+    """Ingested documents to (re)backfill tables for, newest-first per district.
+
+    ``only_missing`` restricts to docs that don't already carry a ``kind='table'``
+    chunk, so the command is idempotent — re-running only touches what's left.
+    """
+    where = ["d.ingest_status = 'ingested'"]
+    if district:
+        where.append("di.slug = %(district)s")
+    if only_missing:
+        where.append(
+            "not exists (select 1 from chunks c "
+            "where c.document_id = d.id and c.kind = 'table')"
+        )
+    sql = (
+        "select d.id, d.district_id, di.slug, d.source_url, d.doc_type, "
+        "d.meeting_date, d.title "
+        "from documents d join districts di on di.id = d.district_id "
+        f"where {' and '.join(where)} "
+        "order by di.slug, d.meeting_date desc nulls last"
+    )
+    if limit:
+        sql += " limit %(limit)s"
+    return sql
+
+
+def _fetch_pdf_tables(fetcher, source_url: str) -> list[TableBlock]:
+    """Fetch a document's PDF from its stored URL and pull out its tables.
+
+    Raises on a non-PDF response or a transport error — the caller records the
+    document as a fetch failure and moves on.
+    """
+    import tempfile
+
+    resp = fetcher.get(source_url)
+    data = resp.content
+    ctype = resp.headers.get("content-type", "")
+    if b"%PDF-" not in data[:1024] and "pdf" not in ctype.lower():
+        raise ValueError(f"not a pdf (content-type={ctype!r})")
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as tf:
+        tf.write(data)
+        tf.flush()
+        return extract_pdf(tf.name).tables
+
+
+@app.command("tables-db")
+def tables_db(
+    district: str | None = typer.Option(None, help="Only this district slug."),
+    limit: int | None = typer.Option(None, help="Stop after N documents."),
+    only_missing: bool = typer.Option(
+        True, help="Only documents that don't already have table chunks."
+    ),
+    dry_run: bool = typer.Option(
+        True, "--dry-run/--write",
+        help="Count candidate documents only; no fetch, no writes.",
+    ),
+    min_interval: float = typer.Option(1.0, help="Seconds between fetches (politeness)."),
+    wave_size: int = typer.Option(256, help="Table chunks per embed/write flush."),
+    report: str | None = typer.Option(None, help="Write a markdown report here."),
+) -> None:
+    """Backfill whole-table chunks by re-fetching each ingested document from its
+    stored ``source_url`` — no artifacts, no manifests, no content-hash matching.
+
+    Iterates the documents already in the corpus, re-downloads each PDF directly
+    from the URL it was ingested from, extracts its tables, and attaches them as
+    ``kind='table'`` chunks to that existing document. Coverage is every ingested
+    doc whose URL still resolves — not the fraction a fresh crawl happens to
+    re-hash. Idempotent (``--only-missing`` skips docs already backfilled), so a
+    re-run just picks up what failed last time.
+    """
+    from herald import schools_db
+    from herald.scrape.core import BROWSER_HEADERS, BROWSER_USER_AGENT, Fetcher
+
+    conn = schools_db.connect(_db_url())
+    cur = conn.cursor()
+    cur.execute(
+        _candidate_docs_sql(district=bool(district), only_missing=only_missing,
+                            limit=bool(limit)),
+        {"district": district, "limit": limit},
+    )
+    docs = cur.fetchall()  # (id, district_id, slug, source_url, doc_type, date, title)
+    scope = f" in {district}" if district else ""
+    tail = " lacking tables" if only_missing else ""
+    console.print(f"{len(docs)} candidate document(s){scope}{tail}")
+
+    stats = TableDBStats()
+
+    if dry_run:
+        for slug, n in Counter(d[2] for d in docs).most_common():
+            console.print(f"  {slug}: {n} docs")
+        console.print("\n[yellow]dry run — no fetch, no writes[/yellow]")
+        conn.close()
+        if report:
+            Path(report).write_text(_render_tables_db(stats, docs, dry_run=True),
+                                    encoding="utf-8")
+        return
+
+    key = os.environ.get("VOYAGE_API_KEY", "")
+    if not key:
+        raise typer.BadParameter("VOYAGE_API_KEY is not set.")
+    voyage = VoyageEmbedder(key)
+    fetcher = Fetcher(
+        user_agent=BROWSER_USER_AGENT, headers=BROWSER_HEADERS,
+        min_request_interval=min_interval, respect_robots=False,
+    )
+
+    # Where each doc's existing chunk_index tops out, so table chunk_index
+    # continues past it (the chunks PK is (document_id, chunk_index)).
+    next_index: dict[object, int] = {}
+    if docs:
+        cur.execute(
+            "select document_id, max(chunk_index) from chunks "
+            "where document_id = any(%s) group by document_id",
+            ([d[0] for d in docs],),
+        )
+        next_index = {r[0]: r[1] + 1 for r in cur.fetchall()}
+    conn.commit()  # close the read transaction before the write waves
+
+    wave: list[tuple[object, object, list[Chunk]]] = []
+
+    async def flush() -> None:
+        if not wave:
+            return
+        all_chunks = [c for _, _, cs in wave for c in cs]
+        vectors = await voyage.embed_documents([embed_input(c) for c in all_chunks])
+        i = 0
+        for doc_id, district_id, cs in wave:
+            rows = []
+            for c in cs:
+                rows.append(schools_db.SchoolChunkRow(
+                    chunk_index=c.order_index, section_path=c.section_path,
+                    section_type=c.section_type, heading=c.heading, content=c.content,
+                    embedding=vectors[i], meeting_date=c.meeting_date,
+                    doc_type=c.doc_type, kind=c.kind,
+                ))
+                i += 1
+            with conn.transaction():
+                schools_db.insert_chunks(conn.cursor(), document_id=doc_id,
+                                         district_id=district_id, rows=rows)
+        wave.clear()
+
+    async def go() -> None:
+        for n, (doc_id, district_id, slug, url, doc_type, mdate, title) in enumerate(docs, 1):
+            stats.seen += 1
+            try:
+                tables = _fetch_pdf_tables(fetcher, url)
+            except Exception as exc:
+                stats.fetch_failed += 1
+                stats.failures[slug] += 1
+                console.print(f"[{n}/{len(docs)}] {slug} {title[:48]!r} "
+                              f"[red]fetch-failed[/red]: {str(exc)[:70]}")
+                continue
+            start = next_index.get(doc_id, 0)
+            chunks = _table_chunks(tables, start_order=start, district=slug,
+                                   meeting_date=mdate, doc_type=doc_type, source_url=url)
+            if not chunks:
+                stats.no_tables += 1
+                continue
+            wave.append((doc_id, district_id, chunks))
+            stats.backfilled += 1
+            stats.chunks_written += len(chunks)
+            stats.by_district[slug] += len(chunks)
+            console.print(f"[{n}/{len(docs)}] {slug} {title[:48]!r} {len(chunks)} table(s)")
+            if sum(len(cs) for _, _, cs in wave) >= wave_size:
+                await flush()
+        await flush()
+
+    try:
+        asyncio.run(go())
+    finally:
+        fetcher.close()
+        import contextlib
+        with contextlib.suppress(Exception):
+            asyncio.run(voyage.aclose())
+        conn.close()
+
+    table = Table(title="Table backfill (from source_url)")
+    for col in ("seen", "backfilled", "no_tables", "fetch_failed", "table chunks"):
+        table.add_column(col, justify="right")
+    table.add_row(str(stats.seen), str(stats.backfilled), str(stats.no_tables),
+                  str(stats.fetch_failed), str(stats.chunks_written))
+    console.print(table)
+    for d, n in stats.by_district.most_common():
+        console.print(f"  {d}: {n} table chunks")
+    if stats.failures:
+        console.print("[red]fetch failures by district:[/red]")
+        for d, n in stats.failures.most_common():
+            console.print(f"  {d}: {n}")
+    if report:
+        Path(report).write_text(_render_tables_db(stats, docs, dry_run=False),
+                                encoding="utf-8")
+        console.print(f"report: {report}")
+
+
+def _render_tables_db(stats: TableDBStats, docs: list, *, dry_run: bool) -> str:
+    if dry_run:
+        lines = [
+            "# Table backfill (source_url) — candidates",
+            "",
+            f"_{len(docs)} ingested document(s) would be fetched — no writes_",
+            "",
+            "| district | candidate docs |",
+            "|---|---|",
+        ]
+        lines += [f"| {s} | {n} |" for s, n in Counter(d[2] for d in docs).most_common()]
+        return "\n".join(lines) + "\n"
+    lines = [
+        "# Table backfill (source_url)",
+        "",
+        "_written to database_",
+        "",
+        "| seen | backfilled | no tables | fetch failed | table chunks |",
+        "|---|---|---|---|---|",
+        f"| {stats.seen} | {stats.backfilled} | {stats.no_tables} "
+        f"| {stats.fetch_failed} | {stats.chunks_written} |",
+        "",
+        "## Table chunks by district",
+        "",
+        "| district | table chunks |",
+        "|---|---|",
+    ]
+    lines += [f"| {d} | {n} |" for d, n in stats.by_district.most_common()]
+    return "\n".join(lines) + "\n"
+
+
 @app.command()
 def ocr(
     root: str = typer.Option(
