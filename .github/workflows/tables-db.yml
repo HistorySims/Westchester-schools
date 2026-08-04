@@ -1,0 +1,72 @@
+name: tables-db
+
+# Backfill whole-table (kind='table') chunks into the EXISTING corpus by
+# re-fetching each already-ingested document straight from its stored
+# source_url — no scrape artifacts, no manifests, no content-hash matching.
+#
+# This is the durable one-time repair for documents ingested before
+# table-aware chunking existed. It iterates documents already in Supabase,
+# re-downloads each PDF, extracts its tables, and attaches them to that same
+# document row. Coverage is every ingested doc whose URL still resolves.
+# Idempotent: --only-missing (the default) skips docs that already have table
+# chunks, so a re-run just picks up what failed last time.
+#
+#   Actions -> tables-db -> Run workflow
+#
+# Dry-run first (lists candidate docs per district, no fetch/write), then run
+# with dry_run off to fetch + embed + write.
+#
+# Required secrets: SUPABASE_DB_URL, VOYAGE_API_KEY (Voyage only on a real run).
+
+on:
+  workflow_dispatch:
+    inputs:
+      district:
+        description: "Only this district slug (blank = all)"
+        type: string
+        default: ""
+      limit:
+        description: "Stop after N documents (blank = all)"
+        type: string
+        default: ""
+      dry_run:
+        description: "Count candidate docs only (no fetch, no writes)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: tables-db
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Sanity-check secrets
+        run: |
+          [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
+      - name: Backfill tables from source_url
+        run: |
+          uv run herald-ingest tables-db \
+            ${{ inputs.district && format('--district "{0}"', inputs.district) || '' }} \
+            ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
+            --report tables-db-report.md \
+            ${{ inputs.dry_run && '--dry-run' || '--write' }}
+      - name: Publish report to run summary
+        if: always()
+        run: cat tables-db-report.md >> "$GITHUB_STEP_SUMMARY" || echo "(no report)" >> "$GITHUB_STEP_SUMMARY"
