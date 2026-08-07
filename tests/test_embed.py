@@ -44,6 +44,19 @@ async def test_embed_documents_splits_across_batches(httpx_mock):
 
 
 @pytest.mark.asyncio
+async def test_embed_documents_splits_on_token_budget(httpx_mock):
+    # The token budget, not the count cap, forces the split: three ~10k-token
+    # inputs with a 25k budget and a high batch_size pack 2 + 1.
+    httpx_mock.add_response(json=_ok_response(2))
+    httpx_mock.add_response(json=_ok_response(1))
+    big = "x" * 30_000  # ~10k estimated tokens each (chars / 3)
+    async with VoyageEmbedder(api_key="k", batch_size=128, max_batch_tokens=25_000) as ve:
+        out = await ve.embed_documents([big, big, big])
+    assert len(out) == 3
+    assert len(httpx_mock.get_requests()) == 2  # token budget split it, not the count
+
+
+@pytest.mark.asyncio
 async def test_embed_documents_empty_input_no_http():
     async with VoyageEmbedder(api_key="k") as ve:
         out = await ve.embed_documents([])

@@ -389,7 +389,7 @@ class _FakeFetcher:
     def __init__(self, resp: _FakeResp):
         self._resp = resp
 
-    def get(self, url: str) -> _FakeResp:
+    def get(self, url: str, **kwargs) -> _FakeResp:
         return self._resp
 
 
@@ -404,8 +404,19 @@ def test_candidate_docs_sql_variants():
 
     full = _candidate_docs_sql(district=True, only_missing=True, limit=True)
     assert "di.slug = %(district)s" in full
+    assert "d.tables_extracted_at is null" in full
     assert "not exists" in full and "c.kind = 'table'" in full
     assert full.strip().endswith("limit %(limit)s")
+
+
+def test_boarddocs_public_url():
+    from herald.ingest_schools import _boarddocs_public_url
+
+    u = "https://go.boarddocs.com/ny/elmsford/Board.nsf/files/ABC123/$file/x.pdf"
+    assert _boarddocs_public_url(u) == (
+        "https://go.boarddocs.com/ny/elmsford/Board.nsf/Public"
+    )
+    assert _boarddocs_public_url("https://www.eufsd.org/handbook.pdf") is None
 
 
 def test_fetch_pdf_tables_rejects_non_pdf():
@@ -413,7 +424,7 @@ def test_fetch_pdf_tables_rejects_non_pdf():
 
     f = _FakeFetcher(_FakeResp(b"<html>not a pdf</html>", ctype="text/html"))
     with pytest.raises(ValueError):
-        _fetch_pdf_tables(f, "https://example.org/x")
+        _fetch_pdf_tables(f, "https://example.org/x", primed=set())
 
 
 def test_fetch_pdf_tables_reads_prose_pdf(tmp_path):
@@ -424,7 +435,38 @@ def test_fetch_pdf_tables_reads_prose_pdf(tmp_path):
     pdf = tmp_path / "a.pdf"
     _make_pdf(pdf, AGENDA_TEXT)
     f = _FakeFetcher(_FakeResp(pdf.read_bytes(), ctype="application/octet-stream"))
-    assert _fetch_pdf_tables(f, "https://example.org/a.pdf") == []
+    assert _fetch_pdf_tables(f, "https://example.org/a.pdf", primed=set()) == []
+
+
+def test_fetch_pdf_tables_primes_boarddocs_session(tmp_path):
+    # BoardDocs URLs prime the /Public page once (session cookie) and send a
+    # Referer; a plain host is fetched directly with neither.
+    from herald.ingest_schools import _fetch_pdf_tables
+
+    pdf = tmp_path / "a.pdf"
+    _make_pdf(pdf, AGENDA_TEXT)
+
+    class RecordingFetcher:
+        def __init__(self, body: bytes):
+            self._body = body
+            self.gets: list[tuple[str, dict]] = []
+
+        def get(self, url, **kw):
+            self.gets.append((url, kw.get("headers", {})))
+            return _FakeResp(self._body)
+
+    f = RecordingFetcher(pdf.read_bytes())
+    primed: set[str] = set()
+    bd = "https://go.boarddocs.com/ny/elmsford/Board.nsf/files/A/$file/x.pdf"
+    _fetch_pdf_tables(f, bd, primed=primed)
+    # first GET is the /Public prime, second is the file with a Referer
+    assert f.gets[0][0] == "https://go.boarddocs.com/ny/elmsford/Board.nsf/Public"
+    assert f.gets[1][0] == bd
+    assert f.gets[1][1].get("Referer", "").endswith("/Board.nsf/Public")
+    # a second BoardDocs file for the same district doesn't re-prime
+    f.gets.clear()
+    _fetch_pdf_tables(f, bd, primed=primed)
+    assert len(f.gets) == 1 and f.gets[0][0] == bd
 
 
 # ---- SQL shapes ----------------------------------------------------------

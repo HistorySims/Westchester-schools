@@ -20,6 +20,15 @@ VOYAGE_API = "https://api.voyageai.com/v1/embeddings"
 DEFAULT_MODEL = "voyage-3.5"
 DEFAULT_BATCH = 128
 EXPECTED_DIM = 1024
+# Voyage caps a single request at 320k tokens across all inputs. Batching by
+# count alone (128 inputs) overflows this when inputs are large — a whole-table
+# chunk can be thousands of tokens — so we also cap a batch's estimated token
+# sum, well under the hard limit. Tokens are estimated from characters (no
+# tokenizer dependency); ~3 chars/token deliberately over-counts so the real
+# request lands safely under the ceiling.
+MAX_BATCH_TOKENS = 280_000
+CHARS_PER_TOKEN = 3.0
+PER_INPUT_TOKEN_CAP = 32_000  # Voyage truncates each input to ~32k tokens
 
 
 class VoyageError(RuntimeError):
@@ -46,6 +55,7 @@ class VoyageEmbedder:
         base_url: str = VOYAGE_API,
         max_retries: int = 5,
         retry_base_delay: float = 1.0,
+        max_batch_tokens: int = MAX_BATCH_TOKENS,
     ) -> None:
         if not api_key:
             raise ValueError("Voyage api_key is required")
@@ -53,6 +63,7 @@ class VoyageEmbedder:
             raise ValueError("batch_size must be in 1..128")
         self._model = model
         self._batch_size = batch_size
+        self._max_batch_tokens = max_batch_tokens
         self._dim = dim
         self._base_url = base_url
         self._max_retries = max_retries
@@ -89,14 +100,23 @@ class VoyageEmbedder:
         # back into the caller's index space with zero-vectors as placeholders.
         keep: list[_Batch] = []
         current = _Batch(indices=[], texts=[])
+        cur_tokens = 0
         for i, t in enumerate(texts):
             if not t or not t.strip():
                 continue
-            current.indices.append(i)
-            current.texts.append(t)
-            if len(current.texts) >= self._batch_size:
+            est = min(int(len(t) / CHARS_PER_TOKEN) + 1, PER_INPUT_TOKEN_CAP)
+            # Flush before adding if this input would push the batch past either
+            # the count cap or the token budget (but never emit an empty batch).
+            if current.texts and (
+                len(current.texts) >= self._batch_size
+                or cur_tokens + est > self._max_batch_tokens
+            ):
                 keep.append(current)
                 current = _Batch(indices=[], texts=[])
+                cur_tokens = 0
+            current.indices.append(i)
+            current.texts.append(t)
+            cur_tokens += est
         if current.texts:
             keep.append(current)
 
