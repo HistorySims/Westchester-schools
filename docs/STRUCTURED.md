@@ -310,7 +310,14 @@ the CBA page it came from. Same bar as the cited RAG answers.
 1. **This doc** — schema + flow agreed. ✅
 2. **Table-aware chunking** in ingest (`kind='table'`) — also improves retrieval. ✅
 3. **`herald-extract`** for salary + stipend schedules → structured tables,
-   with a `--dry-run` audit.
+   with a `--dry-run` audit. ✅ Built: `db/migrations/0004_structured.sql`
+   (`salary_schedule`, `stipend_schedule`, `chunks.extracted_at`),
+   `herald/taxonomy.py` (canonical lanes + crosswalk + categories),
+   `data/lane_crosswalk.csv` (seed), `herald/extract_schools.py`
+   (`herald-extract run`), workflow `extract.yml`. Deterministic lane/category
+   normalization lives in taxonomy, not the model; the model only reads raw
+   labels. `--dry-run` extracts + runs the four audit invariants and prints the
+   flagged cells; `--write` upserts (idempotent) and stamps `extracted_at`.
 4. **Router + analytical path** in Ask (CLI first, then `/api/ask`).
 5. **Reflect** on other structures that deserve special treatment (see below).
 6. Budgets (2b), then re-cluster once the corpus handling is settled.

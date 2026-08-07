@@ -45,6 +45,38 @@ class SchoolChunkRow:
     kind: str = "prose"   # 'prose' | 'table'
 
 
+@dataclass(frozen=True)
+class SalaryScheduleRow:
+    """One extracted ``salary_schedule`` cell (docs/STRUCTURED.md §2)."""
+
+    school_year: str
+    lane: str
+    lane_raw: str
+    step: int
+    years_service: int | None
+    is_longevity: bool
+    salary: float
+    page: int | None = None
+    notes: str | None = None
+
+
+@dataclass(frozen=True)
+class StipendScheduleRow:
+    """One extracted ``stipend_schedule`` row (docs/STRUCTURED.md §2)."""
+
+    position: str
+    position_raw: str
+    school_year: str = ""
+    category: str | None = None
+    tier: str = ""
+    amount: float | None = None
+    amount_high: float | None = None
+    amount_pct: float | None = None
+    amount_basis: str | None = None
+    page: int | None = None
+    notes: str | None = None
+
+
 def upsert_district(
     cur: psycopg.Cursor,
     *,
@@ -170,6 +202,84 @@ def insert_chunks(
         params,
     )
     return len(params)
+
+
+def upsert_salary(
+    cur: psycopg.Cursor,
+    *,
+    district_id: UUID,
+    document_id: UUID,
+    rows: list[SalaryScheduleRow],
+) -> int:
+    """Upsert salary-schedule rows. Idempotent on (district, year, lane, step)."""
+    if not rows:
+        return 0
+    params = [
+        (district_id, document_id, r.page, r.school_year, r.lane, r.lane_raw,
+         r.step, r.years_service, r.is_longevity, r.salary, r.notes)
+        for r in rows
+    ]
+    cur.executemany(
+        """
+        insert into salary_schedule
+            (district_id, document_id, page, school_year, lane, lane_raw,
+             step, years_service, is_longevity, salary, notes)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        on conflict (district_id, school_year, lane, step) do update set
+            document_id   = excluded.document_id,
+            page          = excluded.page,
+            lane_raw      = excluded.lane_raw,
+            years_service = excluded.years_service,
+            is_longevity  = excluded.is_longevity,
+            salary        = excluded.salary,
+            notes         = excluded.notes
+        """,
+        params,
+    )
+    return len(params)
+
+
+def upsert_stipend(
+    cur: psycopg.Cursor,
+    *,
+    district_id: UUID,
+    document_id: UUID,
+    rows: list[StipendScheduleRow],
+) -> int:
+    """Upsert stipend rows. Idempotent on (district, year, position, tier)."""
+    if not rows:
+        return 0
+    params = [
+        (district_id, document_id, r.page, r.school_year, r.category, r.position,
+         r.position_raw, r.tier, r.amount, r.amount_high, r.amount_pct,
+         r.amount_basis, r.notes)
+        for r in rows
+    ]
+    cur.executemany(
+        """
+        insert into stipend_schedule
+            (district_id, document_id, page, school_year, category, position,
+             position_raw, tier, amount, amount_high, amount_pct, amount_basis, notes)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        on conflict (district_id, school_year, position, tier) do update set
+            document_id  = excluded.document_id,
+            page         = excluded.page,
+            category     = excluded.category,
+            position_raw = excluded.position_raw,
+            amount       = excluded.amount,
+            amount_high  = excluded.amount_high,
+            amount_pct   = excluded.amount_pct,
+            amount_basis = excluded.amount_basis,
+            notes        = excluded.notes
+        """,
+        params,
+    )
+    return len(params)
+
+
+def mark_chunk_extracted(cur: psycopg.Cursor, chunk_id: UUID) -> None:
+    """Stamp a table chunk as processed by herald-extract (resumability)."""
+    cur.execute("update chunks set extracted_at = now() where id = %s", (chunk_id,))
 
 
 def _one_id(cur: psycopg.Cursor) -> UUID:
