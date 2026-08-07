@@ -19,6 +19,7 @@ import asyncio
 import datetime as _dt
 import logging
 import os
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -693,6 +694,10 @@ def _candidate_docs_sql(*, district: bool, only_missing: bool, limit: bool) -> s
     if district:
         where.append("di.slug = %(district)s")
     if only_missing:
+        # Two guards: the marker skips docs already processed (incl. those with
+        # no tables, so they aren't re-fetched every run); the not-exists skips
+        # docs that already carry table chunks (never append duplicates).
+        where.append("d.tables_extracted_at is null")
         where.append(
             "not exists (select 1 from chunks c "
             "where c.document_id = d.id and c.kind = 'table')"
@@ -709,15 +714,40 @@ def _candidate_docs_sql(*, district: bool, only_missing: bool, limit: bool) -> s
     return sql
 
 
-def _fetch_pdf_tables(fetcher, source_url: str) -> list[TableBlock]:
+_BOARDDOCS_NSF = re.compile(r"(https?://go\.boarddocs\.com/[^/]+/[^/]+/Board\.nsf)/", re.I)
+
+
+def _boarddocs_public_url(url: str) -> str | None:
+    """The ``…/Board.nsf/Public`` page for a BoardDocs ``$file`` URL, else None.
+
+    BoardDocs 403s a bare GET of a file URL; loading the district's /Public page
+    once (on the same client, so its session cookie sticks) and sending a Referer
+    is what the crawler does to get through — replicate it here.
+    """
+    m = _BOARDDOCS_NSF.match(url)
+    return f"{m.group(1)}/Public" if m else None
+
+
+def _fetch_pdf_tables(fetcher, source_url: str, *, primed: set[str]) -> list[TableBlock]:
     """Fetch a document's PDF from its stored URL and pull out its tables.
 
-    Raises on a non-PDF response or a transport error — the caller records the
-    document as a fetch failure and moves on.
+    For BoardDocs URLs, prime the district session once (cached in ``primed``)
+    and send a Referer. Raises on a non-PDF response or a transport error — the
+    caller records the document as a fetch failure and moves on.
     """
+    import contextlib
     import tempfile
 
-    resp = fetcher.get(source_url)
+    headers: dict[str, str] = {}
+    pub = _boarddocs_public_url(source_url)
+    if pub:
+        if pub not in primed:
+            with contextlib.suppress(Exception):
+                fetcher.get(pub)  # sets the BoardDocs session cookie on the client
+            primed.add(pub)
+        headers["Referer"] = pub
+
+    resp = fetcher.get(source_url, headers=headers)
     data = resp.content
     ctype = resp.headers.get("content-type", "")
     if b"%PDF-" not in data[:1024] and "pdf" not in ctype.lower():
@@ -801,7 +831,19 @@ def tables_db(
         next_index = {r[0]: r[1] + 1 for r in cur.fetchall()}
     conn.commit()  # close the read transaction before the write waves
 
+    primed: set[str] = set()          # BoardDocs /Public pages already loaded
     wave: list[tuple[object, object, list[Chunk]]] = []
+    no_table_marks: list[object] = []  # doc ids fetched-but-tableless, to stamp done
+
+    def _mark_done(ids: list[object]) -> None:
+        if not ids:
+            return
+        with conn.transaction():
+            conn.cursor().execute(
+                "update documents set tables_extracted_at = now() where id = any(%s)",
+                (ids,),
+            )
+        ids.clear()
 
     async def flush() -> None:
         if not wave:
@@ -819,16 +861,23 @@ def tables_db(
                     doc_type=c.doc_type, kind=c.kind,
                 ))
                 i += 1
+            # Insert + stamp done atomically: a crash between the two would let a
+            # re-run append the same tables again (chunk_index moves past them).
             with conn.transaction():
-                schools_db.insert_chunks(conn.cursor(), document_id=doc_id,
+                cur2 = conn.cursor()
+                schools_db.insert_chunks(cur2, document_id=doc_id,
                                          district_id=district_id, rows=rows)
+                cur2.execute(
+                    "update documents set tables_extracted_at = now() where id = %s",
+                    (doc_id,),
+                )
         wave.clear()
 
     async def go() -> None:
         for n, (doc_id, district_id, slug, url, doc_type, mdate, title) in enumerate(docs, 1):
             stats.seen += 1
             try:
-                tables = _fetch_pdf_tables(fetcher, url)
+                tables = _fetch_pdf_tables(fetcher, url, primed=primed)
             except Exception as exc:
                 stats.fetch_failed += 1
                 stats.failures[slug] += 1
@@ -839,7 +888,11 @@ def tables_db(
             chunks = _table_chunks(tables, start_order=start, district=slug,
                                    meeting_date=mdate, doc_type=doc_type, source_url=url)
             if not chunks:
+                # Fetched fine but no grids — stamp done so it isn't re-fetched.
                 stats.no_tables += 1
+                no_table_marks.append(doc_id)
+                if len(no_table_marks) >= 200:
+                    _mark_done(no_table_marks)
                 continue
             wave.append((doc_id, district_id, chunks))
             stats.backfilled += 1
@@ -849,6 +902,7 @@ def tables_db(
             if sum(len(cs) for _, _, cs in wave) >= wave_size:
                 await flush()
         await flush()
+        _mark_done(no_table_marks)
 
     try:
         asyncio.run(go())
