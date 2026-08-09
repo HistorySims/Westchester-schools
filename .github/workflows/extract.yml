@@ -1,0 +1,69 @@
+name: extract
+
+# Structured extraction (docs/STRUCTURED.md §3): read whole-table chunks that
+# look like teacher salary schedules or stipend schedules, extract normalized
+# rows with Claude, audit them, and load salary_schedule / stipend_schedule.
+#
+#   Actions -> extract -> Run workflow
+#
+# Dry-run first (default): extracts + runs the audit invariants and prints the
+# flagged cells in the run summary, WITHOUT writing. Then run with dry_run off
+# to upsert. Idempotent — re-runs skip already-extracted chunks and correct
+# rather than duplicate.
+#
+# Apply db/migrations/0004_structured.sql once before the first real run.
+# Required secrets: SUPABASE_DB_URL, ANTHROPIC_API_KEY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      district:
+        description: "Only this district slug (blank = all)"
+        type: string
+        default: ""
+      limit:
+        description: "Stop after N candidate tables (blank = all)"
+        type: string
+        default: ""
+      dry_run:
+        description: "Extract + audit + report only (no DB writes)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: extract
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Sanity-check secrets
+        run: |
+          [ -n "$SUPABASE_DB_URL" ]   || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
+          [ -n "$ANTHROPIC_API_KEY" ] || { echo "ANTHROPIC_API_KEY secret is missing"; exit 1; }
+      - name: Extract
+        run: |
+          uv run herald-extract run \
+            ${{ inputs.district && format('--district "{0}"', inputs.district) || '' }} \
+            ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
+            --report extract-report.md \
+            ${{ inputs.dry_run && '--dry-run' || '--write' }}
+      - name: Publish report to run summary
+        if: always()
+        run: cat extract-report.md >> "$GITHUB_STEP_SUMMARY" || echo "(no report)" >> "$GITHUB_STEP_SUMMARY"

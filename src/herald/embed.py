@@ -23,11 +23,14 @@ EXPECTED_DIM = 1024
 # Voyage caps a single request at 320k tokens across all inputs. Batching by
 # count alone (128 inputs) overflows this when inputs are large — a whole-table
 # chunk can be thousands of tokens — so we also cap a batch's estimated token
-# sum, well under the hard limit. Tokens are estimated from characters (no
-# tokenizer dependency); ~3 chars/token deliberately over-counts so the real
-# request lands safely under the ceiling.
-MAX_BATCH_TOKENS = 280_000
-CHARS_PER_TOKEN = 3.0
+# sum. The estimate is chars/CHARS_PER_TOKEN with no tokenizer dependency, and
+# it MUST over-count or a batch overflows: number-dense budget-table markdown
+# (digits, commas, pipes) tokenizes at ~1.8 chars/token, far below prose's ~4,
+# so 3.0 was too optimistic (a 280k-"estimated" batch was really ~470k and got
+# rejected). 1.5 stays under the real count even for the densest tables, and a
+# 250k budget then lands real requests around ~250k with comfortable margin.
+MAX_BATCH_TOKENS = 250_000
+CHARS_PER_TOKEN = 1.5
 PER_INPUT_TOKEN_CAP = 32_000  # Voyage truncates each input to ~32k tokens
 
 
