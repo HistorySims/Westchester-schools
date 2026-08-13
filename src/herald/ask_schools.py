@@ -303,6 +303,11 @@ def ask(
     evidence_only: bool = typer.Option(
         False, help="Print the retrieved panel without calling the synthesis model."
     ),
+    mode: str = typer.Option(
+        "auto",
+        help="'auto' routes analytical questions to the structured tables; "
+             "'semantic' forces panel RAG; 'analytical' forces the structured path.",
+    ),
     model: str = typer.Option(DEFAULT_MODEL, help="Synthesis model."),
     report: str | None = typer.Option(None, help="Write the answer markdown here."),
 ) -> None:
@@ -318,7 +323,39 @@ def ask(
     conn = schools_db.connect(_env("SUPABASE_DB_URL"))
     voyage_key = _env("VOYAGE_API_KEY")
 
+    async def maybe_analytical() -> str | None:
+        """Route the question; return a structured answer, or None to fall to RAG."""
+        if mode == "semantic" or evidence_only:
+            return None
+        from herald import analytical
+
+        decision = await analytical.route(question, api_key=_env("ANTHROPIC_API_KEY"))
+        forced = mode == "analytical"
+        if decision.mode != "analytical" and not forced:
+            return None
+        if decision.query is None:
+            if not forced:
+                return None
+            return (
+                f"# {question}\n\nThis looks analytical, but I can't map it to a "
+                "supported query yet. Supported: steepest/flattest salary steps in "
+                "a lane, highest/lowest salary at a lane+step, a coaching stipend "
+                "compared across districts, and a lane+step's change across years.\n"
+            )
+        console.print(f"[cyan]analytical[/cyan] → {decision.query} {decision.params}")
+        try:
+            result = analytical.run_query(conn.cursor(), decision)
+        except analytical.UnsupportedQuery as exc:
+            if not forced:
+                return None
+            return f"# {question}\n\nCan't run that analytical query: {exc}.\n"
+        result.question = question
+        return analytical.render_markdown(result)
+
     async def go() -> str:
+        analytical_answer = await maybe_analytical()
+        if analytical_answer is not None:
+            return analytical_answer
         voyage = VoyageEmbedder(voyage_key)
         reranker = VoyageReranker(voyage_key) if rerank else None
         try:

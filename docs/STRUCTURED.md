@@ -327,7 +327,16 @@ the CBA page it came from. Same bar as the cited RAG answers.
    normalization lives in taxonomy, not the model; the model only reads raw
    labels. `--dry-run` extracts + runs the four audit invariants and prints the
    flagged cells; `--write` upserts (idempotent) and stamps `extracted_at`.
-4. **Router + analytical path** in Ask (CLI first, then `/api/ask`).
+4. **Router + analytical path** in Ask. ✅ Built (CLI): `herald/analytical.py`
+   — a Haiku `route()` classifies each question semantic vs. analytical and
+   fills a template; four hand-written templated queries (`step_slope`,
+   `max_at_step`, `stipend_compare`, `delta_over_years`) run over the structured
+   tables; the ranking is SQL-computed (numbers never pass through the model)
+   and rendered as a cited answer with honest "not available" per district and
+   percent-of-base stipends reported separately. Wired into `herald-ask ask`
+   via `--mode auto|semantic|analytical` (auto routes). Unsupported analytical
+   questions say so rather than guessing. `/api/ask` wiring + the years_service
+   (vs step) preference are the remaining follow-ups.
 5. **Reflect** on other structures that deserve special treatment (see below).
 6. Budgets (2b), then re-cluster once the corpus handling is settled.
 
