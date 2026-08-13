@@ -728,15 +728,24 @@ def _boarddocs_public_url(url: str) -> str | None:
     return f"{m.group(1)}/Public" if m else None
 
 
+def _tables_from_bytes(data: bytes) -> list[TableBlock]:
+    """Write PDF bytes to a temp file and pull out its tables."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as tf:
+        tf.write(data)
+        tf.flush()
+        return extract_pdf(tf.name).tables
+
+
 def _fetch_pdf_tables(fetcher, source_url: str, *, primed: set[str]) -> list[TableBlock]:
-    """Fetch a document's PDF from its stored URL and pull out its tables.
+    """Fetch a document's PDF over plain HTTP and pull out its tables.
 
     For BoardDocs URLs, prime the district session once (cached in ``primed``)
     and send a Referer. Raises on a non-PDF response or a transport error — the
     caller records the document as a fetch failure and moves on.
     """
     import contextlib
-    import tempfile
 
     headers: dict[str, str] = {}
     pub = _boarddocs_public_url(source_url)
@@ -752,10 +761,18 @@ def _fetch_pdf_tables(fetcher, source_url: str, *, primed: set[str]) -> list[Tab
     ctype = resp.headers.get("content-type", "")
     if b"%PDF-" not in data[:1024] and "pdf" not in ctype.lower():
         raise ValueError(f"not a pdf (content-type={ctype!r})")
-    with tempfile.NamedTemporaryFile(suffix=".pdf") as tf:
-        tf.write(data)
-        tf.flush()
-        return extract_pdf(tf.name).tables
+    return _tables_from_bytes(data)
+
+
+async def _browser_pdf_tables(browser, source_url: str) -> list[TableBlock]:
+    """Fetch a BoardDocs PDF through a real Chromium context (clears the WAF)."""
+    pub = _boarddocs_public_url(source_url)
+    if pub:
+        await browser.prime(pub)
+    data = await browser.get_bytes(source_url, referer=pub)
+    if b"%PDF-" not in data[:1024]:
+        raise ValueError("not a pdf (browser fetch)")
+    return _tables_from_bytes(data)
 
 
 @app.command("tables-db")
@@ -770,6 +787,10 @@ def tables_db(
         help="Count candidate documents only; no fetch, no writes.",
     ),
     min_interval: float = typer.Option(1.0, help="Seconds between fetches (politeness)."),
+    use_browser: bool = typer.Option(
+        True, "--browser/--no-browser",
+        help="Fetch BoardDocs URLs through headless Chromium (clears the WAF 403).",
+    ),
     wave_size: int = typer.Option(256, help="Table chunks per embed/write flush."),
     report: str | None = typer.Option(None, help="Write a markdown report here."),
 ) -> None:
@@ -874,35 +895,55 @@ def tables_db(
         wave.clear()
 
     async def go() -> None:
-        for n, (doc_id, district_id, slug, url, doc_type, mdate, title) in enumerate(docs, 1):
-            stats.seen += 1
+        browser = None
+        if use_browser:
+            from herald.browser_fetch import AsyncBrowserFetcher
+            browser = AsyncBrowserFetcher(user_agent=BROWSER_USER_AGENT)
             try:
-                tables = _fetch_pdf_tables(fetcher, url, primed=primed)
+                await browser.start()
+                console.print("[green]browser[/green] ready for BoardDocs fetches")
             except Exception as exc:
-                stats.fetch_failed += 1
-                stats.failures[slug] += 1
-                console.print(f"[{n}/{len(docs)}] {slug} {title[:48]!r} "
-                              f"[red]fetch-failed[/red]: {str(exc)[:70]}")
-                continue
-            start = next_index.get(doc_id, 0)
-            chunks = _table_chunks(tables, start_order=start, district=slug,
-                                   meeting_date=mdate, doc_type=doc_type, source_url=url)
-            if not chunks:
-                # Fetched fine but no grids — stamp done so it isn't re-fetched.
-                stats.no_tables += 1
-                no_table_marks.append(doc_id)
-                if len(no_table_marks) >= 200:
-                    _mark_done(no_table_marks)
-                continue
-            wave.append((doc_id, district_id, chunks))
-            stats.backfilled += 1
-            stats.chunks_written += len(chunks)
-            stats.by_district[slug] += len(chunks)
-            console.print(f"[{n}/{len(docs)}] {slug} {title[:48]!r} {len(chunks)} table(s)")
-            if sum(len(cs) for _, _, cs in wave) >= wave_size:
-                await flush()
-        await flush()
-        _mark_done(no_table_marks)
+                console.print(f"[yellow]browser unavailable ({exc}); "
+                              f"BoardDocs docs fall back to HTTP[/yellow]")
+                browser = None
+        try:
+            for n, (doc_id, district_id, slug, url, doc_type, mdate, title) in enumerate(docs, 1):
+                stats.seen += 1
+                pub = _boarddocs_public_url(url)
+                try:
+                    if browser is not None and pub:
+                        await asyncio.sleep(min_interval)  # politeness on BoardDocs
+                        tables = await _browser_pdf_tables(browser, url)
+                    else:
+                        tables = _fetch_pdf_tables(fetcher, url, primed=primed)
+                except Exception as exc:
+                    stats.fetch_failed += 1
+                    stats.failures[slug] += 1
+                    console.print(f"[{n}/{len(docs)}] {slug} {title[:48]!r} "
+                                  f"[red]fetch-failed[/red]: {str(exc)[:70]}")
+                    continue
+                start = next_index.get(doc_id, 0)
+                chunks = _table_chunks(tables, start_order=start, district=slug,
+                                       meeting_date=mdate, doc_type=doc_type, source_url=url)
+                if not chunks:
+                    # Fetched fine but no grids — stamp done so it isn't re-fetched.
+                    stats.no_tables += 1
+                    no_table_marks.append(doc_id)
+                    if len(no_table_marks) >= 200:
+                        _mark_done(no_table_marks)
+                    continue
+                wave.append((doc_id, district_id, chunks))
+                stats.backfilled += 1
+                stats.chunks_written += len(chunks)
+                stats.by_district[slug] += len(chunks)
+                console.print(f"[{n}/{len(docs)}] {slug} {title[:48]!r} {len(chunks)} table(s)")
+                if sum(len(cs) for _, _, cs in wave) >= wave_size:
+                    await flush()
+            await flush()
+            _mark_done(no_table_marks)
+        finally:
+            if browser is not None:
+                await browser.close()
 
     try:
         asyncio.run(go())

@@ -60,9 +60,14 @@ jobs:
       - name: Sanity-check secrets
         run: |
           [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
+      # BoardDocs 403s a plain HTTP client, so real runs fetch those URLs through
+      # headless Chromium. `playwright install` downloads the matching browser.
+      - name: Install Chromium (real run)
+        if: ${{ !inputs.dry_run }}
+        run: uv run --with 'playwright==1.56.*' playwright install --with-deps chromium
       - name: Backfill tables from source_url
         run: |
-          uv run herald-ingest tables-db \
+          uv run --with 'playwright==1.56.*' herald-ingest tables-db \
             ${{ inputs.district && format('--district "{0}"', inputs.district) || '' }} \
             ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
             --report tables-db-report.md \

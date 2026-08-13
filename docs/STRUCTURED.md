@@ -83,9 +83,18 @@ artifacts, no manifests, and **no content-hash matching** (the reason the
 artifact/re-scrape path only reached ~half the corpus: a fresh scrape produces
 different bytes → different sha256, so drifted docs look "new" and get skipped).
 Coverage is every ingested doc whose URL still resolves; idempotent via
-`--only-missing`. Going forward, monthly ingests get tables natively, so this is
-a one-time repair. (The earlier manifest-based `herald-ingest tables` command
-remains, but `tables-db` supersedes it for backfill.)
+`--only-missing` (a `documents.tables_extracted_at` marker, migration 0003, so
+re-runs resume and skip processed docs). Going forward, monthly ingests get
+tables natively, so this is a one-time repair. (The earlier manifest-based
+`herald-ingest tables` command remains, but `tables-db` supersedes it.)
+
+BoardDocs (`go.boarddocs.com`) 403s a plain HTTP client from a datacenter IP
+even with browser headers + a primed session, so `tables-db` fetches those URLs
+through headless Chromium (`herald/browser_fetch.py`, Playwright — `--browser`,
+on by default): it navigates the district's `/Public` page to clear the WAF and
+downloads each `$file` through the same browser context. The workflow installs
+Chromium on real runs; without Playwright it degrades to HTTP (and keeps 403-ing
+BoardDocs).
 
 ---
 
