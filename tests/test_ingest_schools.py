@@ -438,6 +438,47 @@ def test_fetch_pdf_tables_reads_prose_pdf(tmp_path):
     assert _fetch_pdf_tables(f, "https://example.org/a.pdf", primed=set()) == []
 
 
+class _FakeBrowser:
+    def __init__(self, data: bytes):
+        self._data = data
+        self.primed: list[str] = []
+
+    async def prime(self, url: str) -> None:
+        self.primed.append(url)
+
+    async def get_bytes(self, url: str, *, referer: str | None = None) -> bytes:
+        return self._data
+
+
+def test_tables_from_bytes_prose_pdf(tmp_path):
+    from herald.ingest_schools import _tables_from_bytes
+
+    pdf = tmp_path / "a.pdf"
+    _make_pdf(pdf, AGENDA_TEXT)
+    assert _tables_from_bytes(pdf.read_bytes()) == []
+
+
+def test_browser_pdf_tables_primes_and_extracts(tmp_path):
+    from herald.ingest_schools import _browser_pdf_tables
+
+    pdf = tmp_path / "a.pdf"
+    _make_pdf(pdf, AGENDA_TEXT)
+    b = _FakeBrowser(pdf.read_bytes())
+    bd = "https://go.boarddocs.com/ny/elmsford/Board.nsf/files/A/$file/x.pdf"
+    tables = asyncio.run(_browser_pdf_tables(b, bd))
+    assert tables == []   # prose PDF: no tables, no error
+    assert b.primed == ["https://go.boarddocs.com/ny/elmsford/Board.nsf/Public"]
+
+
+def test_browser_pdf_tables_rejects_non_pdf():
+    from herald.ingest_schools import _browser_pdf_tables
+
+    b = _FakeBrowser(b"<html>not a pdf</html>")
+    bd = "https://go.boarddocs.com/ny/x/Board.nsf/files/A/$file/x.pdf"
+    with pytest.raises(ValueError):
+        asyncio.run(_browser_pdf_tables(b, bd))
+
+
 def test_fetch_pdf_tables_primes_boarddocs_session(tmp_path):
     # BoardDocs URLs prime the /Public page once (session cookie) and send a
     # Referer; a plain host is fetched directly with neither.
