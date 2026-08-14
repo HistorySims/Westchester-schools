@@ -39,6 +39,7 @@ from herald.taxonomy import (
     load_crosswalk,
     normalize_lane,
     normalize_position,
+    normalize_unit,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,16 +61,29 @@ _VALID_BASIS = {"flat", "range", "percent_of_base"}
 EXTRACT_SYSTEM = """\
 You extract structured data from a SINGLE table taken from a school-district \
 document. First decide the table's kind:
-- "salary": a TEACHER SALARY SCHEDULE — a grid of salaries by education lane \
-(BA, BA+30, MA, MA+30, Doctorate, "Column V", …) and step / year of service.
+- "salary": a STAFF SALARY SCHEDULE — a grid of salaries by column/lane and \
+step. For teachers the columns are education lanes (BA, BA+30, MA, MA+30, \
+Doctorate, "Column V", …). For OTHER bargaining units (custodial, aide, \
+administrator, clerical, nurse, monitor, security, food service, …) the columns \
+are a job title, grade, or track — treat that as the lane. Keep ALL such \
+schedules; a custodial or clerical grid is as valid as a teacher one.
 - "stipend": a STIPEND / EXTRA-PAY SCHEDULE — pay for coaching, co-curricular, \
-or extra-duty positions.
+extra-duty, or a shift/overtime differential.
 - "none": anything else (budget lines, rosters, calendars, prose tables).
+
+Also identify the bargaining_unit the schedule covers, from the table's title, \
+headings, or surrounding context: one of "teacher", "administrator", \
+"custodial", "aide", "clerical", "nurse", "monitor", "security", \
+"food_service", "transportation", or "other". If it is clearly a teacher \
+schedule or you cannot tell, use "teacher".
 
 Output ONLY a JSON object, no prose and no code fences:
 
 {
   "table_kind": "salary" | "stipend" | "none",
+  "bargaining_unit": "teacher" | "administrator" | "custodial" | "aide" | \
+"clerical" | "nurse" | "monitor" | "security" | "food_service" | \
+"transportation" | "other",
   "salary_rows": [
     {"school_year": "2024-25" or null, "lane_raw": "<column header, verbatim>",
      "step": <int>, "years_service": <int or null>, "is_longevity": <bool>,
@@ -220,6 +234,7 @@ def build_salary_rows(
 ) -> tuple[list[SalaryScheduleRow], int]:
     rows: list[SalaryScheduleRow] = []
     skipped = 0
+    unit = normalize_unit(data.get("bargaining_unit"))
     for r in data.get("salary_rows") or []:
         if not isinstance(r, dict):
             skipped += 1
@@ -232,14 +247,20 @@ def build_salary_rows(
         if salary is None or step is None or not lane_raw or not sy:
             skipped += 1
             continue
+        # Education-lane normalization only makes sense for teachers; other
+        # units' columns are titles/grades, kept verbatim in lane_raw and as
+        # the lane itself so their grids don't all collapse to 'other'.
+        lane = (normalize_lane(lane_raw, district_slug=district_slug, crosswalk=crosswalk)
+                if unit == "teacher" else lane_raw)
         rows.append(SalaryScheduleRow(
             school_year=sy,
-            lane=normalize_lane(lane_raw, district_slug=district_slug, crosswalk=crosswalk),
+            lane=lane,
             lane_raw=lane_raw,
             step=step,
             years_service=_int(r.get("years_service")),
             is_longevity=_bool(r.get("is_longevity")),
             salary=salary,
+            bargaining_unit=unit,
             page=page,
             notes=None if sy_read else "school_year inferred from document title/date",
         ))
@@ -251,6 +272,7 @@ def build_stipend_rows(
 ) -> tuple[list[StipendScheduleRow], int]:
     rows: list[StipendScheduleRow] = []
     skipped = 0
+    unit = normalize_unit(data.get("bargaining_unit"))
     for r in data.get("stipend_rows") or []:
         if not isinstance(r, dict):
             skipped += 1
@@ -280,6 +302,7 @@ def build_stipend_rows(
             amount_high=amount_high,
             amount_pct=amount_pct,
             amount_basis=basis,
+            bargaining_unit=unit,
             page=page,
         ))
     return rows, skipped
@@ -303,26 +326,28 @@ def audit_salary(rows: list[tuple[str, SalaryScheduleRow]]) -> list[AuditViolati
     by_step: dict[tuple, list[SalaryScheduleRow]] = defaultdict(list)
     by_cell: dict[tuple, list[SalaryScheduleRow]] = defaultdict(list)
     for slug, r in rows:
-        by_lane[(slug, r.school_year, r.lane)].append(r)
+        u = r.bargaining_unit
+        by_lane[(slug, u, r.school_year, r.lane)].append(r)
+        # Lane ordering is an education-lane invariant — only teacher lanes rank.
         if lane_rank(r.lane) >= 0:
-            by_step[(slug, r.school_year, r.step)].append(r)
-        by_cell[(slug, r.lane, r.step)].append(r)
+            by_step[(slug, u, r.school_year, r.step)].append(r)
+        by_cell[(slug, u, r.lane, r.step)].append(r)
 
-    for (slug, sy, lane), rs in by_lane.items():
+    for (slug, _u, sy, lane), rs in by_lane.items():
         for a, b in pairwise(sorted(rs, key=lambda r: r.step)):
             if b.salary < a.salary:
                 v.append(AuditViolation("salary_non_monotonic", slug,
                     f"{sy} {lane}: step {a.step} ${a.salary:,.0f} → step {b.step} "
                     f"${b.salary:,.0f} (drops)"))
 
-    for (slug, sy, step), rs in by_step.items():
+    for (slug, _u, sy, step), rs in by_step.items():
         for a, b in pairwise(sorted(rs, key=lambda r: lane_rank(r.lane))):
             if b.salary < a.salary:
                 v.append(AuditViolation("lane_out_of_order", slug,
                     f"{sy} step {step}: {a.lane} ${a.salary:,.0f} > {b.lane} "
                     f"${b.salary:,.0f}"))
 
-    for (slug, lane, step), rs in by_cell.items():
+    for (slug, _u, lane, step), rs in by_cell.items():
         for a, b in pairwise(sorted(rs, key=lambda r: r.school_year)):
             if a.school_year != b.school_year and b.salary < a.salary:
                 v.append(AuditViolation("year_over_year_drop", slug,

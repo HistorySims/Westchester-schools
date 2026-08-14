@@ -147,6 +147,43 @@ def test_build_salary_rows_normalizes_and_infers_year():
     assert rows[1].notes and "inferred" in rows[1].notes
 
 
+def test_normalize_unit_defaults_teacher_and_detects_others():
+    from herald.taxonomy import normalize_unit
+    assert normalize_unit(None) == "teacher"          # untagged → teacher
+    assert normalize_unit("") == "teacher"
+    assert normalize_unit("Teachers' Association") == "teacher"
+    assert normalize_unit("Custodial & Maintenance Unit") == "custodial"
+    assert normalize_unit("Teacher Aides / Paraprofessionals") == "aide"
+    assert normalize_unit("Administrators (SAANYS)") == "administrator"
+    assert normalize_unit("CSEA Clerical") in {"clerical", "custodial"}  # csea→either signal
+    assert normalize_unit("something unrecognized") == "other"
+
+
+def test_build_salary_rows_non_teacher_keeps_title_as_lane():
+    # A custodial grid is kept, tagged, and its column title survives as the lane
+    # (not collapsed to 'other' by the teacher education-lane normalizer).
+    data = {"bargaining_unit": "custodial", "salary_rows": [
+        {"school_year": "2024-25", "lane_raw": "Custodian I", "step": 3, "salary": 48000},
+    ]}
+    rows, skipped = build_salary_rows(
+        data, district_slug="mount-vernon", crosswalk={}, page=6, fallback_year=None,
+    )
+    assert skipped == 0
+    assert rows[0].bargaining_unit == "custodial"
+    assert rows[0].lane == "Custodian I" and rows[0].lane_raw == "Custodian I"
+
+
+def test_audit_does_not_cross_compare_units():
+    # A custodial step-2 that pays less than a teacher step-1 is NOT a YoY/step
+    # violation — different units share no schedule.
+    rows = [
+        ("x", _sr(bargaining_unit="teacher", lane="MA+30", step=1, salary=90000)),
+        ("x", _sr(bargaining_unit="custodial", lane="Custodian I", step=1, salary=45000)),
+        ("x", _sr(bargaining_unit="custodial", lane="Custodian I", step=2, salary=47000)),
+    ]
+    assert audit_salary(rows) == []
+
+
 def test_build_stipend_rows_basis_and_category():
     data = {"stipend_rows": [
         {"position_raw": "Football - Head", "position": "Head Football Coach",
@@ -234,7 +271,7 @@ def test_upsert_salary_sql_shape():
     assert n == 1
     sql, rows = cur.many[0]
     assert "insert into salary_schedule" in sql
-    assert "on conflict (district_id, school_year, lane, step) do update" in sql
+    assert "on conflict (district_id, bargaining_unit, school_year, lane, step)" in sql
     assert rows[0][0] == DID
 
 
@@ -246,7 +283,7 @@ def test_upsert_stipend_sql_shape_and_mark():
     assert n == 1
     sql, _ = cur.many[0]
     assert "insert into stipend_schedule" in sql
-    assert "on conflict (district_id, school_year, position, tier) do update" in sql
+    assert "on conflict (district_id, bargaining_unit, school_year, position, tier)" in sql
     mark_chunk_extracted(cur, CID)
     assert "update chunks set extracted_at = now()" in cur.exec[0][0]
 
