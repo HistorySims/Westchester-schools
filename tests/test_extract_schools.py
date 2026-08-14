@@ -104,6 +104,30 @@ def test_school_year_from_date():
     assert _school_year_from_date(None) is None
 
 
+def test_school_year_from_title():
+    from herald.extract_schools import _school_year_from_title
+
+    # a multi-year contract term -> its start school year
+    assert _school_year_from_title("PFA Agreement 2023-2026") == "2023-24"
+    # a single school year, as printed
+    assert _school_year_from_title("2024-25 Salary Schedule") == "2024-25"
+    assert _school_year_from_title("MVAG Contract and MOA") is None
+
+
+def test_build_salary_rows_uses_title_year_when_grid_and_date_lack_one():
+    # The teacher-CBA case that produced zero rows: model returns null year, no
+    # meeting_date, but the title's year (passed as fallback) rescues the rows.
+    data = {"salary_rows": [
+        {"lane_raw": "MA+30", "step": 5, "salary": 82000},   # no school_year
+    ]}
+    rows, skipped = build_salary_rows(
+        data, district_slug="peekskill", crosswalk={}, page=8, fallback_year="2023-24",
+    )
+    assert skipped == 0
+    assert rows[0].school_year == "2023-24" and rows[0].salary == 82000.0
+    assert rows[0].notes and "inferred" in rows[0].notes
+
+
 # ---- row building ------------------------------------------------------
 
 def test_build_salary_rows_normalizes_and_infers_year():
@@ -184,6 +208,10 @@ def test_candidate_sql_shape():
     full = _candidate_sql(district=True, limit=True)
     assert "di.slug = %(district)s" in full
     assert full.strip().endswith("limit %(limit)s")
+    # --reextract drops the extracted_at guard so processed chunks are re-run
+    assert "c.extracted_at is null" not in _candidate_sql(
+        district=False, limit=False, only_new=False
+    )
 
 
 # ---- upsert SQL shapes -------------------------------------------------

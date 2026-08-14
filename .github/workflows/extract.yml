@@ -29,6 +29,10 @@ on:
         description: "Extract + audit + report only (no DB writes)"
         type: boolean
         default: true
+      reextract:
+        description: "Re-process chunks already extracted (fixes/re-runs)"
+        type: boolean
+        default: false
 
 concurrency:
   group: extract
@@ -62,6 +66,7 @@ jobs:
           uv run herald-extract run \
             ${{ inputs.district && format('--district "{0}"', inputs.district) || '' }} \
             ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
+            ${{ inputs.reextract && '--reextract' || '' }} \
             --report extract-report.md \
             ${{ inputs.dry_run && '--dry-run' || '--write' }}
       - name: Publish report to run summary

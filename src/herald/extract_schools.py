@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 DEFAULT_MODEL = "claude-sonnet-5"
-DEFAULT_MAX_TOKENS = 16000
+DEFAULT_MAX_TOKENS = 24000   # a big salary grid is hundreds of JSON rows
 MAX_TABLE_CHARS = 20000          # cap the table sent to the model
 DEFAULT_CROSSWALK = "data/lane_crosswalk.csv"
 SALARY_MIN, SALARY_MAX = 30_000, 250_000   # sanity band for the audit
@@ -92,8 +92,11 @@ downstream). One salary row per filled (lane, step) cell.
 - step: the step/row label as printed. years_service: only when the schedule \
 states years of service separately from the step number; else null.
 - is_longevity: true for longevity rows ("after 15 years", "15/20/25 longevity").
-- school_year: the year that grid applies. If the table has several year columns, \
-emit one salary row per (year, lane, step). Unknown ⇒ null.
+- school_year: the year that grid applies. If the table has a column per year, \
+emit one salary row per (year, lane, step). If the grid does NOT show its own \
+year, use the school year from the document title (e.g. a "2023-2026" contract \
+term ⇒ the first grid is "2023-24"). Only null if neither the table nor the \
+title gives a year.
 - Stipend amount_basis: "flat" = one dollar figure (in amount); "range" = a \
 low-high band (low in amount, high in amount_high); "percent_of_base" = a percent \
 of a base salary (percent in amount_pct, amount null).
@@ -104,13 +107,14 @@ cells, and header rows.\
 
 # ---- candidate selection ----------------------------------------------
 
-def _candidate_sql(*, district: bool, limit: bool) -> str:
+def _candidate_sql(*, district: bool, limit: bool, only_new: bool = True) -> str:
     where = [
         "c.kind = 'table'",
         "c.status = 'active'",
-        "c.extracted_at is null",
         "(c.content ~* %(kw)s or c.heading ~* %(kw)s or d.title ~* %(kw)s)",
     ]
+    if only_new:
+        where.append("c.extracted_at is null")
     if district:
         where.append("di.slug = %(district)s")
     sql = (
@@ -197,8 +201,22 @@ def _school_year_from_date(d: _dt.date | None) -> str | None:
     return f"{start}-{(start + 1) % 100:02d}"
 
 
+_TITLE_YEAR = re.compile(r"(20\d{2})\s*[-–—/]\s*(20\d{2}|\d{2})")  # noqa: RUF001
+
+
+def _school_year_from_title(title: str) -> str | None:
+    """First school year in a title: '2024-25' → '2024-25'; a multi-year contract
+    term like 'PFA Agreement 2023-2026' → its start school year '2023-24'."""
+    m = _TITLE_YEAR.search(title or "")
+    if not m:
+        return None
+    start = int(m.group(1))
+    return f"{start}-{(start + 1) % 100:02d}"
+
+
 def build_salary_rows(
-    data: dict, *, district_slug: str, crosswalk, page: int | None, fallback_year: str | None,
+    data: dict, *, district_slug: str, crosswalk, page: int | None,
+    fallback_year: str | None,
 ) -> tuple[list[SalaryScheduleRow], int]:
     rows: list[SalaryScheduleRow] = []
     skipped = 0
@@ -223,7 +241,7 @@ def build_salary_rows(
             is_longevity=_bool(r.get("is_longevity")),
             salary=salary,
             page=page,
-            notes=None if sy_read else "school_year inferred from document date",
+            notes=None if sy_read else "school_year inferred from document title/date",
         ))
     return rows, skipped
 
@@ -403,7 +421,14 @@ async def extract_candidates(
                     on_doc(cand, "parse-failed")
                 continue
 
-            fy = fallback.setdefault(cand.chunk_id, _school_year_from_date(cand.meeting_date))
+            # A teacher CBA grid rarely repeats its year and the doc has no
+            # meeting_date, so prefer the year in the title ("… 2023-2026") —
+            # without it every salary row is dropped for a missing school_year.
+            fy = fallback.setdefault(
+                cand.chunk_id,
+                _school_year_from_title(cand.doc_title)
+                or _school_year_from_date(cand.meeting_date),
+            )
             srows, s_sk = build_salary_rows(
                 data, district_slug=cand.slug, crosswalk=crosswalk, page=cand.page,
                 fallback_year=fy,
@@ -499,6 +524,10 @@ def run(
         True, "--dry-run/--write",
         help="Extract + audit + report only; no DB writes.",
     ),
+    reextract: bool = typer.Option(
+        False, "--reextract",
+        help="Re-process chunks already extracted (default: only new ones).",
+    ),
     model: str = typer.Option(DEFAULT_MODEL, help="Extraction model."),
     crosswalk: str = typer.Option(DEFAULT_CROSSWALK, help="Lane crosswalk CSV."),
     report: str | None = typer.Option(None, help="Write a markdown report here."),
@@ -517,7 +546,7 @@ def run(
     conn = schools_db.connect(db_url)
     cur = conn.cursor()
     cur.execute(
-        _candidate_sql(district=bool(district), limit=bool(limit)),
+        _candidate_sql(district=bool(district), limit=bool(limit), only_new=not reextract),
         {"kw": CANDIDATE_KEYWORDS, "district": district, "limit": limit},
     )
     candidates = [
