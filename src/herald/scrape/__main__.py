@@ -47,7 +47,7 @@ from herald.scrape.runner import (
     load_targets,
     render_report,
 )
-from herald.scrape.site import crawl_site
+from herald.scrape.site import crawl_site, docs_from_seed
 
 app = typer.Typer(help="Scrape district sources into raw files + a manifest.", no_args_is_help=True)
 console = Console()
@@ -405,6 +405,89 @@ def site(
             f"- by type: {by_type}",
         ]
         Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@app.command()
+def contracts(
+    sources: str = typer.Option(
+        "data/targets/cba_sources.json", help="Seeds JSON (per-district CBA source URLs)."
+    ),
+    only: str | None = typer.Option(
+        None, help="Only these district slug(s), comma-separated."
+    ),
+    out: str = typer.Option("data/raw", help="Root dir for downloaded files."),
+    report: str | None = typer.Option(None, help="Write a markdown summary to this path."),
+    max_pages: int = typer.Option(60, help="Max pages to walk per seed site."),
+    all_pdfs: bool = typer.Option(
+        False, help="Keep every PDF from the seed sites, not just contract-type."
+    ),
+    dry_run: bool = typer.Option(False, help="Discover + list only; download nothing."),
+    ignore_robots: bool = typer.Option(
+        True, help="Bypass robots.txt (public records; union sites)."
+    ),
+    browser: bool = typer.Option(True, help="Present as a browser."),
+    user_agent: str = typer.Option(DEFAULT_USER_AGENT),
+    min_interval: float = typer.Option(2.0, help="Min seconds between requests."),
+) -> None:
+    """Crawl teacher-union sites + district HR pages for CBAs / salary schedules.
+
+    Teacher salary schedules mostly live OUTSIDE the board-docs corpus. This
+    reads ``data/targets/cba_sources.json`` (per district: HR/union page seeds to
+    crawl + direct CBA PDF URLs) and downloads contract-type documents into the
+    same raw store + manifest the normal ingest consumes.
+    """
+    raw = json.loads(Path(sources).read_text(encoding="utf-8"))
+    src = raw.get("sources", raw)
+    wanted = {s.strip() for s in (only or "").split(",") if s.strip()} or None
+    out_dir = Path(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest = Manifest(out_dir / "manifest.jsonl")
+    lines = ["## Contract crawl", ""]
+
+    for slug, seeds in src.items():
+        if slug.startswith("_") or not isinstance(seeds, list):
+            continue
+        if wanted and slug not in wanted:
+            continue
+        console.rule(slug)
+        collected: list = []
+        with _fetcher(
+            user_agent, min_interval, respect_robots=not ignore_robots, browser=browser
+        ) as f:
+            for seed in seeds:
+                try:
+                    collected.extend(
+                        docs_from_seed(f, seed, slug, max_pages=max_pages,
+                                       target_only=not all_pdfs)
+                    )
+                except Exception as exc:  # one bad seed shouldn't sink the district
+                    console.print(f"  [red]seed failed[/red] {seed}: {exc}")
+            seen: set[str] = set()
+            uniq = [d for d in collected
+                    if d.source_url not in seen and not seen.add(d.source_url)]
+            disc = out_dir / f"discovered-contracts-{slug}.jsonl"
+            with disc.open("w", encoding="utf-8") as fh:
+                for d in uniq:
+                    fh.write(json.dumps(
+                        {"doc_type": str(d.doc_type), "title": d.title, "url": d.source_url}
+                    ) + "\n")
+            stats = download_docs(
+                uniq, fetcher=f, store=RawStore(out_dir), manifest=manifest, dry_run=dry_run
+            )
+        by_type = ", ".join(f"{k}={v}" for k, v in sorted(stats.by_type.items())) or "none"
+        verb = "would download" if dry_run else "downloaded"
+        console.print(
+            f"[bold]{slug}[/bold]: {verb} {stats.downloaded} "
+            f"(discovered {stats.discovered}, failed {stats.failed}); by type: {by_type}"
+        )
+        lines.append(f"- **{slug}**: {verb} {stats.downloaded} "
+                     f"(discovered {stats.discovered}, failed {stats.failed}); {by_type}")
+
+    if report:
+        Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        console.print(f"\nreport: {report}")
+    if not dry_run:
+        console.print(f"manifest: {out_dir / 'manifest.jsonl'}")
 
 
 if __name__ == "__main__":

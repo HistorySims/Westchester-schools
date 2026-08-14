@@ -1,0 +1,85 @@
+name: crawl-contracts
+
+# Acquire teacher collective-bargaining agreements / salary schedules, which
+# mostly live OUTSIDE the board-docs corpus — on district HR pages and teacher
+# -union sites. Seeds are in data/targets/cba_sources.json. One job per district
+# (its own runner IP). Public records; browser mode + ignore-robots on.
+#
+#   Actions -> crawl-contracts -> Run workflow
+#
+# Then ingest this run's artifacts (Actions -> ingest -> run_id = this run),
+# which now keeps tables whole (kind='table'); then herald-extract picks up the
+# salary schedules.
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: "Max pages to walk per seed site"
+        type: string
+        default: "60"
+      all_pdfs:
+        description: "Keep every PDF from the seed sites (not just contract-type)"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Discover + list only; download nothing"
+        type: boolean
+        default: true
+
+concurrency:
+  group: crawl-contracts-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  crawl:
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        slug:
+          - port-chester-rye
+          - ossining
+          - peekskill
+          - tarrytowns
+          - elmsford
+          - mount-vernon
+          - greenburgh-central
+          - white-plains
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Crawl contracts for ${{ matrix.slug }}
+        run: |
+          uv run herald-scrape contracts \
+            --sources data/targets/cba_sources.json \
+            --only "${{ matrix.slug }}" \
+            --max-pages "${{ inputs.max_pages }}" \
+            ${{ inputs.all_pdfs && '--all-pdfs' || '--no-all-pdfs' }} \
+            --ignore-robots \
+            --out data/raw \
+            --report "contracts-${{ matrix.slug }}.md" \
+            ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}
+      - name: Publish report to run summary
+        if: always()
+        run: cat "contracts-${{ matrix.slug }}.md" >> "$GITHUB_STEP_SUMMARY" || echo "(no report)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload documents + manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contracts-${{ matrix.slug }}
+          path: |
+            data/raw/**
+            contracts-${{ matrix.slug }}.md
+          if-no-files-found: warn
+          retention-days: 14

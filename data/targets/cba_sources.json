@@ -1,0 +1,36 @@
+{
+  "_comment": "Seed URLs for teacher collective-bargaining agreements / salary schedules, which live OUTSIDE the board-docs corpus — on district HR pages and teacher-union sites (found by web search 2026-08). Each district maps to a list of seeds: an HR/contracts page to crawl, a union site to crawl, and/or a direct CBA PDF URL to download. Used by `herald-scrape contracts`. These union domains are public-records sources beyond the board-docs allowlist; added deliberately for CBA acquisition.",
+  "sources": {
+    "port-chester-rye": [
+      "https://www.pcteachersassociation.org/"
+    ],
+    "ossining": [
+      "https://www.ossiningufsd.org/departments/human-resources/teachers-association",
+      "https://www.ossiningteachersassociation.org/"
+    ],
+    "peekskill": [
+      "https://peekskillfa.com/"
+    ],
+    "tarrytowns": [
+      "https://www.tufsd.org/departments/human-resources/employees",
+      "https://tarrytownlearningcenter.org/wp-content/uploads/2023/08/Tarrytown-TAT-2022-2025.pdf"
+    ],
+    "elmsford": [
+      "https://www.eufsd.org/departments/personnel-employment",
+      "https://www.eufsd.org/departments/finance-operations/2024-2025-opening-packet"
+    ],
+    "mount-vernon": [
+      "https://www.mtvernoncsd.org/departments/human-resources/contracts",
+      "https://mvft.org/",
+      "https://resources.finalsite.net/images/v1783514085/mtvernoncsdorg/effviiestgohyvmgy2y9/MOATeacherUnit.pdf"
+    ],
+    "greenburgh-central": [
+      "https://www.greenburghcsd.org/domain/45",
+      "https://gtfunion.com/"
+    ],
+    "white-plains": [
+      "https://www.wptaonline.net/",
+      "https://resources.finalsite.net/images/v1682538735/whiteplainspublicschoolsorg/zm94sgbasvvm7hi4dvnw/WPTA2022-2026CBA_.pdf"
+    ]
+  }
+}

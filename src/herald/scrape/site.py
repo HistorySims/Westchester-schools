@@ -25,7 +25,9 @@ logger = logging.getLogger(__name__)
 _RULES: list[tuple[re.Pattern[str], DocType]] = [
     (re.compile(r"handbook", re.I), DocType.handbook),
     (re.compile(r"collective\s*bargain|negotiat|bargaining\s*unit|\bcba\b|\bmou\b|\bmoa\b"
-                r"|memorandum of (agreement|understanding)|\bcontract\b|\bagreement\b", re.I),
+                r"|memorandum of (agreement|understanding)|\bcontract\b|\bagreement\b"
+                r"|salary\s*schedule|step\s*schedule|teachers?\s*associat|faculty\s*associat"
+                r"|federation of teachers", re.I),
      DocType.contract),
     (re.compile(r"\bpolic(y|ies)\b|regulation|by-?law", re.I), DocType.policy),
     (re.compile(r"budget|adopted\s+budget|financial\s+statement", re.I), DocType.budget),
@@ -36,7 +38,9 @@ _RULES: list[tuple[re.Pattern[str], DocType]] = [
 # Only follow HTML links that plausibly lead to documents, to bound the crawl.
 _FOLLOW = re.compile(
     r"board|polic(y|ies)|handbook|student|famil|parent|contract|negotiat|budget"
-    r"|human.?resourc|employ|department|district|about|minutes|agenda|document|finance",
+    r"|human.?resourc|employ|department|district|about|minutes|agenda|document|finance"
+    r"|salary|compensation|labor|personnel|associat|federation|\bunion\b|bargain"
+    r"|agreement|staff|packet|resource",
     re.I,
 )
 _PDF = re.compile(r"\.pdf(?:$|\?)", re.I)
@@ -154,6 +158,30 @@ def _as_document(url: str, text: str, district: str, *, target_only: bool) -> Sc
         source_url=download,
         suggested_filename=fname,
     )
+
+
+def docs_from_seed(
+    fetcher: Fetcher,
+    seed: str,
+    district: str,
+    *,
+    max_pages: int = 60,
+    target_only: bool = True,
+) -> list[ScrapedDoc]:
+    """Resolve one CBA seed URL to documents.
+
+    A seed that is itself a document (a direct CBA PDF / Finalsite / Drive link)
+    yields just that document — always kept, since we seeded it deliberately.
+    Otherwise the seed is a page (an HR or union-site index) and we crawl its
+    site for contract-type PDFs.
+    """
+    direct = _as_document(seed, "", district, target_only=False)
+    if direct is not None:
+        return [direct]
+    return list(crawl_site(
+        fetcher, base_url=seed, district=district,
+        max_pages=max_pages, target_only=target_only,
+    ))
 
 
 def crawl_site(

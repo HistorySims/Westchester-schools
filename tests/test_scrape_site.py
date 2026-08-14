@@ -9,6 +9,7 @@ from herald.scrape.models import DocType
 from herald.scrape.site import (
     classify_link,
     crawl_site,
+    docs_from_seed,
     extract_links,
     gdrive_download_url,
     parse_sitemap_locs,
@@ -27,6 +28,45 @@ def test_classify_link():
     assert classify_link("/f/adopted-budget-2025.pdf", "Adopted Budget") is DocType.budget
     assert classify_link("/f/minutes-3-17.pdf", "Meeting Minutes") is DocType.minutes
     assert classify_link("/f/lunch-menu.pdf", "March Lunch Menu") is None
+
+
+def test_classify_link_catches_cba_variants():
+    # the contract signals a CBA crawl leans on
+    assert classify_link("/f/2024-Teacher-Salary-Schedule.pdf", "Salary Schedule") \
+        is DocType.contract
+    assert classify_link("/x.pdf", "Faculty Association Agreement 2023-2026") is DocType.contract
+    assert classify_link("/x.pdf", "WPTA 2022-2026 CBA") is DocType.contract
+
+
+def test_docs_from_seed_direct_pdf_needs_no_crawl():
+    # A direct CBA PDF seed resolves to one document without touching the network
+    # (a fetcher that would raise if used proves it).
+    class _Boom:
+        def get(self, *a, **k):
+            raise AssertionError("should not crawl a direct-doc seed")
+
+    docs = docs_from_seed(
+        _Boom(), "https://resources.finalsite.net/x/WPTA2022-2026CBA_.pdf", "white-plains",
+    )
+    assert len(docs) == 1
+    assert docs[0].source_url.endswith("WPTA2022-2026CBA_.pdf")
+    assert docs[0].district == "white-plains"
+
+
+def test_cba_sources_file_is_valid():
+    import json
+    from pathlib import Path
+
+    data = json.loads(Path("data/targets/cba_sources.json").read_text(encoding="utf-8"))
+    src = data["sources"]
+    expected = {
+        "port-chester-rye", "ossining", "peekskill", "tarrytowns",
+        "elmsford", "mount-vernon", "greenburgh-central", "white-plains",
+    }
+    assert set(src) == expected
+    for slug, seeds in src.items():
+        assert isinstance(seeds, list) and seeds, slug
+        assert all(u.startswith("http") for u in seeds), slug
 
 
 def test_extract_links_resolves_and_filters():
