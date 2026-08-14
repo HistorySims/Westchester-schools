@@ -373,12 +373,15 @@ async def _extract_one(client, model: str, cand: Candidate, *, max_tokens: int):
         f"Table (markdown):\n{cand.content[:MAX_TABLE_CHARS]}\n\n"
         "Extract per the schema in your instructions. Output ONLY the JSON object."
     )
-    resp = await client.messages.create(
+    # Stream: at max_tokens this large the SDK refuses a non-streaming request
+    # ("streaming is required for operations that may take >10 minutes").
+    async with client.messages.stream(
         model=model, max_tokens=max_tokens, system=EXTRACT_SYSTEM,
         messages=[{"role": "user", "content": user}],
-    )
-    text = "".join(b.text for b in resp.content if b.type == "text")
-    return text, resp.usage.input_tokens, resp.usage.output_tokens
+    ) as stream:
+        final = await stream.get_final_message()
+    text = "".join(b.text for b in final.content if b.type == "text")
+    return text, final.usage.input_tokens, final.usage.output_tokens
 
 
 async def extract_candidates(

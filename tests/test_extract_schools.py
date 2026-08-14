@@ -264,11 +264,24 @@ def _patch_anthropic(monkeypatch, responses: list[str]):
 
     state = {"i": 0}
 
+    class _Stream:
+        def __init__(self, text):
+            self._text = text
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get_final_message(self):
+            return _FakeResp(self._text)
+
     class _Msgs:
-        async def create(self, **kw):
+        def stream(self, **kw):
             t = responses[min(state["i"], len(responses) - 1)]
             state["i"] += 1
-            return _FakeResp(t)
+            return _Stream(t)
 
     class _Client:
         def __init__(self, *a, **k):
