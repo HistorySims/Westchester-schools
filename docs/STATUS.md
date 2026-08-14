@@ -1,6 +1,6 @@
 # Westchester Schools — Project Status
 
-*Last updated: 2026-07-16*
+*Last updated: 2026-08-14*
 
 A semantic-research corpus of Westchester County public-school governance
 — board agendas, minutes, policy manuals, student handbooks, teacher
@@ -90,9 +90,67 @@ share the JSON, it's published as a phone-viewable Artifact. The other
 three views (trajectory, district comparison, dossier) build on the
 same export.
 
-**Current milestone:** run the `cluster` workflow for the first real
-hierarchical topic map on the full corpus. The rest of the inherited
-engine (drift, brief) remains unwired.
+**Quality gate — built:** **`herald-score` + the `score` workflow** flip
+junk chunks to `status='quarantined'` (which both the map and Ask already
+filter out): *garbled* text (symbol-soup, judged by the share of tokens
+that are real EN/ES words or clean numeric data — so budget tables read as
+data and survive) and *procedural boilerplate* (roll calls, motions,
+adjournments). Reversible; re-score to move the bar.
+
+**Web app — built (v1):** a Next.js app in `web/` reading Supabase — an
+**ask** page (streaming cited answers + global full-text search) and an
+**explore** page (the topic map via a self-contained canvas renderer). Server
+-side queries make full-text search free (no shipped index). Actions writes,
+Vercel reads, Supabase is the seam.
+
+---
+
+## Structured data & analytical queries (the current workstream)
+
+RAG answers *semantic* questions well but **cannot** answer *parametric* ones
+over tables — *"which district has the steepest MA+30 salary steps between
+years 10 and 20?"* The fix (design in [`STRUCTURED.md`](STRUCTURED.md)) is to
+extract the high-value tables into structured rows and answer with a **query**,
+not retrieval. Four pieces, all built:
+
+1. **Table-aware chunking** (migration `0002`) — at ingest, whole tables are
+   kept intact as `kind='table'` chunks (PyMuPDF `find_tables` → markdown)
+   instead of being smeared across prose chunks. Retrieval finds the whole
+   grid; extraction gets a clean, header-bearing input.
+2. **Corpus backfill** — `herald-ingest tables-db` re-fetches every already
+   -ingested document straight from its stored `source_url` (no expired scrape
+   artifacts, no content-hash matching) and attaches its tables. Resumable
+   (migration `0003`, a `tables_extracted_at` marker). **Result: ~5,576 whole
+   -table chunks** across the budget/salary/stipend material that's Google/
+   Finalsite-hosted. BoardDocs-hosted docs (~1,729) **fetch-fail** — see below.
+3. **Structured extraction** — `herald-extract` (migration `0004`:
+   `salary_schedule`, `stipend_schedule`) feeds each schedule-like table chunk
+   to Claude for JSON rows, normalizes lanes/positions **deterministically** in
+   `taxonomy.py` (canonical lanes + a hand-maintained `data/lane_crosswalk.csv`),
+   and runs audit invariants (monotonic salary up a lane, higher lane ≥ lower at
+   the same step, year-over-year non-decreasing, $30k–$250k sanity) in
+   `--dry-run` before any write. Idempotent; each chunk stamped `extracted_at`.
+   First real run: **885 stipend rows across 50 tables** (coach/extra-duty pay —
+   the "who pays coaches unusually much" question is answerable now). Salary was
+   initially **zero** — a bug (salary rows require a `school_year`, but CBA grids
+   don't repeat it and contracts have no meeting date, so every row was dropped);
+   fixed by pulling the year from the document title + streaming the call.
+   **Re-running now to populate `salary_schedule`.**
+4. **Analytical query path** (`analytical.py`) — `herald-ask --mode auto`
+   routes each question with a cheap Haiku call: *semantic* → today's panel RAG;
+   *analytical* → one of four **hand-written templated queries** (`step_slope`,
+   `max_at_step`, `stipend_compare`, `delta_over_years`) over the structured
+   tables. The ranking is computed in **SQL — numbers never pass through the
+   model** — and rendered as a cited answer, with districts lacking an extracted
+   grid listed as "not available" and percent-of-base stipends reported
+   separately. Failure mode is "unsupported question," never wrong SQL.
+
+**Current milestone:** finish the `herald-extract` re-run (with the title-year
+fix) to land `salary_schedule`, confirm the audit is clean, then the flagship
+*"steepest MA+30 step 10→20"* question is answerable end-to-end. The inherited
+drift/brief engine remains unwired; budgets (phase 2b) are deferred.
+
+**Test suite: 231 green.**
 
 ---
 
@@ -166,6 +224,17 @@ adapted).
 
 ## Failures, weak spots & known issues
 
+- **BoardDocs now IP-blocks datacenter fetches.** The original July scrape
+  downloaded BoardDocs files fine, but re-fetching them for the table backfill
+  now 403s — even through headless Chromium (Playwright), which rules out
+  headers/fingerprint/session and points to **IP-reputation blocking of GitHub's
+  runner ranges** (BoardDocs tightened since July). So the `tables-db` backfill
+  loses ~1,729 BoardDocs-hosted docs — mostly minutes/policies/CSE rosters (low
+  table value), but also some standalone stipend sheets. The docs are still in
+  the corpus as **prose** from July; we just can't re-pull them for tables. The
+  block is on datacenter IPs, not browsers — so the realistic fix for any
+  specific high-value doc (a district's CBA) is a **manual download from a phone/
+  home network** into a small manual-ingest path, not proxy infrastructure.
 - **~300 scanned PDFs have no text layer (`no_text`) → OCR pass built,
   not yet run.** These aren't random: older Port Chester agendas
   (2019–2021, ~20 docs — over half the *site*-crawl no_text), plus in the
@@ -281,28 +350,23 @@ crawler                                             │
 
 ## Next steps
 
-1. **Finish the real download** (in progress) — `crawl-sites` with
-   `dry_run: false` for the seven strong districts; BoardDocs pulls done.
-2. **Investigate Greenburgh** (deferred) — find its real document index /
-   sitemap path so it isn't budget-only.
-3. **Run the ingest pipeline** — built (2026-07-16): `herald-ingest` +
-   the `ingest` workflow consume scrape artifacts by run id (manifest →
-   PyMuPDF text → structural chunk → contextual-prefix embed → Postgres,
-   schema in `db/migrations/0001_schools_init.sql`; the newspaper chain
-   moved to `db/newspaper/`). Dry-run verified on the real Peekskill
-   pull: 12 docs → 421 chunks, correct dates (title ▸ document header ▸
-   manifest — BoardDocs stamps a school-year-end placeholder on every
-   file). Blocked only on secrets: a fresh Supabase project's
-   `SUPABASE_DB_URL` + `VOYAGE_API_KEY` in repo Actions secrets, then
-   run workflow `ingest` with `init_db` once. The junk/quality filter
-   remains deferred (chunks carry a `status` column for it).
-4. **Build entity extraction** for the enumerated pipeline —
-   `personnel_action` / `contract` tables that preserve per-person
-   queryability (tenure, stipends).
-5. **Point the inherited engine at the school corpus** — cluster, drift,
-   Brief, Dossier. Expect embedding/label tuning.
-6. **Adapt Yonkers** (non-BoardDocs) and consider surveying prior art on
-   GitHub (many people scrape school-board docs) before over-building.
+1. **Finish the `herald-extract` re-run** (in progress) — with the title-year
+   fix, populate `salary_schedule`; read the `--dry-run` audit flags before the
+   write. A flood of flags = garbled grid markdown → tune `lane_crosswalk.csv`
+   or reconsider the extraction input; a handful = normal, real dips to confirm.
+2. **Wire the analytical path into `/api/ask`** (web) — it's CLI-only today.
+   Then the topic map and the salary/stipend query surface are both phone-usable.
+3. **`years_service` over `step`** (STRUCTURED.md decision #6) — analytical
+   queries currently use the printed step as the year axis with a prose caveat;
+   prefer `years_service` where a contract states it, per-district fallback.
+4. **Manual-ingest path** for BoardDocs-blocked high-value docs (a district's
+   CBA salary schedule) — phone download → small upload/ingest, only if the
+   extract re-run shows salary coverage is thin.
+5. **Monthly cycle** ([`ROADMAP.md`](ROADMAP.md)) — freeze-and-assign new
+   packets to stable topics, seasonal (YoY) drift, the brief. Fold in
+   `meeting_id`-based dedup so BoardDocs byte-drift doesn't re-ingest duplicates.
+6. **Budgets (phase 2b)** and re-cluster once table handling has settled; adapt
+   Yonkers (non-BoardDocs); investigate thin Greenburgh coverage.
 
 ---
 
