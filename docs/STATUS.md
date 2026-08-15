@@ -1,6 +1,6 @@
 # Westchester Schools — Project Status
 
-*Last updated: 2026-08-14*
+*Last updated: 2026-08-15*
 
 A semantic-research corpus of Westchester County public-school governance
 — board agendas, minutes, policy manuals, student handbooks, teacher
@@ -145,12 +145,59 @@ not retrieval. Four pieces, all built:
    grid listed as "not available" and percent-of-base stipends reported
    separately. Failure mode is "unsupported question," never wrong SQL.
 
-**Current milestone:** finish the `herald-extract` re-run (with the title-year
-fix) to land `salary_schedule`, confirm the audit is clean, then the flagship
-*"steepest MA+30 step 10→20"* question is answerable end-to-end. The inherited
-drift/brief engine remains unwired; budgets (phase 2b) are deferred.
+### Contracts live outside board docs — and are often scanned (the key pivot)
 
-**Test suite: 231 green.**
+A reframe (user, 2026-08-15) redirected the whole salary effort: **teacher
+salary schedules mostly are not in board-docs at all.** The first extract
+runs confirmed it — only spurious rows came out, because the board-docs
+corpus barely contains a real teacher grid. CBAs live on **union sites and
+district HR pages** (open-gov / "contracts" pages), not in meeting packets.
+So we built a **contract-acquisition crawler** (`herald-scrape contracts` +
+`crawl-contracts.yml`, matrix ×8, seeds in `data/targets/cba_sources.json`)
+that walks those sources. It reached contract-type PDFs for **6/8 districts**
+on the first pass (2 dead seeds since fixed); the download run pulled real
+contracts for **7/8**.
+
+Two more corrections shaped the schema and the priorities:
+
+- **"A custodian contract isn't a throwaway."** A district runs on more than
+  its teachers. The salary layer is no longer teacher-only: migration `0005`
+  adds a **`bargaining_unit`** dimension (teacher/administrator/custodial/
+  aide/clerical/nurse/…) to `salary_schedule` and `stipend_schedule` and to
+  their unique keys, so a custodial grid and a teacher grid for the same
+  year coexist instead of colliding; the extractor prompt classifies any
+  staff schedule (not just teacher) and tags the unit; audits run per unit.
+- **"We're not just talking salary."** A CBA's primary value is its **full
+  prose** — "which districts offer paternity leave," grievance, class-size
+  caps — answered by semantic search once the contract is *ingested*,
+  independent of whether any salary row is ever extracted. Structured tables
+  are the secondary layer.
+
+**But the flagship CBAs are scanned images.** Ingesting the crawl showed the
+teacher contracts (`Tarrytown-TAT-2022-2025`, `WPTA MOA`, `MVAG MOA`) come
+back `no_text` — no text layer, so neither prose nor tables reach the
+corpus. Tesseract recovers prose but flattens salary grids into unusable
+number-jumble. So the OCR path gained a **Claude-vision engine**
+(`ocr_pdf_vision` + `herald-ingest ocr --engine vision`): it transcribes
+each scanned page to Markdown **keeping salary grids as tables**, which are
+carried as `kind='table'` chunks — one vision pass feeds both the semantic
+layer (prose) and the numeric layer (`herald-extract` reads the tables into
+`salary_schedule`). Tesseract stays as the cheap prose-only engine.
+
+**Current milestone:** vision-OCR the scanned CBAs (proving on tarrytowns'
+TAT first — dry run confirmed **14 no_text candidates**, of which 3 are real
+CBAs, 3 junk HTML-as-PDF, 8 scanned budgets), then `herald-extract` to land
+real per-unit `salary_schedule` rows, making the flagship *"steepest MA+30
+step 10→20"* question answerable end-to-end. The stipend layer already works
+(885 rows). The inherited drift/brief engine remains unwired; budgets
+(phase 2b) are deferred.
+
+**Keeping it current:** the monthly, update-only crawl→ingest→OCR→extract
+refresh is designed in [`REFRESH.md`](REFRESH.md) — one scheduled workflow,
+change-detected by extracted-text hash (drift-proof), that also retires the
+run-id hand-carrying between stages.
+
+**Test suite: 240 green.**
 
 ---
 
@@ -235,8 +282,12 @@ adapted).
   block is on datacenter IPs, not browsers — so the realistic fix for any
   specific high-value doc (a district's CBA) is a **manual download from a phone/
   home network** into a small manual-ingest path, not proxy infrastructure.
-- **~300 scanned PDFs have no text layer (`no_text`) → OCR pass built,
-  not yet run.** These aren't random: older Port Chester agendas
+- **~300 scanned PDFs have no text layer (`no_text`) → OCR now has a
+  vision engine; first real pass running (tarrytowns CBA).** The scanned
+  set includes the highest-value docs — the teacher CBAs — so the OCR path
+  gained a Claude-**vision** engine that keeps salary grids as tables (see
+  the contracts pivot above); Tesseract remains the cheap prose-only engine.
+  These aren't random: older Port Chester agendas
   (2019–2021, ~20 docs — over half the *site*-crawl no_text), plus in the
   BoardDocs pass a large tail of small scanned consent-agenda backups
   (fixed-asset disposal forms, bid awards, club charters, individual
@@ -350,22 +401,29 @@ crawler                                             │
 
 ## Next steps
 
-1. **Finish the `herald-extract` re-run** (in progress) — with the title-year
-   fix, populate `salary_schedule`; read the `--dry-run` audit flags before the
-   write. A flood of flags = garbled grid markdown → tune `lane_crosswalk.csv`
-   or reconsider the extraction input; a handful = normal, real dips to confirm.
-2. **Wire the analytical path into `/api/ask`** (web) — it's CLI-only today.
+1. **Vision-OCR the scanned CBAs** (in progress) — proving on tarrytowns'
+   `Tarrytown-TAT-2022-2025.pdf` first (cheapest end-to-end validation of the
+   vision→table→extract chain), then white-plains + mount-vernon. Apply
+   migration `0005` (bargaining_unit) before extract writes salary rows.
+2. **`herald-extract` on the OCR-recovered tables** — land real per-unit
+   `salary_schedule` rows; read the `--dry-run` audit flags first (a flood =
+   garbled grid → tune `lane_crosswalk.csv`; a handful = real dips to confirm).
+3. **Fix the two remaining acquisition gaps:** ossining still returns 0
+   contracts (both seeds dead — needs a different source), and a Greenburgh
+   download saved as `.bin` PyMuPDF can't open (content-type sniffing at store
+   time).
+4. **The monthly refresh pipeline** ([`REFRESH.md`](REFRESH.md)) — one
+   scheduled, update-only crawl→ingest→OCR→extract workflow, change-detected by
+   extracted-text hash so BoardDocs byte-drift doesn't re-ingest duplicates;
+   also retires the manual run-id hand-carrying between stages.
+5. **Wire the analytical path into `/api/ask`** (web) — it's CLI-only today.
    Then the topic map and the salary/stipend query surface are both phone-usable.
-3. **`years_service` over `step`** (STRUCTURED.md decision #6) — analytical
-   queries currently use the printed step as the year axis with a prose caveat;
-   prefer `years_service` where a contract states it, per-district fallback.
-4. **Manual-ingest path** for BoardDocs-blocked high-value docs (a district's
-   CBA salary schedule) — phone download → small upload/ingest, only if the
-   extract re-run shows salary coverage is thin.
-5. **Monthly cycle** ([`ROADMAP.md`](ROADMAP.md)) — freeze-and-assign new
-   packets to stable topics, seasonal (YoY) drift, the brief. Fold in
-   `meeting_id`-based dedup so BoardDocs byte-drift doesn't re-ingest duplicates.
-6. **Budgets (phase 2b)** and re-cluster once table handling has settled; adapt
+6. **`years_service` over `step`** (STRUCTURED.md decision #6) — prefer
+   `years_service` where a contract states it, per-district fallback.
+7. **The brief cycle** ([`ROADMAP.md`](ROADMAP.md)) — freeze-and-assign new
+   packets to stable topics, seasonal (YoY) drift, the brief (distinct from the
+   corpus refresh above: this is the *analysis* cadence, that is *acquisition*).
+8. **Budgets (phase 2b)** and re-cluster once table handling has settled; adapt
    Yonkers (non-BoardDocs); investigate thin Greenburgh coverage.
 
 ---
