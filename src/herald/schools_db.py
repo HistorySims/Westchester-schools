@@ -206,6 +206,14 @@ def insert_chunks(
     return len(params)
 
 
+def delete_document_chunks(cur: psycopg.Cursor, *, document_id: UUID) -> int:
+    """Delete all chunks of one document. Used by re-OCR to replace a scanned
+    doc's Tesseract chunks with vision chunks (prose + tables) rather than
+    leaving stale rows behind ``insert_chunks``'s do-nothing conflict."""
+    cur.execute("delete from chunks where document_id = %s", (document_id,))
+    return cur.rowcount
+
+
 def upsert_salary(
     cur: psycopg.Cursor,
     *,

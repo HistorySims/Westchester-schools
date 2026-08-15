@@ -183,6 +183,7 @@ class _DocWork:
     page_count: int
     text_chars: int
     document_id: object = None  # UUID when writing to the DB
+    replace: bool = False       # re-OCR: delete existing chunks before insert
 
 
 async def ingest_manifests(
@@ -194,6 +195,7 @@ async def ingest_manifests(
     on_doc=None,                     # callback(entry, status) for progress
     ocr_mode: bool = False,          # only (re)process no-text docs, via OCR
     ocr_fn=None,                     # callable(path)->ExtractedText; None = dry count
+    reocr: bool = False,             # re-OCR docs already OCR'd, replacing their chunks
     tables_only: bool = False,       # backfill: add table chunks to already-ingested docs
 ) -> IngestStats:
     """Ingest manifest entries. ``conn is None`` means dry-run (no writes).
@@ -251,6 +253,10 @@ async def ingest_manifests(
                     i += 1
                 with conn.transaction():
                     cur = conn.cursor()
+                    if w.replace:
+                        # re-OCR: drop the doc's stale (Tesseract) chunks so the
+                        # vision prose+table chunks replace rather than collide.
+                        schools_db.delete_document_chunks(cur, document_id=w.document_id)
                     schools_db.insert_chunks(
                         cur,
                         document_id=w.document_id,
@@ -316,7 +322,7 @@ async def ingest_manifests(
                         stats.docs_skipped += 1
                         note = "not-ingested"
                         continue
-                elif existing == "ingested":
+                elif existing == "ingested" and not (reocr and ocr_mode):
                     stats.docs_skipped += 1
                     note = "skipped"
                     continue
@@ -390,6 +396,9 @@ async def ingest_manifests(
                 entry=entry, chunks=chunks, meeting_date=meeting_date,
                 doc_type=doc_type, page_count=extracted.page_count,
                 text_chars=extracted.content_chars, document_id=doc_id,
+                # re-OCR of an already-ingested (Tesseract) doc replaces its
+                # chunks rather than colliding with them.
+                replace=bool(reocr and ocr_mode and existing == "ingested"),
             ))
             if sum(len(w.chunks) for w in wave) >= wave_size:
                 await flush()
@@ -1031,6 +1040,12 @@ def ocr(
     max_pages: int | None = typer.Option(
         None, help="Cap pages OCR'd per document (None = all)."
     ),
+    reocr: bool = typer.Option(
+        False,
+        help="Re-OCR docs already OCR'd (e.g. upgrade a Tesseract pass to vision), "
+             "replacing their chunks. Text docs stay skipped, so only true scans "
+             "are redone.",
+    ),
     dry_run: bool = typer.Option(
         True, help="Count OCR candidates per district only; no OCR, no DB, no Voyage."
     ),
@@ -1098,7 +1113,7 @@ def ocr(
         try:
             return await ingest_manifests(
                 pairs, conn=conn, voyage=voyage, wave_size=wave_size,
-                on_doc=on_doc, ocr_mode=True, ocr_fn=ocr_fn,
+                on_doc=on_doc, ocr_mode=True, ocr_fn=ocr_fn, reocr=reocr,
             )
         finally:
             if voyage is not None:

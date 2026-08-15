@@ -218,6 +218,7 @@ def test_ingest_dry_run_end_to_end(tmp_path):
 class FakeCursor:
     def __init__(self, conn):
         self._conn = conn
+        self.rowcount = 0
 
     def execute(self, sql, params=None):
         self._conn.calls.append((" ".join(sql.split()), params))
@@ -225,7 +226,7 @@ class FakeCursor:
         if "insert into districts" in sql_l:
             self._conn._fetch = (DISTRICT_UUID,)
         elif "insert into documents" in sql_l:
-            self._conn._fetch = (DOC_UUID, "pending")
+            self._conn._fetch = (DOC_UUID, self._conn.existing_status)
         else:
             self._conn._fetch = None
 
@@ -243,6 +244,7 @@ class FakeConn:
         self.calls: list = []
         self.many: list = []
         self._fetch = None
+        self.existing_status = "pending"   # what find_or_insert_document reports
 
     def cursor(self):
         return FakeCursor(self)
