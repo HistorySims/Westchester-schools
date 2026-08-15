@@ -24,6 +24,54 @@ _LANE_RANK = {lane: i for i, lane in enumerate(CANONICAL_LANES)}
 
 STIPEND_CATEGORIES = ("athletics", "cocurricular", "extra_duty")
 
+# Bargaining units — a district runs on more than its teachers, so a salary
+# schedule is not thrown away for being non-teacher; it is tagged by unit and
+# kept. 'teacher' is the default (and what the lane taxonomy above describes);
+# other units use the same (lane, step) grid shape with title/grade in 'lane'.
+CANONICAL_UNITS: tuple[str, ...] = (
+    "teacher", "administrator", "custodial", "aide", "clerical",
+    "nurse", "monitor", "security", "food_service", "transportation", "other",
+)
+_UNIT_RULES: list[tuple[re.Pattern[str], str]] = [
+    # Aide/paraprofessional first: "teacher aide" / "teaching assistant" carry
+    # the word "teacher" but are their own unit, so they must win over it.
+    (re.compile(r"teacher.?aide|teaching assistant|paraprofessional|\bpara\b"
+                r"|teacher assistant", re.I), "aide"),
+    (re.compile(r"administrat|principal|supervisor|director|\bsaanys\b"
+                r"|building leader|assistant superintendent", re.I), "administrator"),
+    (re.compile(r"custodi|maintenance|grounds|facilit|\bciti\b|building service"
+                r"|\bseiu\b|\bcsea\b", re.I), "custodial"),
+    (re.compile(r"cleric|secretar|\btypist\b|account clerk|office staff", re.I),
+     "clerical"),
+    (re.compile(r"teacher|faculty|instructional|\bta\b|federation of teachers"
+                r"|teachers?\s*associat", re.I), "teacher"),
+    (re.compile(r"\bnurse\b|health\s+aide|rn\b|lpn\b", re.I), "nurse"),
+    (re.compile(r"monitor|lunch\s*aide|hall\s*monitor|recess", re.I), "monitor"),
+    (re.compile(r"security|guard|\bsro\b|safety officer", re.I), "security"),
+    (re.compile(r"food\s*service|cafeteria|kitchen|cook\b", re.I), "food_service"),
+    (re.compile(r"transport|\bbus\b|driver|mechanic", re.I), "transportation"),
+]
+
+
+def normalize_unit(raw: str | None) -> str:
+    """Map a bargaining-unit label to a canonical unit; default 'teacher'.
+
+    'teacher' is the default because the salary corpus is teacher-dominated and
+    an untagged grid is far more likely a teacher grid than anything else; an
+    unrecognized-but-present label maps to 'other', never dropped.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return "teacher"
+    low = s.lower()
+    if low in CANONICAL_UNITS:
+        return low
+    for pat, unit in _UNIT_RULES:
+        if pat.search(s):
+            return unit
+    return "other"
+
+
 _WS = re.compile(r"\s+")
 
 

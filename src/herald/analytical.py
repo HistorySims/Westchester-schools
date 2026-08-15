@@ -158,7 +158,7 @@ with pairs as (
     max(document_id) filter (where step = %(b)s) as doc_id,
     max(page)        filter (where step = %(b)s) as page
   from salary_schedule
-  where lane = %(lane)s and step in (%(a)s, %(b)s)
+  where bargaining_unit = 'teacher' and lane = %(lane)s and step in (%(a)s, %(b)s)
   group by district_id, school_year
 ),
 both as (select * from pairs where sal_from is not null and sal_to is not null),
@@ -195,7 +195,8 @@ def _step_slope(cur, p: dict, all_slugs: list[str]) -> AnalyticalResult:
 MAX_AT_STEP_SQL = """
 with rows as (
   select distinct on (district_id) district_id, school_year, salary, document_id, page
-  from salary_schedule where lane = %(lane)s and step = %(step)s
+  from salary_schedule
+  where bargaining_unit = 'teacher' and lane = %(lane)s and step = %(step)s
   order by district_id, school_year desc
 )
 select di.slug, r.school_year, r.salary, r.page, d.title, d.source_url
@@ -278,7 +279,8 @@ def _stipend_compare(cur, p: dict, all_slugs: list[str]) -> AnalyticalResult:
 DELTA_YEARS_SQL = """
 with rows as (
   select district_id, school_year, salary, document_id, page
-  from salary_schedule where lane = %(lane)s and step = %(step)s
+  from salary_schedule
+  where bargaining_unit = 'teacher' and lane = %(lane)s and step = %(step)s
 ),
 agg as (
   select district_id,

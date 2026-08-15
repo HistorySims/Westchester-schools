@@ -105,10 +105,25 @@ Normalized tables in the same Supabase DB (new migration). Every row carries
 RAG answers do. Store both the *normalized* value and the *raw* label so
 normalization is auditable.
 
-### Teacher salary schedules
+> **Structured tables are the *secondary* layer.** A CBA's primary value in the
+> corpus is its full prose, ingested as `kind='prose'` chunks — that is what
+> answers open-ended policy questions ("which districts offer paternity leave",
+> sick-leave buyback, grievance steps, class-size caps) via semantic search.
+> The normalized tables below only exist to answer *parametric numeric*
+> questions. A contract is worth ingesting even if it yields zero salary rows.
 
-A CBA salary grid is `(school_year, lane, step) → salary`. The quirks that the
-schema must capture (and where a naïve parser fails):
+### Staff salary schedules (all bargaining units)
+
+A salary grid is `(bargaining_unit, school_year, lane, step) → salary`. A
+district runs on more than its teachers: custodial, administrator, aide,
+clerical, nurse and other units all have negotiated schedules, and none is
+thrown away — each is tagged with its `bargaining_unit` and kept. For teachers
+the "lane" is an education column (BA/MA/…); for other units it is a job
+title/grade, held verbatim in `lane` (education-lane normalization applies to
+teachers only). The `bargaining_unit` is part of the unique key so a custodial
+grid and a teacher grid for the same `(year, lane, step)` coexist instead of
+colliding. The quirks that the schema must capture (and where a naïve parser
+fails):
 
 - **Step ≠ year.** Steps usually track years of service for the first stretch,
   then diverge — frozen steps, **longevity steps** at 15/20/25, off-schedule
@@ -126,8 +141,9 @@ create table salary_schedule (
   district_id    uuid not null references districts(id),
   document_id    uuid not null references documents(id),
   page           int,
+  bargaining_unit text not null default 'teacher',  -- teacher|custodial|aide|…
   school_year    text not null,        -- '2024-25' (the year this grid applies)
-  lane           text not null,        -- canonical, e.g. 'MA+30'
+  lane           text not null,        -- canonical 'MA+30' (teacher) or title/grade
   lane_raw       text not null,        -- as printed
   step           int not null,         -- step number as printed
   years_service  int,                  -- mapped years, when the contract states it
@@ -135,7 +151,7 @@ create table salary_schedule (
   salary         numeric not null,
   notes          text,
   created_at     timestamptz default now(),
-  unique (district_id, school_year, lane, step)
+  unique (district_id, bargaining_unit, school_year, lane, step)
 );
 ```
 
