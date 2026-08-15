@@ -38,6 +38,10 @@ on:
         type: choice
         options: ["tesseract", "vision"]
         default: "vision"
+      reocr:
+        description: "Re-OCR docs already OCR'd (upgrade a Tesseract pass to vision), replacing their chunks"
+        type: boolean
+        default: false
       dpi:
         description: "Rasterization DPI for OCR"
         type: string
@@ -101,6 +105,7 @@ jobs:
             --root data/artifacts \
             --engine "${{ inputs.engine }}" \
             --dpi "${{ inputs.dpi }}" \
+            ${{ inputs.reocr && '--reocr' || '--no-reocr' }} \
             ${{ inputs.district && format('--district "{0}"', inputs.district) || '' }} \
             ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
             --report ocr-report.md \

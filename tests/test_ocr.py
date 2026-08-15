@@ -196,6 +196,38 @@ def test_ocr_mode_vision_writes_table_chunks(tmp_path):
     assert any("table" in str(row) for row in kinds)   # a table chunk was written
 
 
+def test_reocr_replaces_chunks_of_already_ingested_scan(tmp_path):
+    # A scan OCR'd once (Tesseract, status='ingested') is re-OCR'd with --reocr:
+    # its old chunks are deleted and the new (vision) chunks written, instead of
+    # being skipped as already-ingested.
+    from tests.test_ingest_schools import FakeConn, FakeVoyage
+
+    raw = tmp_path / "data" / "raw"
+    (raw / "tarrytowns" / "contract").mkdir(parents=True)
+    scan = raw / "tarrytowns" / "contract" / "aa_tat.pdf"
+    _blank_pdf(scan)
+    m = raw / "manifest.jsonl"
+
+    conn, voyage = FakeConn(), FakeVoyage()
+    conn.existing_status = "ingested"      # already OCR'd once
+
+    grid = "| Step | MA+30 |\n| --- | --- |\n| 1 | 82000 |\n| 2 | 84000 |"
+
+    def fake_vision(path):
+        return ocr_mod.ExtractedDoc(
+            text="Teacher salary schedule per the 2022-2025 agreement. " * 6,
+            tables=[ocr_mod.TableBlock(page=1, markdown=grid)],
+            page_count=1,
+        )
+
+    stats = asyncio.run(ingest_manifests(
+        [(_entry(str(scan), district="tarrytowns", doc_type=DocType.contract), m)],
+        conn=conn, voyage=voyage, ocr_mode=True, ocr_fn=fake_vision, reocr=True,
+    ))
+    assert stats.docs_ingested == 1 and stats.docs_skipped == 0
+    assert any("delete from chunks" in sql for sql, _ in conn.calls)  # replace, not append
+
+
 def test_ocr_mode_real_run_recovers_and_writes(tmp_path):
     # Reuse the fake DB/Voyage doubles from the ingest tests.
     from tests.test_ingest_schools import FakeConn, FakeVoyage
