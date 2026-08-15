@@ -109,6 +109,93 @@ def test_ocr_mode_dry_run_counts_candidates_only(tmp_path):
     assert "OCR candidates by district" in report and "port-chester-rye" in report
 
 
+def test_split_markdown_tables_separates_grid_from_prose():
+    md = (
+        "Article 12 — Salary\n"
+        "The following schedule applies.\n"
+        "| Step | BA | MA |\n"
+        "| --- | --- | --- |\n"
+        "| 1 | 55000 | 60000 |\n"
+        "| 2 | 57000 | 62000 |\n"
+        "\n"
+        "Longevity is paid after 15 years."
+    )
+    prose, tables = ocr_mod.split_markdown_tables(md, page=7)
+    assert len(tables) == 1
+    assert tables[0].page == 7
+    assert "| 1 | 55000 | 60000 |" in tables[0].markdown
+    assert "Article 12" in prose and "Longevity" in prose
+    assert "55000" not in prose               # the grid was lifted out of prose
+
+
+class _FakeBlock:
+    def __init__(self, text: str) -> None:
+        self.type = "text"
+        self.text = text
+
+
+class _FakeMessages:
+    def __init__(self, md: str) -> None:
+        self._md = md
+        self.calls = 0
+
+    def create(self, **kwargs):
+        self.calls += 1
+        return types.SimpleNamespace(content=[_FakeBlock(self._md)])
+
+
+class _FakeAnthropic:
+    def __init__(self, md: str) -> None:
+        self.messages = _FakeMessages(md)
+
+
+def test_ocr_pdf_vision_returns_tables_from_markdown(tmp_path):
+    pdf = tmp_path / "scan.pdf"
+    _blank_pdf(pdf)  # 1 page; vision doesn't care about the text layer
+    client = _FakeAnthropic(
+        "Salary Schedule 2024-25\n| Step | MA+30 |\n| --- | --- |\n| 1 | 82000 |"
+    )
+    doc = ocr_mod.ocr_pdf_vision(pdf, client=client, model="m", dpi=72)
+    assert client.messages.calls == 1          # one call per page
+    assert doc.page_count == 1
+    assert len(doc.tables) == 1 and "82000" in doc.tables[0].markdown
+    assert "Salary Schedule 2024-25" in doc.text
+
+
+def test_ocr_mode_vision_writes_table_chunks(tmp_path):
+    # A vision ocr_fn returns an ExtractedDoc with a table -> a kind='table'
+    # chunk is written, which is what herald-extract later reads.
+    from tests.test_ingest_schools import FakeConn, FakeVoyage
+
+    raw = tmp_path / "data" / "raw"
+    (raw / "white-plains" / "contract").mkdir(parents=True)
+    scan = raw / "white-plains" / "contract" / "aa_cba.pdf"
+    _blank_pdf(scan)
+    m = raw / "manifest.jsonl"
+
+    table_md = (
+        "| Step | BA | MA | MA+30 |\n| --- | --- | --- | --- |\n"
+        + "\n".join(f"| {s} | {50000 + s * 1500} | {55000 + s * 1600} | "
+                    f"{60000 + s * 1700} |" for s in range(1, 12))
+    )
+
+    def fake_vision(path):
+        return ocr_mod.ExtractedDoc(
+            text="Teacher salary schedule per the 2022-2025 agreement. " * 6,
+            tables=[ocr_mod.TableBlock(page=1, markdown=table_md)],
+            page_count=1,
+        )
+
+    conn, voyage = FakeConn(), FakeVoyage()
+    stats = asyncio.run(ingest_manifests(
+        [(_entry(str(scan), district="white-plains", doc_type=DocType.contract), m)],
+        conn=conn, voyage=voyage, ocr_mode=True, ocr_fn=fake_vision,
+    ))
+    assert stats.docs_ingested == 1
+    kinds = [p for sql, params in conn.many if "insert into chunks" in sql for p in params]
+    assert any("table" in str(row) for row in kinds)   # a table chunk was written
+
+
 def test_ocr_mode_real_run_recovers_and_writes(tmp_path):
     # Reuse the fake DB/Voyage doubles from the ingest tests.
     from tests.test_ingest_schools import FakeConn, FakeVoyage

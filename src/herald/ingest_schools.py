@@ -351,9 +351,14 @@ async def ingest_manifests(
                     note = "ocr-candidate"
                     continue
                 try:
-                    ocr_text = ocr_fn(path)   # ExtractedText — no table structure
-                    extracted = ExtractedDoc(
-                        text=ocr_text.text, tables=[], page_count=ocr_text.page_count
+                    result = ocr_fn(path)
+                    # tesseract engine returns flat ExtractedText (no tables);
+                    # the vision engine returns an ExtractedDoc whose Markdown
+                    # tables are kept as whole table chunks for herald-extract.
+                    extracted = (
+                        result if isinstance(result, ExtractedDoc)
+                        else ExtractedDoc(
+                            text=result.text, tables=[], page_count=result.page_count)
                     )
                 except Exception as exc:
                     stats.docs_error += 1
@@ -1014,6 +1019,14 @@ def ocr(
     district: str | None = typer.Option(None, help="Only OCR this district slug."),
     doc_type: str | None = typer.Option(None, help="Only OCR this doc type."),
     limit: int | None = typer.Option(None, help="Stop after N manifest entries."),
+    engine: str = typer.Option(
+        "tesseract",
+        help="'tesseract' (CPU, prose only) or 'vision' (Claude, keeps salary "
+             "grids as tables for herald-extract).",
+    ),
+    model: str = typer.Option(
+        "claude-sonnet-5", help="Vision model (engine=vision only)."
+    ),
     dpi: int = typer.Option(300, help="Rasterization DPI for OCR."),
     max_pages: int | None = typer.Option(
         None, help="Cap pages OCR'd per document (None = all)."
@@ -1028,8 +1041,14 @@ def ocr(
 
     Reprocesses only documents that yielded no text on the normal ingest.
     The dry run (default) just tallies how many per district — fast, no
-    Tesseract, no keys — so you can confirm the set before spending on OCR.
+    engine, no keys — so you can confirm the set before spending on OCR.
+
+    The ``vision`` engine transcribes salary grids as Markdown tables, so the
+    scanned teacher CBAs feed both semantic search (prose) and herald-extract
+    (salary rows); ``tesseract`` recovers prose only.
     """
+    if engine not in ("tesseract", "vision"):
+        raise typer.BadParameter("engine must be 'tesseract' or 'vision'.")
     pairs, _ = _gather_pairs(root=root, manifest=manifest, district=district,
                              doc_type=doc_type, limit=limit)
 
@@ -1038,7 +1057,6 @@ def ocr(
     ocr_fn = None
     if not dry_run:
         from herald import schools_db
-        from herald.ocr import ocr_pdf
 
         conn = schools_db.connect(_db_url())
         key = os.environ.get("VOYAGE_API_KEY", "")
@@ -1046,8 +1064,23 @@ def ocr(
             raise typer.BadParameter("VOYAGE_API_KEY is not set.")
         voyage = VoyageEmbedder(key)
 
-        def ocr_fn(path):
-            return ocr_pdf(path, dpi=dpi, max_pages=max_pages)
+        if engine == "vision":
+            import anthropic
+
+            from herald.ocr import ocr_pdf_vision
+
+            if not os.environ.get("ANTHROPIC_API_KEY", ""):
+                raise typer.BadParameter("ANTHROPIC_API_KEY is not set.")
+            client = anthropic.Anthropic()
+
+            def ocr_fn(path):
+                return ocr_pdf_vision(
+                    path, client=client, model=model, dpi=dpi, max_pages=max_pages)
+        else:
+            from herald.ocr import ocr_pdf
+
+            def ocr_fn(path):
+                return ocr_pdf(path, dpi=dpi, max_pages=max_pages)
 
     done = 0
 
