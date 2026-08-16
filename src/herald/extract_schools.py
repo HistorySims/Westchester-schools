@@ -53,7 +53,18 @@ SALARY_MIN, SALARY_MAX = 30_000, 250_000   # sanity band for the audit
 
 # Candidate table chunks: headers/content/title mentioning a schedule. POSIX
 # ERE (Postgres ~*); '+' is bracketed so it's literal.
-CANDIDATE_KEYWORDS = r"salary|stipend|longevity|coach|extra.?duty|co.?curricular|ma[+]|ba[+]"
+# Candidate table chunks. The lane patterns matter as much as the words: a bare
+# salary grid's text is just column headers and numbers, and real contracts head
+# those columns "MA30"/"BA15" with no plus sign (Tarrytown Appendix A), so the
+# original `ma[+]` matched nothing and the grid was invisible here — the only
+# thing on that page carrying a keyword was the small Longevity table. We
+# already require kind='table', so 'step' is a safe, high-signal addition.
+CANDIDATE_KEYWORDS = (
+    r"salary|stipend|longevity|coach|extra.?duty|co.?curricular"
+    r"|\b(?:ba|ma)\s*\+?\s*\d{2}\b"       # lane columns: BA15, MA+30, MA 30
+    r"|\bph\.?\s*d\b|\bdoctorate\b"        # doctorate lane
+    r"|\bstep\b"                           # a step column
+)
 
 _VALID_BASIS = {"flat", "range", "percent_of_base"}
 

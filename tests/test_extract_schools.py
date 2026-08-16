@@ -147,6 +147,25 @@ def test_build_salary_rows_normalizes_and_infers_year():
     assert rows[1].notes and "inferred" in rows[1].notes
 
 
+def test_candidate_keywords_match_a_bare_salary_grid():
+    # The regression that produced zero salary rows: a real grid's text is just
+    # lane headers + numbers, and the lanes carry no '+' ("MA30"), so the old
+    # `ma[+]` filter skipped it and only the page's Longevity table qualified.
+    import re
+
+    from herald.extract_schools import CANDIDATE_KEYWORDS
+
+    kw = re.compile(CANDIDATE_KEYWORDS, re.I)
+    tat = "| 2022 - 23 | BA | BA15 | BA30 | MA | MA30 | MA60 | DR |\n| 1 | 63,541 |"
+    wpta = "| Step | BA | BA+15 | MA | MA+45 | PHD-LESS | PHD |\n| 1.00 | 60,502.00 |"
+    assert kw.search(tat) and kw.search(wpta)
+    # still catches what it always did
+    assert kw.search("| Longevity | Regular |") and kw.search("Head Football Coach")
+    # and does not drag in every budget/roster table
+    assert not kw.search("| Account | 2024-25 Adopted | 2025-26 Proposed |")
+    assert not kw.search("| Member | Present | Absent |")
+
+
 def test_normalize_lane_handles_plusless_notation():
     # Tarrytown's Appendix A writes lanes without a '+' ("MA30", "BA15", "DR").
     # The old word-boundary regex fell through to 'other' for every one of them.
