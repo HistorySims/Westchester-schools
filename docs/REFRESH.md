@@ -94,6 +94,23 @@ unique keys, so a replaced grid corrects rather than duplicates.
   table chunks with `extracted_at is null`. Nothing new needed; the UPDATED
   path clears `extracted_at` so amended grids re-extract.
 
+## OCR engine — open question (not yet decided)
+
+The current vision engine is Claude Sonnet-5, chosen because the pipeline is
+already Anthropic-native and the one-time contract backfill is only a few
+dollars. **If OCR becomes a recurring monthly cost, revisit the engine** —
+at volume there are cheaper and/or better-fit options worth a real bake-off,
+and the field is moving fast enough that the shortlist will have grown by
+then. Early candidates noted (2026-08, *not* exhaustive): **Gemini 3.7 Flash**
+(cheap VLM, strong tables), **Mistral OCR** (dedicated doc-OCR, flat per-page
+~$1–2/1k, markdown+table output), and **PaddleOCR PP-Structure** (open,
+CPU-runnable → free on Actions, unlike GPU-bound VLMs). The `ocr.py` engine is
+already pluggable (`--engine`), so adding one is bounded. Decision rule when
+we get there: bake off the top few on the *same* salary-grid pages and judge
+on **digit accuracy against the source**, not leaderboard rank — a transposed
+salary figure is a silent corruption. No action now; flagged for when the
+monthly refresh makes OCR a standing line item.
+
 ## The watermark
 
 A small `corpus_refresh` table records, per (source, district), the
