@@ -16,8 +16,8 @@ from pathlib import Path
 # Canonical salary lanes, ordered least→most credited. Order is meaningful: the
 # audit checks that a higher lane pays ≥ the lane to its left at the same step.
 CANONICAL_LANES: list[str] = [
-    "BA", "BA+15", "BA+30",
-    "MA", "MA+15", "MA+30", "MA+45", "MA+60", "MA+75",
+    "BA", "BA+15", "BA+30", "BA+45",
+    "MA", "MA+15", "MA+20", "MA+30", "MA+40", "MA+45", "MA+60", "MA+75",
     "Doctorate",
 ]
 _LANE_RANK = {lane: i for i, lane in enumerate(CANONICAL_LANES)}
@@ -111,9 +111,12 @@ def load_crosswalk(path: str | Path) -> dict[tuple[str | None, str], str]:
 
 # ---- lane normalization ------------------------------------------------
 
-_DOCTORATE = re.compile(r"doctor|ph\.?\s*d|ed\.?\s*d", re.I)
-_MASTER = re.compile(r"master|m\.?\s*a\b|\bms\b|\bm\b|m\s*\+", re.I)
-_BACHELOR = re.compile(r"bachelor|b\.?\s*a\b|\bbs\b|\bb\b|b\s*\+", re.I)
+# The lookahead `(?=\d|\b)` accepts the plus-less notation real contracts use
+# ("MA30", "BA15" — Tarrytown's Appendix A) as well as "MA+30"/"MA 30", while
+# still refusing to match inside an ordinary word like "March".
+_DOCTORATE = re.compile(r"doctor|ph\.?\s*d|ed\.?\s*d|\bdr\b", re.I)
+_MASTER = re.compile(r"master|m\.?\s*a(?=\d|\b)|\bms\b|\bm\b|m\s*\+", re.I)
+_BACHELOR = re.compile(r"bachelor|b\.?\s*a(?=\d|\b)|\bbs\b|\bb\b|b\s*\+", re.I)
 _CREDITS = re.compile(r"(\d{2})")
 
 

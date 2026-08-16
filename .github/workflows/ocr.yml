@@ -81,9 +81,12 @@ jobs:
         run: uv python install
       - name: Sync deps
         run: uv sync --frozen
-      - name: Install Tesseract (tesseract engine only)
-        if: ${{ !inputs.dry_run && inputs.engine == 'tesseract' }}
-        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr
+      # Needed by both engines: the tesseract engine transcribes with it, and
+      # the vision engine uses its orientation detection (OSD) to straighten
+      # sideways-scanned pages before transcription.
+      - name: Install Tesseract
+        if: ${{ !inputs.dry_run }}
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-osd
       - name: Sanity-check secrets (real run only)
         if: ${{ !inputs.dry_run }}
         run: |
