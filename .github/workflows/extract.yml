@@ -18,9 +18,19 @@ on:
   workflow_dispatch:
     inputs:
       district:
-        description: "Only this district slug (blank = all)"
-        type: string
-        default: ""
+        description: "District to scope to (all = every district)"
+        type: choice
+        options:
+          - all
+          - port-chester-rye
+          - ossining
+          - peekskill
+          - tarrytowns
+          - elmsford
+          - mount-vernon
+          - greenburgh-central
+          - white-plains
+        default: all
       limit:
         description: "Stop after N candidate tables (blank = all)"
         type: string
@@ -64,7 +74,7 @@ jobs:
       - name: Extract
         run: |
           uv run herald-extract run \
-            ${{ inputs.district && format('--district "{0}"', inputs.district) || '' }} \
+            ${{ inputs.district != 'all' && format('--district "{0}"', inputs.district) || '' }} \
             ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
             ${{ inputs.reextract && '--reextract' || '' }} \
             --report extract-report.md \

@@ -29,10 +29,19 @@ on:
         required: true
         type: string
       district:
-        description: "Only this district slug (empty = all)"
-        required: false
-        type: string
-        default: ""
+        description: "District to scope to (all = every district)"
+        type: choice
+        options:
+          - all
+          - port-chester-rye
+          - ossining
+          - peekskill
+          - tarrytowns
+          - elmsford
+          - mount-vernon
+          - greenburgh-central
+          - white-plains
+        default: all
       limit:
         description: "Stop after N documents (empty = all)"
         required: false
@@ -94,7 +103,7 @@ jobs:
         run: |
           uv run herald-ingest ${{ inputs.tables_backfill && 'tables' || 'run' }} \
             --root data/artifacts \
-            ${{ inputs.district && format('--district "{0}"', inputs.district) || '' }} \
+            ${{ inputs.district != 'all' && format('--district "{0}"', inputs.district) || '' }} \
             ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
             --report ingest-report.md \
             ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}

@@ -22,9 +22,19 @@ on:
   workflow_dispatch:
     inputs:
       district:
-        description: "Only this district slug (blank = all)"
-        type: string
-        default: ""
+        description: "District to scope to (all = every district)"
+        type: choice
+        options:
+          - all
+          - port-chester-rye
+          - ossining
+          - peekskill
+          - tarrytowns
+          - elmsford
+          - mount-vernon
+          - greenburgh-central
+          - white-plains
+        default: all
       limit:
         description: "Stop after N documents (blank = all)"
         type: string
@@ -68,7 +78,7 @@ jobs:
       - name: Backfill tables from source_url
         run: |
           uv run --with 'playwright==1.56.*' herald-ingest tables-db \
-            ${{ inputs.district && format('--district "{0}"', inputs.district) || '' }} \
+            ${{ inputs.district != 'all' && format('--district "{0}"', inputs.district) || '' }} \
             ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
             --report tables-db-report.md \
             ${{ inputs.dry_run && '--dry-run' || '--write' }}
