@@ -107,6 +107,16 @@ yield several beats. Full-corpus cost ≈ 23k prose chunks × ~1k tokens ≈
 }
 ```
 
+**Splitting rule (in the prompt, explicitly):** an omnibus item yields one
+beat **per distinct initiative** — a resolution adopting three policies is
+three beats, never one compound beat (a compound beat corrupts all three
+lifecycles). But split by initiative, *not* by list item: a package
+ratifying 40 personnel actions is **one** beat whose `entities` carry the
+names — per-person tracking belongs to the structured/entity pipeline
+(the two-pipeline split; see STATUS design decisions), not to narrative
+threads. Milestone 1's probe report checks both failure directions:
+compound beats (under-splitting) and per-name beats (over-splitting).
+
 **State vocabulary — locked, in `taxonomy.py`** (same pattern as
 `CANONICAL_LANES`): `PROPOSED, DISCUSSED, PUBLIC_COMMENT, REFERRED,
 REVISED, TABLED, VOTED_ADOPTED, VOTED_FAILED, WITHDRAWN, IMPLEMENTED,
@@ -128,7 +138,15 @@ For each new beat, in strict order:
 2. **Candidate shortlist (no model call).** Embedding similarity of the
    beat's chunk against each active thread's centroid, plus entity-overlap
    (Jaccard on normalized entities), within a temporal window. Top-k ≤ 3
-   candidates above threshold.
+   candidates above threshold. The matching centroid is an **EMA weighted
+   toward recent beats**, not a flat running mean — a 3-year thread's late
+   "change order #4" language doesn't resemble its early "should we do
+   this" language, and a flat mean dilutes toward the middle. Caveat: an
+   EMA *follows* mistakes — if a thread starts wrongly absorbing adjacent
+   beats, recency weighting accelerates the hijack where a full mean would
+   resist. Hard anchors (which never drift) stay the spine, and the frozen
+   `centroid_first` powers a drift tripwire in the audit (below). Tune the
+   EMA alpha at milestone 3.
 3. **Haiku adjudication (only for the ambiguous remainder).** Show the
    beat plus each candidate thread's summary line; the model answers
    `attach(thread_id)` / `new_thread` / `also_merge(thread_id)`. This is
@@ -168,7 +186,8 @@ create table narrative_threads (
   last_seen     date not null,
   beat_count    int  not null default 0,
   evidence_coverage numeric,               -- share of active-window meetings with ingested minutes
-  centroid      vector(1024),              -- running mean of member-beat embeddings
+  centroid      vector(1024),              -- EMA of member-beat embeddings (see note)
+  centroid_first vector(1024),             -- frozen mean of the first beats (drift audit anchor)
   created_at    timestamptz not null default now()
 );
 
@@ -198,7 +217,12 @@ create table thread_edges (
   at_date       date,                      -- when the fork/merge happened
   evidence_chunk uuid references chunks(id),  -- provenance for the topology claim
   created_at    timestamptz not null default now(),
-  unique (from_thread, to_thread, kind)
+  unique (from_thread, to_thread, kind),
+  -- "no edge without a citable source" as a constraint, not just prose:
+  -- forks and merges MUST carry evidence; superseded_by is an audit
+  -- correction and may legitimately lack a single evidencing chunk.
+  constraint thread_edges_evidence_chk check
+    (kind = 'superseded_by' or evidence_chunk is not null)
 );
 
 -- traversals: a thread's beats in order / a district's active threads by recency
@@ -227,6 +251,10 @@ Advisory flags, herald-extract style:
   (spawn threshold too loose, or quarantine is leaking boilerplate).
 - **Zombie tripwire:** share of single-beat threads (too-strict matching —
   everything spawns, nothing attaches).
+- **Drift tripwire:** distance between a thread's live EMA centroid and its
+  frozen `centroid_first` beyond threshold — the signature of a hijacked
+  thread absorbing an adjacent topic (recency weighting amplifies this, so
+  it must be watched, not assumed away).
 
 ## 5. Integration
 
