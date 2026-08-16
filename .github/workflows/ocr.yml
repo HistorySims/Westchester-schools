@@ -29,10 +29,19 @@ on:
         required: true
         type: string
       district:
-        description: "Only this district slug (empty = all)"
-        required: false
-        type: string
-        default: ""
+        description: "District to scope to (all = every district)"
+        type: choice
+        options:
+          - all
+          - port-chester-rye
+          - ossining
+          - peekskill
+          - tarrytowns
+          - elmsford
+          - mount-vernon
+          - greenburgh-central
+          - white-plains
+        default: all
       engine:
         description: "OCR engine: tesseract (prose, free) or vision (Claude, keeps salary grids)"
         type: choice
@@ -109,7 +118,7 @@ jobs:
             --engine "${{ inputs.engine }}" \
             --dpi "${{ inputs.dpi }}" \
             ${{ inputs.reocr && '--reocr' || '--no-reocr' }} \
-            ${{ inputs.district && format('--district "{0}"', inputs.district) || '' }} \
+            ${{ inputs.district != 'all' && format('--district "{0}"', inputs.district) || '' }} \
             ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
             --report ocr-report.md \
             ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}
