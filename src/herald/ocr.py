@@ -32,7 +32,16 @@ from herald.pdf_text import ExtractedDoc, ExtractedText, TableBlock, sanitize
 logger = logging.getLogger(__name__)
 
 DEFAULT_VISION_MODEL = "claude-sonnet-5"
-_VISION_MAX_TOKENS = 8000  # a dense page of markdown; under the SDK's 10-min guard
+
+# max_tokens caps thinking AND output together, and this model runs adaptive
+# thinking by default (omitting `thinking` does NOT mean thinking-off here).
+# At the old 8000 a dense rotated salary grid — the hardest page in the corpus,
+# and the one we actually care about — spent its budget on thinking and was
+# truncated before emitting any table, silently, because nothing checked
+# stop_reason. Ordinary prose pages transcribed fine, which is exactly how the
+# failure hid. Give transcription real headroom and stream (the SDK refuses
+# non-streaming requests it estimates may exceed ~10 minutes).
+_VISION_MAX_TOKENS = 32000
 
 _VISION_PROMPT = (
     "Transcribe this scanned page of a school-district document to Markdown, "
@@ -164,21 +173,28 @@ def split_markdown_tables(md: str, *, page: int) -> tuple[str, list[TableBlock]]
     return "\n".join(prose).strip(), tables
 
 
-def _transcribe_page(client, model: str, png: bytes) -> str:
+def _transcribe_page(client, model: str, png: bytes, *, page_no: int = 0) -> str:
     b64 = base64.standard_b64encode(png).decode("ascii")
-    msg = client.messages.create(
-        model=model,
-        max_tokens=_VISION_MAX_TOKENS,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "image", "source": {
-                    "type": "base64", "media_type": "image/png", "data": b64}},
-                {"type": "text", "text": _VISION_PROMPT},
-            ],
-        }],
-    )
-    return "".join(b.text for b in msg.content if b.type == "text")
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image", "source": {
+                "type": "base64", "media_type": "image/png", "data": b64}},
+            {"type": "text", "text": _VISION_PROMPT},
+        ],
+    }]
+    with client.messages.stream(
+        model=model, max_tokens=_VISION_MAX_TOKENS, messages=messages,
+    ) as stream:
+        msg = stream.get_final_message()
+    text = "".join(b.text for b in msg.content if b.type == "text")
+    if getattr(msg, "stop_reason", None) == "max_tokens":
+        # Loud, because the silent version of this cost us the salary grid.
+        logger.warning(
+            "page %s hit max_tokens (%s) — transcription truncated, %d chars kept",
+            page_no, _VISION_MAX_TOKENS, len(text),
+        )
+    return text
 
 
 def ocr_pdf_vision(
@@ -201,7 +217,7 @@ def ocr_pdf_vision(
     prose_parts: list[str] = []
     tables: list[TableBlock] = []
     for page_no, png in pages:
-        md = _transcribe_page(client, model, png)
+        md = _transcribe_page(client, model, png, page_no=page_no)
         prose, page_tables = split_markdown_tables(md, page=page_no)
         if prose:
             prose_parts.append(prose)
