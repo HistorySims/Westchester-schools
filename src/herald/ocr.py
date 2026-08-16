@@ -40,17 +40,66 @@ _VISION_PROMPT = (
     "as a GitHub-flavored Markdown pipe table with a header row, copying every "
     "numeric cell EXACTLY as printed (no $, no commas added or removed). Do not "
     "summarize, correct, or add commentary — output only the transcription. If "
-    "the page is blank, output nothing."
+    "the page is blank, output nothing.\n\n"
+    "The page may still be rotated (salary appendices are often landscape "
+    "scanned sideways). If so, read it in its correct orientation and still "
+    "emit a proper Markdown table — never fall back to prose for a grid. "
+    "A wide grid keeps every column: one row per step, one column per "
+    "salary lane exactly as headed (e.g. BA, BA15, MA30, DR), preserving "
+    "any '(Frozen)' or similar column annotation in the header cell."
 )
+
+
+# The API rejects an image above this size; a 300-dpi tabloid page can exceed it.
+_MAX_IMAGE_BYTES = 9_000_000
+
+
+def upright(img):
+    """Rotate a page image upright, using Tesseract's orientation detection.
+
+    Scanned contracts routinely save a landscape salary appendix sideways into
+    a portrait page (Tarrytown's Appendix A is exactly this). A rotated dense
+    numeric grid is the case vision transcription most reliably fails on — it
+    comes back as prose instead of a table — so straightening the page before
+    transcription is what makes the grid extractable at all. Best effort: if
+    detection is unavailable or unsure, the image is returned unchanged.
+    """
+    try:
+        import pytesseract
+
+        osd = pytesseract.image_to_osd(img, output_type=pytesseract.Output.DICT)
+        angle = int(osd.get("rotate", 0) or 0)
+    except Exception as exc:  # no tesseract binary, or OSD found too little text
+        logger.debug("orientation detection unavailable: %s", exc)
+        return img
+    return img.rotate(-angle, expand=True) if angle % 360 else img
+
+
+def _encode_png(img, *, max_bytes: int = _MAX_IMAGE_BYTES) -> bytes:
+    """PNG bytes for an image, downscaled until it fits the API's size cap."""
+    data = b""
+    for scale in (1.0, 0.75, 0.5, 0.35):
+        out = img if scale == 1.0 else img.resize(
+            (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
+        )
+        buf = io.BytesIO()
+        out.save(buf, format="PNG", optimize=True)
+        data = buf.getvalue()
+        if len(data) <= max_bytes:
+            return data
+    return data
 
 
 def _render_pages(
     path: str | Path, *, dpi: int, max_pages: int | None
 ) -> tuple[list[tuple[int, bytes]], int]:
-    """Rasterize pages to PNG bytes. Returns (``[(page_no, png)]``, page_count).
+    """Rasterize pages to upright, size-capped PNG bytes.
 
-    ``page_count`` is the document's true length even when ``max_pages`` caps
-    how many are rendered."""
+    Returns ``([(page_no, png)], page_count)``; ``page_count`` is the
+    document's true length even when ``max_pages`` caps how many are rendered.
+    """
+    from PIL import Image
+
     pages: list[tuple[int, bytes]] = []
     with fitz.open(str(path)) as doc:
         page_count = doc.page_count
@@ -58,7 +107,8 @@ def _render_pages(
             if max_pages is not None and i >= max_pages:
                 break
             pix = page.get_pixmap(dpi=dpi)
-            pages.append((i + 1, pix.tobytes("png")))
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+            pages.append((i + 1, _encode_png(upright(img))))
     return pages, page_count
 
 

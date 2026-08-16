@@ -147,6 +147,21 @@ def test_build_salary_rows_normalizes_and_infers_year():
     assert rows[1].notes and "inferred" in rows[1].notes
 
 
+def test_normalize_lane_handles_plusless_notation():
+    # Tarrytown's Appendix A writes lanes without a '+' ("MA30", "BA15", "DR").
+    # The old word-boundary regex fell through to 'other' for every one of them.
+    assert taxonomy.normalize_lane("MA30") == "MA+30"
+    assert taxonomy.normalize_lane("BA15") == "BA+15"
+    assert taxonomy.normalize_lane("MA20") == "MA+20"
+    assert taxonomy.normalize_lane("BA45 (Frozen)") == "BA+45"
+    assert taxonomy.normalize_lane("DR") == "Doctorate"
+    # plain lanes and the '+' spelling keep working
+    assert taxonomy.normalize_lane("MA") == "MA"
+    assert taxonomy.normalize_lane("MA+30") == "MA+30"
+    # and the relaxed lookahead must not match inside an ordinary word
+    assert taxonomy.normalize_lane("March calendar") == "other"
+
+
 def test_normalize_unit_defaults_teacher_and_detects_others():
     from herald.taxonomy import normalize_unit
     assert normalize_unit(None) == "teacher"          # untagged → teacher

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import io
 import sys
 import types
 from pathlib import Path
@@ -107,6 +108,56 @@ def test_ocr_mode_dry_run_counts_candidates_only(tmp_path):
     assert stats.chunks_written == 0       # nothing OCR'd or written
     report = render_report(stats, dry_run=True, ocr=True)
     assert "OCR candidates by district" in report and "port-chester-rye" in report
+
+
+def test_upright_rotates_using_osd(monkeypatch):
+    from PIL import Image
+
+    mod = types.ModuleType("pytesseract")
+    mod.Output = types.SimpleNamespace(DICT="dict")  # type: ignore[attr-defined]
+    mod.image_to_osd = lambda img, output_type=None: {"rotate": 90}  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pytesseract", mod)
+
+    img = Image.new("RGB", (200, 100), "white")   # landscape, "sideways"
+    out = ocr_mod.upright(img)
+    assert (out.width, out.height) == (100, 200)  # rotated upright
+
+
+def test_upright_is_noop_without_tesseract(monkeypatch):
+    from PIL import Image
+
+    mod = types.ModuleType("pytesseract")
+
+    def boom(*a, **k):
+        raise RuntimeError("tesseract not installed")
+
+    mod.Output = types.SimpleNamespace(DICT="dict")  # type: ignore[attr-defined]
+    mod.image_to_osd = boom  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pytesseract", mod)
+
+    img = Image.new("RGB", (200, 100), "white")
+    assert ocr_mod.upright(img) is img          # best effort: unchanged
+
+
+def test_encode_png_downscales_when_over_the_size_cap():
+    # The elmsford budget page that 400'd: a render too big for the API's
+    # image limit must come back downscaled rather than at full size.
+    from PIL import Image
+
+    img = Image.effect_noise((1200, 1200), 128).convert("RGB")
+    full = io.BytesIO()
+    img.save(full, format="PNG", optimize=True)
+
+    data = ocr_mod._encode_png(img, max_bytes=50_000)
+    assert len(data) < len(full.getvalue())      # downscaling kicked in
+
+
+def test_encode_png_leaves_a_normal_page_full_size():
+    from PIL import Image
+
+    img = Image.new("RGB", (1700, 2200), "white")   # ordinary 200-dpi letter page
+    data = ocr_mod._encode_png(img)
+    assert len(data) <= ocr_mod._MAX_IMAGE_BYTES
 
 
 def test_split_markdown_tables_separates_grid_from_prose():
