@@ -174,6 +174,16 @@ class IngestStats:
     ocr_candidates: Counter[str] = field(default_factory=Counter)  # per district
 
 
+def _clean_slug(value: str | None) -> str | None:
+    """Trim a district slug coming from CLI / workflow input.
+
+    A stray space in a workflow input box (easy on a phone) otherwise matches
+    no district at all and reports a plausible-looking zero rather than an
+    error — which is exactly how a good run got misread as a failed one.
+    """
+    return (value or "").strip() or None
+
+
 @dataclass
 class _DocWork:
     entry: ManifestEntry
@@ -536,7 +546,9 @@ def run(
     manifest: str | None = typer.Option(
         None, help="Explicit manifest path(s), comma-separated; adds to --root's finds."
     ),
-    district: str | None = typer.Option(None, help="Only ingest this district slug."),
+    district: str | None = typer.Option(
+        None, help="Only ingest this district slug.", callback=_clean_slug
+    ),
     doc_type: str | None = typer.Option(None, help="Only ingest this doc type."),
     limit: int | None = typer.Option(None, help="Stop after N manifest entries."),
     dry_run: bool = typer.Option(
@@ -608,7 +620,9 @@ def tables(
     manifest: str | None = typer.Option(
         None, help="Explicit manifest path(s), comma-separated; adds to --root's finds."
     ),
-    district: str | None = typer.Option(None, help="Only backfill this district slug."),
+    district: str | None = typer.Option(
+        None, help="Only backfill this district slug.", callback=_clean_slug
+    ),
     doc_type: str | None = typer.Option(None, help="Only backfill this doc type."),
     limit: int | None = typer.Option(None, help="Stop after N manifest entries."),
     dry_run: bool = typer.Option(
@@ -791,7 +805,9 @@ async def _browser_pdf_tables(browser, source_url: str) -> list[TableBlock]:
 
 @app.command("tables-db")
 def tables_db(
-    district: str | None = typer.Option(None, help="Only this district slug."),
+    district: str | None = typer.Option(
+        None, help="Only this district slug.", callback=_clean_slug
+    ),
     limit: int | None = typer.Option(None, help="Stop after N documents."),
     only_missing: bool = typer.Option(
         True, help="Only documents that don't already have table chunks."
@@ -1025,7 +1041,9 @@ def ocr(
     manifest: str | None = typer.Option(
         None, help="Explicit manifest path(s), comma-separated; adds to --root's finds."
     ),
-    district: str | None = typer.Option(None, help="Only OCR this district slug."),
+    district: str | None = typer.Option(
+        None, help="Only OCR this district slug.", callback=_clean_slug
+    ),
     doc_type: str | None = typer.Option(None, help="Only OCR this doc type."),
     limit: int | None = typer.Option(None, help="Stop after N manifest entries."),
     engine: str = typer.Option(
