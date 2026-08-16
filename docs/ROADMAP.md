@@ -137,13 +137,17 @@ with deep archives get trustworthy seasonal norms immediately.
 
 ---
 
-## 6. Deferred: storylines
+## 6. Storylines → Braids (design spec now exists)
 
 The big one — following a *narrative thread* over time ("the turf-field fight,
-from first proposal to vote") — is deferred until after **trajectory analysis**
-(topic-over-time), which is the substrate that makes a "storyline" definable.
-Trajectory is the next visualization after the topic map; storylines build on
-it. Likely its own project.
+from first proposal to vote") — now has a full design: [`BRAIDS.md`](BRAIDS.md)
+("Blobs to Braids"). Beats extracted from agenda/minutes prose via Haiku,
+deterministic-first thread assignment, fork/merge topology as evidence-bearing
+edges, a `trajectory` mode in Ask, and the braid diagram as the trajectory
+view. Supersedes the old "wait for trajectory analysis first" sequencing —
+the braid graph *is* the trajectory substrate. Build after the vision-OCR /
+salary-extract thread wraps; milestone 1 is a ~$1 beat-quality probe on
+Peekskill.
 
 ---
 
