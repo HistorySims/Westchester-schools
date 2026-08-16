@@ -51,19 +51,23 @@ MAX_TABLE_CHARS = 20000          # cap the table sent to the model
 DEFAULT_CROSSWALK = "data/lane_crosswalk.csv"
 SALARY_MIN, SALARY_MAX = 30_000, 250_000   # sanity band for the audit
 
-# Candidate table chunks: headers/content/title mentioning a schedule. POSIX
-# ERE (Postgres ~*); '+' is bracketed so it's literal.
-# Candidate table chunks. The lane patterns matter as much as the words: a bare
-# salary grid's text is just column headers and numbers, and real contracts head
-# those columns "MA30"/"BA15" with no plus sign (Tarrytown Appendix A), so the
-# original `ma[+]` matched nothing and the grid was invisible here — the only
-# thing on that page carrying a keyword was the small Longevity table. We
-# already require kind='table', so 'step' is a safe, high-signal addition.
+# Candidate table chunks: headers/content/title mentioning a schedule.
+#
+# The lane patterns matter as much as the words: a bare salary grid's text is
+# just column headers and numbers, and real contracts head those columns
+# "MA30"/"BA15" with no plus sign (Tarrytown Appendix A), so the original
+# `ma[+]` matched nothing and the grid was invisible here — the only thing on
+# that page carrying a keyword was the small Longevity table. We already
+# require kind='table', so 'step' is a safe, high-signal addition.
+#
+# This is evaluated by POSTGRES (`~*`), not Python: word boundary is `\y`
+# (in a Postgres ARE `\b` is a *backspace character*, which would silently
+# match nothing). tests translate `\y`→`\b` to exercise it in Python.
 CANDIDATE_KEYWORDS = (
     r"salary|stipend|longevity|coach|extra.?duty|co.?curricular"
-    r"|\b(?:ba|ma)\s*\+?\s*\d{2}\b"       # lane columns: BA15, MA+30, MA 30
-    r"|\bph\.?\s*d\b|\bdoctorate\b"        # doctorate lane
-    r"|\bstep\b"                           # a step column
+    r"|\y(ba|ma)\s*\+?\s*\d{2}\y"        # lane columns: BA15, MA+30, MA 30
+    r"|\yph\.?\s*d\y|\ydoctorate\y"       # doctorate lane
+    r"|\ystep\y"                          # a step column
 )
 
 _VALID_BASIS = {"flat", "range", "percent_of_base"}
@@ -128,6 +132,16 @@ of a base salary (percent in amount_pct, amount null).
 - Include only cells you can read confidently. Skip totals, subtotals, blank \
 cells, and header rows.\
 """
+
+
+def _clean_slug(value: str | None) -> str | None:
+    """Trim a district slug coming from CLI / workflow input.
+
+    A stray space in a workflow input box (easy on a phone) otherwise matches
+    no district at all and reports a plausible-looking zero rather than an
+    error — which is exactly how a good run got misread as a failed one.
+    """
+    return (value or "").strip() or None
 
 
 # ---- candidate selection ----------------------------------------------
@@ -557,7 +571,9 @@ def _main() -> None:
 
 @app.command()
 def run(
-    district: str | None = typer.Option(None, help="Only this district slug."),
+    district: str | None = typer.Option(
+        None, help="Only this district slug.", callback=_clean_slug
+    ),
     limit: int | None = typer.Option(None, help="Stop after N candidate tables."),
     dry_run: bool = typer.Option(
         True, "--dry-run/--write",

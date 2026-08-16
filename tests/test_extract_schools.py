@@ -155,7 +155,12 @@ def test_candidate_keywords_match_a_bare_salary_grid():
 
     from herald.extract_schools import CANDIDATE_KEYWORDS
 
-    kw = re.compile(CANDIDATE_KEYWORDS, re.I)
+    # The pattern is a Postgres ARE, where word boundary is `\y`; `\b` there
+    # means a backspace character and would silently match nothing. Guard
+    # against anyone "fixing" it back to Python syntax, then translate to
+    # exercise the same semantics locally.
+    assert r"\b" not in CANDIDATE_KEYWORDS
+    kw = re.compile(CANDIDATE_KEYWORDS.replace(r"\y", r"\b"), re.I)
     tat = "| 2022 - 23 | BA | BA15 | BA30 | MA | MA30 | MA60 | DR |\n| 1 | 63,541 |"
     wpta = "| Step | BA | BA+15 | MA | MA+45 | PHD-LESS | PHD |\n| 1.00 | 60,502.00 |"
     assert kw.search(tat) and kw.search(wpta)
