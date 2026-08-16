@@ -185,19 +185,38 @@ class _FakeBlock:
         self.text = text
 
 
-class _FakeMessages:
-    def __init__(self, md: str) -> None:
-        self._md = md
-        self.calls = 0
+class _FakeStream:
+    def __init__(self, msg) -> None:
+        self._msg = msg
 
-    def create(self, **kwargs):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get_final_message(self):
+        return self._msg
+
+
+class _FakeMessages:
+    def __init__(self, md: str, stop_reason: str = "end_turn") -> None:
+        self._md = md
+        self._stop = stop_reason
+        self.calls = 0
+        self.max_tokens: int | None = None
+
+    def stream(self, **kwargs):
         self.calls += 1
-        return types.SimpleNamespace(content=[_FakeBlock(self._md)])
+        self.max_tokens = kwargs.get("max_tokens")
+        return _FakeStream(types.SimpleNamespace(
+            content=[_FakeBlock(self._md)], stop_reason=self._stop,
+        ))
 
 
 class _FakeAnthropic:
-    def __init__(self, md: str) -> None:
-        self.messages = _FakeMessages(md)
+    def __init__(self, md: str, stop_reason: str = "end_turn") -> None:
+        self.messages = _FakeMessages(md, stop_reason)
 
 
 def test_ocr_pdf_vision_returns_tables_from_markdown(tmp_path):
@@ -211,6 +230,22 @@ def test_ocr_pdf_vision_returns_tables_from_markdown(tmp_path):
     assert doc.page_count == 1
     assert len(doc.tables) == 1 and "82000" in doc.tables[0].markdown
     assert "Salary Schedule 2024-25" in doc.text
+
+
+def test_transcription_budget_is_generous_and_truncation_is_loud(tmp_path, caplog):
+    # The silent failure that cost us Tarrytown's salary grid: max_tokens caps
+    # thinking + output together on this model, a dense grid exhausted the old
+    # 8000 on thinking, and the truncated (empty) result was never flagged.
+    import logging
+
+    pdf = tmp_path / "scan.pdf"
+    _blank_pdf(pdf)
+    client = _FakeAnthropic("partial…", stop_reason="max_tokens")
+    with caplog.at_level(logging.WARNING, logger="herald.ocr"):
+        ocr_mod.ocr_pdf_vision(pdf, client=client, model="m", dpi=72)
+
+    assert client.messages.max_tokens >= 32000        # real headroom
+    assert any("truncated" in r.message for r in caplog.records)
 
 
 def test_ocr_mode_vision_writes_table_chunks(tmp_path):
