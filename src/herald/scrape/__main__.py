@@ -19,6 +19,7 @@ ingest rewrite) so the scraper is runnable today. Typical first session::
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date
 from pathlib import Path
 
@@ -51,6 +52,7 @@ from herald.scrape.site import crawl_site, docs_from_seed
 
 app = typer.Typer(help="Scrape district sources into raw files + a manifest.", no_args_is_help=True)
 console = Console()
+logger = logging.getLogger(__name__)
 
 CONTACT_EMAIL = "timhartnett29@gmail.com"
 
@@ -686,6 +688,153 @@ def policy_fetch(
         console.print(f"\nreport: {report}")
     if not dry_run:
         console.print(f"manifest: {out_dir / 'manifest.jsonl'}")
+
+@app.command("policy-boarddocs")
+def policy_boarddocs(
+    peers: str = typer.Option(
+        "data/targets/port_chester_peers.json", help="Peer set JSON (district slugs)."
+    ),
+    only: str | None = typer.Option(
+        None, help="Only these district slug(s), comma-separated."
+    ),
+    out: str = typer.Option("data/raw", help="Root dir for the raw store."),
+    report: str | None = typer.Option(None, help="Write a markdown summary here."),
+    dry_run: bool = typer.Option(False, help="List the manual, but write nothing."),
+    limit: int | None = typer.Option(None, help="Stop after N policies per district."),
+    portals: str = typer.Option(
+        "data/targets/policy_portals.json",
+        help="Portal targets; districts with a portal are skipped (see --skip-portal).",
+    ),
+    skip_portal: bool = typer.Option(
+        True,
+        help="Skip districts whose manual comes from an external portal, so the "
+             "corpus never holds two copies of one policy.",
+    ),
+    ignore_robots: bool = typer.Option(True, help="Bypass robots.txt (public records)."),
+    user_agent: str = typer.Option(BROWSER_USER_AGENT),
+    min_interval: float = typer.Option(1.0, help="Min seconds between requests."),
+) -> None:
+    """Pull adopted policy manuals out of the BoardDocs policy console.
+
+    The other half of the policy corpus. Four peer districts have no external
+    portal but *do* serve their whole manual through BoardDocs'
+    ``BD-GetPolicyBooks`` / ``BD-GetPolicies`` / ``BD-GetPolicyItem``
+    endpoints. Those looked locked — every call answered ``No Access`` — but
+    that was the ``status`` parameter, not authorization: ``status=active``
+    returns the full index anonymously.
+
+    Each policy is stored with the district's own permalink
+    (``Board.nsf/goto?open&id=<unique>``) as its ``source_url``, and with the
+    console's ``Adopted`` / ``Last Reviewed`` dates, which the portal manuals
+    only ever bury in prose.
+    """
+    from herald.scrape.boarddocs import PolicyAccessDenied, choose_policy_books
+    from herald.scrape.core import make_manifest_entry, sha256_bytes
+    from herald.scrape.models import DocType, ScrapedDoc
+    from herald.scrape.policy import load_portal_targets
+
+    targets = load_targets(peers)
+    # Ossining answers here too, but with a stale 12-policy book against the
+    # 434 its portal serves. Two copies of one policy is worse than one.
+    on_portal = {
+        slug for slug, cfg in load_portal_targets(portals).items() if cfg.get("portal")
+    } if skip_portal else set()
+    wanted = {s.strip() for s in (only or "").split(",") if s.strip()} or None
+    out_dir = Path(out)
+    manifest = Manifest(out_dir / "manifest.jsonl")
+    store = RawStore(out_dir)
+    lines = ["## BoardDocs policy manuals", "",
+             "| district | books | policies | stored | skipped (seen) | note |",
+             "|---|---|---:|---:|---:|---|"]
+
+    for t in targets:
+        slug = t.district
+        if wanted and slug not in wanted:
+            continue
+        console.rule(slug)
+        if slug in on_portal:
+            console.print("  [dim]skip[/dim]: covered by herald-scrape policy-fetch")
+            lines.append(f"| {slug} | - | - | - | - | on external portal |")
+            continue
+        with _fetcher(
+            user_agent, min_interval, respect_robots=not ignore_robots, browser=True
+        ) as f:
+            client = BoardDocsClient(state=t.state, slug=t.slug, fetcher=f)
+            try:
+                books = client.list_policy_books()
+            except Exception as exc:
+                console.print(f"  [red]book list failed[/red]: {exc}")
+                lines.append(f"| {slug} | - | - | - | - | books failed: {str(exc)[:50]} |")
+                continue
+            if not books:
+                # Not a failure: this district's manual is on an external
+                # portal instead (herald-scrape policy-fetch covers those).
+                console.print("  [yellow]no policy books[/yellow] — external portal district")
+                lines.append(f"| {slug} | 0 | - | - | - | external portal |")
+                continue
+            chosen = choose_policy_books(books)
+            console.print(f"  books: {books} -> using {chosen}")
+
+            refs = []
+            for book in chosen:
+                try:
+                    refs.extend(client.list_policies(book))
+                except PolicyAccessDenied as exc:
+                    console.print(f"  [red]{exc}[/red]")
+            if limit:
+                refs = refs[:limit]
+            console.print(f"  {len(refs)} policies in the index")
+
+            stored = skipped = failed = 0
+            for i, ref in enumerate(refs, 1):
+                url = client.policy_url(ref.unique)
+                try:
+                    item = client.get_policy(ref)
+                except Exception as exc:
+                    failed += 1
+                    logger.warning("policy fetch failed %s: %s", ref.unique, exc)
+                    continue
+                if not item.body_html:
+                    failed += 1
+                    continue
+                body = item.body_html.encode("utf-8")
+                sha = sha256_bytes(body)
+                if manifest.has_hash(sha):
+                    skipped += 1
+                    continue
+                if dry_run:
+                    stored += 1
+                    continue
+                doc = ScrapedDoc(
+                    district=slug,
+                    doc_type=DocType.policy,
+                    title=item.display_title or ref.unique,
+                    source_url=url,
+                    suggested_filename=f"{item.code or ref.unique}.html",
+                )
+                path = store.write(doc, body, default_ext=".html")
+                manifest.append(make_manifest_entry(
+                    doc, local_path=path, sha256=sha, size_bytes=len(body),
+                    content_type="text/html",
+                ))
+                stored += 1
+                if i % 50 == 0:
+                    console.print(f"  [{i}/{len(refs)}] {item.display_title[:60]}")
+
+        verb = "would store" if dry_run else "stored"
+        note = f"{verb}; {failed} without a body" if failed else verb
+        console.print(f"  {verb} {stored}, skipped {skipped}, no body {failed}")
+        lines.append(
+            f"| {slug} | {', '.join(chosen)} | {len(refs)} | {stored} | {skipped} | {note} |"
+        )
+
+    text = "\n".join(lines) + "\n"
+    if report:
+        Path(report).write_text(text, encoding="utf-8")
+        console.print(f"\nreport: {report}")
+    if not dry_run:
+        console.print(f"manifest: {out_dir / 'manifest.jsonl'}")
+
 
 if __name__ == "__main__":
     app()

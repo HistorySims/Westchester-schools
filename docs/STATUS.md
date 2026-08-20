@@ -254,18 +254,25 @@ BoardDocs. BoardDocs *does* expose a policy console
 `policies.js`) but returns **`No Access`** to anonymous callers. The manuals
 are on two third-party portals:
 
-| District | Portal | Policies available |
+There are **two** sources, and between them they cover all eight districts.
+Each district uses exactly one:
+
+| District | Source | Policies |
 |---|---|---:|
-| port-chester-rye | `boardpolicyonline.com/?b=port_chester_rye` | **523** |
-| ossining | `boardpolicyonline.com/?b=ossining` | **434** |
-| peekskill | `boardpolicyonline.com/?b=peekskill` | **294** |
-| elmsford | `boardpolicyonline.com/?b=elmsford` | **249** |
-| tarrytowns, mount-vernon, greenburgh-central, white-plains | **no portal** — see below | 0 |
+| port-chester-rye | portal `boardpolicyonline.com/?b=port_chester_rye` | **523** |
+| ossining | portal `boardpolicyonline.com/?b=ossining` | **434** |
+| mount-vernon | BoardDocs console, "Board of Education Policies" | **342** |
+| greenburgh-central | BoardDocs console, "…Policy Manual" | **303** |
+| peekskill | portal `boardpolicyonline.com/?b=peekskill` | **294** |
+| elmsford | portal `boardpolicyonline.com/?b=elmsford` | **249** |
+| tarrytowns | BoardDocs console, "Policy Manual" | **242** |
+| white-plains | BoardDocs console, "Policy Manual" | **190** |
 
 Ossining and Elmsford have migrated off the legacy MicroScribe Folio infobase
 onto the same v3 portal (MicroScribe Publishing Inc runs both brands), so
-**one extractor covers all four**. A slug is confirmed by response size: a
-live book returns ~5 KB of SPA shell, an unknown slug returns 37 bytes.
+**one extractor covers all four portal districts**. A slug is confirmed by
+response size: a live book returns ~5 KB of SPA shell, an unknown slug returns
+37 bytes.
 
 Port Chester's own `/board/policies` page links the manual *and* the loose
 PDFs; the site crawler took the PDFs and walked past the manual, because it
@@ -335,18 +342,56 @@ missing: *"any student with more than nine unexcused ATEDs for one-half year
 or 18 unexcused ATEDs for a full year will not receive credit for that
 course."*
 
+### Solved: the other four districts, via BoardDocs (2026-08-20)
+
+I had written the other four off — "no portal, only loose PDFs, their manuals
+may not be online at all." **That was wrong**, and the error was mine, not the
+data's.
+
+The BoardDocs policy console (`BD-GetPolicyBooks` / `BD-GetPolicies` /
+`BD-GetPolicyItem`, recovered from `policies.js`) had answered every probe
+with the bare string **`No Access`**, which reads exactly like an
+authorization wall. It isn't one. It is what BoardDocs returns for a bad
+`status` parameter — `""`, `adopted`, `published`, `all` all produce it.
+**`status=active` returns the entire manual to an anonymous caller.**
+
+| District | BoardDocs book | Policies |
+|---|---|---:|
+| mount-vernon | Board of Education Policies | **342** |
+| greenburgh-central | Board of Education Policy Manual | **303** |
+| tarrytowns | Policy Manual | **242** |
+| white-plains | Policy Manual | **190** |
+
+That is **1,077 more policies**, and it makes policy coverage **complete
+across all eight districts** — about 2,600 policies against the 13 we held.
+
+This path is in some ways the better one. It needs no browser (plain HTTP
+through the existing `BoardDocsClient`), it gives each policy the district's
+own permalink `Board.nsf/goto?open&id=<unique>`, and it states **`Adopted`
+and `Last Reviewed` as fields** — dates the portal manuals only ever bury in
+prose, and exactly what a "when did this change?" question needs.
+
+Two judgement calls worth knowing about:
+
+* Tarrytowns also publishes an **"In Progress"** book (policies mid-amendment)
+  and a "Renumbering" book. `choose_policy_books()` takes only the adopted
+  manual — answering a parent from a draft would say what the district is
+  *considering*, not what binds it. (The draft book is a good future input for
+  [BRAIDS](BRAIDS.md), which is about tracking change over time.)
+* Ossining answers on **both** paths — but its BoardDocs book holds 12
+  policies against the 434 its portal serves. `policy-boarddocs` skips any
+  district with a portal by default (`--skip-portal`), so the corpus never
+  holds two copies of one policy.
+
+**Built:** policy endpoints + pure parsers on the existing BoardDocs adapter,
+`herald-scrape policy-boarddocs`, `.github/workflows/policy-boarddocs.yml`.
+
 ### Still open
 
-* **Four districts have no portal at all.** tarrytowns, mount-vernon,
-  greenburgh-central and white-plains publish only loose policy PDFs on their
-  own sites (checked their real policy pages, not the 404s the first probe
-  captured). Their BoardDocs policy console is `NyssbaManagementConsole` like
-  everyone else's, and anonymous `Public?open&id=policies` is refused. Their
-  manuals may not be online in any machine-readable form; the honest position
-  is that policy answers cover four districts, not eight, and answers must
-  say so.
-* Slug guessing found `irvington` and `dobbs_ferry` are also on the portal —
-  useful if the peer set ever widens.
+* Policies with **attachments** (BoardDocs marks these in the index title) —
+  the attached file is not yet pulled down with the policy body.
+* Slug guessing found `irvington` and `dobbs_ferry` are also on the
+  BoardPolicyOnline portal — useful if the peer set ever widens.
 
 **Test suite: 271 green.**
 
