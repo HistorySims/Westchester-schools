@@ -45,6 +45,25 @@ EP_MEETINGS = "BD-GetMeetingsList"
 # PRINT-AgendaDetailed returns the agenda HTML *with* the /$file/ attachment
 # links; BD-GetAgenda returns only the bare category/item tree (no files).
 EP_AGENDA = "PRINT-AgendaDetailed"
+# Policy console (recovered from cdn.boarddocs.com/2021v02/js/policies.js).
+# Some districts serve their whole adopted manual here; others answer with an
+# empty book list because their manual lives on an external portal instead
+# (see herald.scrape.policy_manual).
+EP_POLICY_BOOKS = "BD-GetPolicyBooks"
+EP_POLICIES = "BD-GetPolicies"
+EP_POLICY_ITEM = "BD-GetPolicyItem"
+# Attachments hang off a policy separately: the item HTML only carries an
+# empty <div filetype="public" parentid="..."> that the UI fills by AJAX. Some
+# policies have NO inline body at all and live entirely in the attachment —
+# Mount Vernon's 0115 (DASA / bullying) is one — so skipping this endpoint
+# loses whole policies. Takes ``id=<policy unique>``; ``parentid`` is ignored.
+EP_POLICY_FILES = "BD-GetPublicFiles"
+#: The ``status`` BD-GetPolicies expects. This one value matters: every other
+#: spelling — ``""``, ``adopted``, ``published``, ``all`` — comes back with the
+#: bare string ``No Access``, which reads like an authorization wall and is
+#: not one. Anonymous callers get the full manual with ``active``.
+POLICY_STATUS = "active"
+POLICY_NO_ACCESS = "No Access"
 
 _FILE_HREF = re.compile(r"/\$file/", re.IGNORECASE)
 _DOC_EXT = re.compile(r"\.(pdf|docx?|rtf|txt|xlsx?|pptx?)(?:$|\?)", re.IGNORECASE)
@@ -79,6 +98,61 @@ class Meeting:
 class FileRef:
     url: str
     title: str
+
+
+@dataclass(frozen=True)
+class PolicyRef:
+    """One row of a policy book's index."""
+
+    unique: str
+    code: str
+    title: str
+    section: str = ""
+    book: str = ""
+    #: The index marks policies whose text is (or continues in) a file.
+    has_attachment: bool = False
+
+    @property
+    def display_title(self) -> str:
+        return f"{self.code} {self.title}".strip()
+
+
+@dataclass(frozen=True)
+class PolicyItem:
+    """One policy, with the console's own metadata.
+
+    BoardDocs states ``adopted`` and ``last_reviewed`` as fields, which the
+    portal manuals only ever bury in prose — so a policy fetched here can be
+    dated exactly.
+    """
+
+    unique: str
+    code: str
+    title: str
+    book: str = ""
+    section: str = ""
+    status: str = ""
+    adopted: str = ""
+    last_reviewed: str = ""
+    body_html: str = ""
+
+    @property
+    def display_title(self) -> str:
+        return f"{self.code} {self.title}".strip()
+
+    @property
+    def has_body(self) -> bool:
+        """Whether the inline body holds any text.
+
+        BoardDocs returns an empty ``<div id="forcopy">`` for a policy whose
+        text lives entirely in an attachment, and storing that shell as a
+        document would put an empty "policy" in the corpus.
+        """
+        return bool(BeautifulSoup(self.body_html or "", "html.parser").get_text(strip=True))
+
+
+class PolicyAccessDenied(Exception):
+    """BD-GetPolicies answered ``No Access`` (usually a bad ``status``)."""
 
 
 # ---- pure parsers (unit-tested against fixtures) ----------------------
@@ -156,6 +230,133 @@ def parse_meetings(payload: object) -> list[Meeting]:
     return out
 
 
+def parse_policy_books(html: str) -> list[str]:
+    """Book names from the BD-GetPolicyBooks dropdown.
+
+    An empty list is a real answer, not a failure: districts whose manual is
+    on an external portal return an empty body here.
+    """
+    soup = BeautifulSoup(html or "", "html.parser")
+    out: list[str] = []
+    for a in soup.select("#policy-book-select a, .dropdown-menu a"):
+        name = (a.get("aria-label") or a.get_text(" ", strip=True) or "").strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+# Books that are not the adopted manual. "In Progress" holds drafts under
+# amendment and "Renumbering" a migration scratchpad — interesting later for
+# tracking how a policy changed, but they are not what a district is bound by,
+# and mixing them into the corpus would answer questions with drafts.
+_DRAFT_BOOK = re.compile(r"progress|renumber|draft|archive|template", re.I)
+_ADOPTED_BOOK = re.compile(r"polic|manual|bylaw", re.I)
+# A UI marker BoardDocs appends to the title of a policy with attached files.
+_ATTACHMENT_NOTE = re.compile(r"\s*This Policy Contains an Attachment\.?\s*$", re.I)
+
+
+def choose_policy_books(books: list[str]) -> list[str]:
+    """The adopted manual(s) among a district's books.
+
+    Falls back to everything non-draft, then to everything, so a district with
+    an unusually named book is never silently skipped.
+    """
+    live = [b for b in books if not _DRAFT_BOOK.search(b)]
+    adopted = [b for b in live if _ADOPTED_BOOK.search(b)]
+    return adopted or live or books
+
+
+def parse_policy_list(html: str, *, book: str = "") -> list[PolicyRef]:
+    """The policy index for one book.
+
+    The response is an accordion: ``<section>`` headings name the series
+    ("0000 Mission, Vision, Goals") and each ``a.policy`` under them is one
+    policy, with its code in a leading ``<b>``.
+    """
+    body = (html or "").strip()
+    if body == POLICY_NO_ACCESS:
+        raise PolicyAccessDenied(
+            f"BD-GetPolicies returned {POLICY_NO_ACCESS!r} for book {book!r} "
+            f"— check the status parameter (only {POLICY_STATUS!r} works)"
+        )
+    soup = BeautifulSoup(body, "html.parser")
+    out: list[PolicyRef] = []
+    section = ""
+    # Walk in document order so each policy keeps the heading above it.
+    for el in soup.find_all(["section", "a"]):
+        if el.name == "section":
+            section = el.get_text(" ", strip=True)
+            continue
+        if "policy" not in (el.get("class") or []):
+            continue
+        # NB: the attribute is emitted as `unique= "..."` — bs4 normalizes it,
+        # but a regex over the raw HTML would not.
+        uid = (el.get("unique") or "").strip()
+        if not uid:
+            continue
+        code_el = el.find("b")
+        code = code_el.get_text(" ", strip=True) if code_el else ""
+        if code_el:
+            code_el.extract()
+        raw_title = el.get_text(" ", strip=True)
+        title = _ATTACHMENT_NOTE.sub("", raw_title)
+        out.append(PolicyRef(
+            unique=uid, code=code, title=title, section=section, book=book,
+            has_attachment=title != raw_title,
+        ))
+    return out
+
+
+def parse_policy_files(html: str, *, base_url: str) -> list[FileRef]:
+    """Attachment links for one policy (``a.public-file`` rows)."""
+    soup = BeautifulSoup(html or "", "html.parser")
+    out: list[FileRef] = []
+    for a in soup.select("a.public-file, a[href]"):
+        href = a.get("href") or ""
+        if "/pfiles/" not in href and "/$file/" not in href.lower():
+            continue
+        url = href if href.startswith("http") else f"{_origin_of(base_url)}{href}"
+        name = unquote(href.rsplit("/", 1)[-1])
+        out.append(FileRef(url=url, title=a.get_text(" ", strip=True) or name))
+    return out
+
+
+def _origin_of(base_url: str) -> str:
+    m = re.match(r"(https?://[^/]+)", base_url)
+    return m.group(1) if m else base_url
+
+
+def parse_policy_item(
+    html: str, *, unique: str, fallback: PolicyRef | None = None
+) -> PolicyItem:
+    """One policy: the console's label/value metadata rows plus its body.
+
+    The body lives in ``#forcopy``; the metadata is a stack of
+    ``.row > .leftcol`` (label) / ``.rightcol`` (value) pairs — including
+    ``Adopted`` and ``Last Reviewed``, which the portal manuals never state
+    as fields.
+    """
+    soup = BeautifulSoup(html or "", "html.parser")
+    meta: dict[str, str] = {}
+    for row in soup.select("div.row"):
+        label = row.select_one(".leftcol")
+        value = row.select_one(".rightcol")
+        if label and value:
+            meta[label.get_text(" ", strip=True).lower()] = value.get_text(" ", strip=True)
+    body = soup.select_one("#forcopy")
+    return PolicyItem(
+        unique=unique,
+        code=meta.get("code") or (fallback.code if fallback else ""),
+        title=meta.get("title") or (fallback.title if fallback else ""),
+        book=meta.get("book") or (fallback.book if fallback else ""),
+        section=meta.get("section") or (fallback.section if fallback else ""),
+        status=meta.get("status", ""),
+        adopted=meta.get("adopted", ""),
+        last_reviewed=meta.get("last reviewed", ""),
+        body_html=str(body) if body else "",
+    )
+
+
 def parse_agenda_files(agenda_body: object, *, base_url: str) -> list[FileRef]:
     """Extract downloadable attachments from an agenda response.
 
@@ -213,7 +414,7 @@ def _files_from_html(agenda_html: str, *, base_url: str) -> list[FileRef]:
         if url in seen:
             continue
         seen.add(url)
-        title = a.get_text(strip=True) or a.get("title") or _filename_of(url)
+        title = a.get_text(strip=True) or a.get("title") or filename_of(url)
         out.append(FileRef(url=url, title=title))
     return out
 
@@ -227,7 +428,12 @@ def _join(base_url: str, href: str) -> str:
     return base_url.rstrip("/") + "/" + href
 
 
-def _filename_of(url: str) -> str:
+def filename_of(url: str) -> str:
+    """The real filename from a BoardDocs file URL.
+
+    More trustworthy than the link text, which often reads "Regulation
+    5830.docx (22 KB)" — a name whose "extension" is ``.docx (22 kb)``.
+    """
     tail = url.split("/$file/")[-1] if "/$file/" in url else url.rsplit("/", 1)[-1]
     return unquote(tail.split("?")[0]) or "attachment"
 
@@ -369,6 +575,34 @@ class BoardDocsClient:
         )
         return resp.text
 
+    # ---- policy console ------------------------------------------------
+
+    def list_policy_books(self) -> list[str]:
+        """The district's policy books, or ``[]`` if it serves none here."""
+        return parse_policy_books(self._post(EP_POLICY_BOOKS, {}))
+
+    def list_policies(self, book: str) -> list[PolicyRef]:
+        """Every policy in one book's index."""
+        return parse_policy_list(
+            self._post(EP_POLICIES, {"status": POLICY_STATUS, "book": book}), book=book
+        )
+
+    def get_policy(self, ref: PolicyRef) -> PolicyItem:
+        """One policy's metadata + body."""
+        return parse_policy_item(
+            self._post(EP_POLICY_ITEM, {"id": ref.unique}), unique=ref.unique, fallback=ref
+        )
+
+    def get_policy_files(self, ref: PolicyRef) -> list[FileRef]:
+        """Files attached to a policy — sometimes the policy's entire text."""
+        return parse_policy_files(
+            self._post(EP_POLICY_FILES, {"id": ref.unique}), base_url=self.base_url
+        )
+
+    def policy_url(self, unique: str) -> str:
+        """The district's own permalink for a policy — what an answer cites."""
+        return f"{self.base_url}/goto?open&id={unique}"
+
     def list_meetings(self, committee: str) -> list[Meeting]:
         return parse_meetings(self._post(EP_MEETINGS, _committee_params(committee)))
 
@@ -407,7 +641,7 @@ def iter_documents(
             logger.warning("agenda fetch failed for %s (%s): %s", meeting.name, meeting.unique, exc)
             continue
         for ref in files:
-            fname = _filename_of(ref.url)
+            fname = filename_of(ref.url)
             yield ScrapedDoc(
                 district=district,
                 doc_type=classify_filename(f"{ref.title} {fname}"),

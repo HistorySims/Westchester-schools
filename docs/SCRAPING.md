@@ -111,6 +111,39 @@ BoardDocs, that district is reported `skipped` and the crawl continues.
 > BoardDocs page and read `go.boarddocs.com/<state>/<slug>/…`) or a note that
 > it uses a different platform. Fix the entry in the targets file and re-run.
 
+## Adopted policy manuals
+
+The board-meeting crawl above collects whatever policy PDFs are attached to
+meetings. That is **not** the adopted manual, and it is not where policy
+questions get answered from. The manual has its own two commands, and each
+district uses exactly one of them:
+
+```bash
+# districts whose manual is on the BoardPolicyOnline portal
+#   (port-chester-rye, ossining, peekskill, elmsford)
+herald-scrape policy-fetch --dry-run          # needs `uv sync --group browser`
+
+# districts whose manual is in the BoardDocs policy console
+#   (tarrytowns, white-plains, mount-vernon, greenburgh-central)
+herald-scrape policy-boarddocs --dry-run
+```
+
+`policy-boarddocs` skips any district with a portal by default, so no policy
+is stored twice. Both file into the normal raw store + manifest, so
+`herald-ingest` consumes them unchanged.
+
+Two things about the BoardDocs policy console are worth writing down, because
+both cost real time to find:
+
+* **`status=active` is the only value that works.** `BD-GetPolicies` answers
+  `""`, `adopted`, `published` and `all` with the bare string `No Access` —
+  which looks exactly like an authorization wall and is not one. We wrote four
+  districts off as "manual not published online" on the strength of that
+  string.
+* **An empty book list is a real answer.** Districts on an external portal
+  return nothing from `BD-GetPolicyBooks`; that means "look elsewhere", not
+  "this failed".
+
 ## Politeness
 
 The `Fetcher` is conservative by default so we stay welcome on small

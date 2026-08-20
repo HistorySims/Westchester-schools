@@ -254,27 +254,191 @@ BoardDocs. BoardDocs *does* expose a policy console
 `policies.js`) but returns **`No Access`** to anonymous callers. The manuals
 are on two third-party portals:
 
-| District | Portal |
-|---|---|
-| port-chester-rye | `boardpolicyonline.com/?b=port_chester_rye` (+ 7 section deep links) |
-| peekskill | `boardpolicyonline.com/?b=peekskill` |
-| ossining | `policy.microscribepub.com` (infobase `ossining.nfo`) |
-| elmsford | `policy.microscribepub.com` (infobase `elmsford.nfo`) |
-| tarrytowns, mount-vernon, greenburgh-central, white-plains | not yet pinned — discover from district site |
+There are **two** sources, and between them they cover all eight districts.
+Each district uses exactly one:
+
+| District | Source | Policies |
+|---|---|---:|
+| port-chester-rye | portal `boardpolicyonline.com/?b=port_chester_rye` | **523** |
+| ossining | portal `boardpolicyonline.com/?b=ossining` | **434** |
+| mount-vernon | BoardDocs console, "Board of Education Policies" | **342** |
+| greenburgh-central | BoardDocs console, "…Policy Manual" | **303** |
+| peekskill | portal `boardpolicyonline.com/?b=peekskill` | **294** |
+| elmsford | portal `boardpolicyonline.com/?b=elmsford` | **249** |
+| tarrytowns | BoardDocs console, "Policy Manual" | **242** |
+| white-plains | BoardDocs console, "Policy Manual" | **190** |
+
+Ossining and Elmsford have migrated off the legacy MicroScribe Folio infobase
+onto the same v3 portal (MicroScribe Publishing Inc runs both brands), so
+**one extractor covers all four portal districts**. A slug is confirmed by
+response size: a live book returns ~5 KB of SPA shell, an unknown slug returns
+37 bytes.
 
 Port Chester's own `/board/policies` page links the manual *and* the loose
 PDFs; the site crawler took the PDFs and walked past the manual, because it
 follows same-host pages and cross-domain **PDFs** — and a portal is a
 cross-domain **HTML app**.
 
-**Built so far:** `herald-scrape policy-probe` + `policy-probe.yml` —
-reconnaissance only (find each district's portal, capture what it returns:
-redirects, framesets, scripts, forms), because both vendors sit outside this
-project's egress allowlist and can only be reached from a networked runner.
-Targets in `data/targets/policy_portals.json`. The parser gets written from
-the captured bodies, not guessed — the same path the BoardDocs API took.
+### Solved: how to get a whole manual out (2026-08-20)
 
-**Test suite: 240 green.**
+`boardpolicyonline.com` is a **Blazor Server** app. There is no REST API to
+call — the page is a ~5 KB shell, every byte of policy text is rendered
+server-side and pushed down a SignalR WebSocket, and `export.js` / `shared.js`
+/ `search.js` / `boot.js` contain **no URL strings at all**. A plain HTTP
+client can never see a single policy, which is why `policy-probe` could
+characterize the portal but not read it.
+
+What the app *does* expose is its own bulk export. The toolbar's Print button
+calls the JS interop function `PrintDocument(html)` with **the entire selected
+subtree as one HTML document**. So: check the root node of the table of
+contents, click Print, override `window.PrintDocument` to capture instead of
+print. Port Chester's whole manual arrives in one round trip — 2.4 MB, 570
+sections, 1.6 M characters.
+
+The export is generously structured: one `div.export-section` per policy
+carrying `id` (the *same* section id the portal's own deep links use) and
+`data-bookmark-title` ("5100 ATTENDANCE"). Every policy therefore gets a
+stable, citable `source_url` of `/b/<slug>/s/<id>` — **better provenance than
+the loose PDFs we scrape today.**
+
+Two things that had to be discovered by trying:
+
+* The app **hard-depends on jQuery from `code.jquery.com`**. Without it the
+  Blazor circuit throws and the page renders only "An unknown error occurred
+  while processing your request." jQuery is now vendored in
+  `src/herald/scrape/assets/` and served by request interception, so the
+  scrape does not depend on a third-party CDN being up.
+* Chromium's TLS 1.3 ClientHello is reset by some egress middleboxes that
+  `curl` sails through (`net::ERR_CONNECTION_RESET` on *every* host, not just
+  the portal). `--tls12` exists for those environments; CI does not need it.
+
+**Built:** `herald.scrape.policy_manual` (browser driver + export splitter),
+`herald-scrape policy-fetch`, `.github/workflows/policy-fetch.yml`, and
+`herald.html_text` so ingest reads HTML natively instead of round-tripping
+policies through a printer. Ingest's 200-char "this PDF is a scan" floor is
+**not** applied to HTML — it would have silently dropped 14 short-but-real
+policies per manual ("9100 STAFF ETHICS", 143 chars), which is the exact
+false-negative failure this work exists to fix.
+
+Verified end-to-end against all four live portals:
+
+```
+port-chester-rye  2,418,944 chars -> 570 sections, 523 with policy text
+ossining          2,304,689 chars -> 524 sections, 434 with policy text
+peekskill         1,918,717 chars -> 328 sections, 294 with policy text
+elmsford          1,586,614 chars -> 293 sections, 249 with policy text
+```
+
+…and the whole chain, fetch → raw store → ingest, on Port Chester:
+
+```
+stored 523, skipped 0
+seen 523 | ingested 523 | skipped 0 | no_text 0 | missing 0 | errors 0 | 1798 chunks
+```
+
+**1,500 policies** across four districts, against the 13 we hold today.
+Port Chester's 5100 in the export contains the sentence the corpus was
+missing: *"any student with more than nine unexcused ATEDs for one-half year
+or 18 unexcused ATEDs for a full year will not receive credit for that
+course."*
+
+### Solved: the other four districts, via BoardDocs (2026-08-20)
+
+I had written the other four off — "no portal, only loose PDFs, their manuals
+may not be online at all." **That was wrong**, and the error was mine, not the
+data's.
+
+The BoardDocs policy console (`BD-GetPolicyBooks` / `BD-GetPolicies` /
+`BD-GetPolicyItem`, recovered from `policies.js`) had answered every probe
+with the bare string **`No Access`**, which reads exactly like an
+authorization wall. It isn't one. It is what BoardDocs returns for a bad
+`status` parameter — `""`, `adopted`, `published`, `all` all produce it.
+**`status=active` returns the entire manual to an anonymous caller.**
+
+| District | BoardDocs book | Policies |
+|---|---|---:|
+| mount-vernon | Board of Education Policies | **342** |
+| greenburgh-central | Board of Education Policy Manual | **303** |
+| tarrytowns | Policy Manual | **242** |
+| white-plains | Policy Manual | **190** |
+
+That is **1,077 more policies**, and it makes policy coverage **complete
+across all eight districts** — about 2,600 policies against the 13 we held.
+
+This path is in some ways the better one. It needs no browser (plain HTTP
+through the existing `BoardDocsClient`), it gives each policy the district's
+own permalink `Board.nsf/goto?open&id=<unique>`, and it states **`Adopted`
+and `Last Reviewed` as fields** — dates the portal manuals only ever bury in
+prose, and exactly what a "when did this change?" question needs.
+
+Two judgement calls worth knowing about:
+
+* Tarrytowns also publishes an **"In Progress"** book (policies mid-amendment)
+  and a "Renumbering" book. `choose_policy_books()` takes only the adopted
+  manual — answering a parent from a draft would say what the district is
+  *considering*, not what binds it. (The draft book is a good future input for
+  [BRAIDS](BRAIDS.md), which is about tracking change over time.)
+* Ossining answers on **both** paths — but its BoardDocs book holds 12
+  policies against the 434 its portal serves. `policy-boarddocs` skips any
+  district with a portal by default (`--skip-portal`), so the corpus never
+  holds two copies of one policy.
+
+**Built:** policy endpoints + pure parsers on the existing BoardDocs adapter,
+`herald-scrape policy-boarddocs`, `.github/workflows/policy-boarddocs.yml`.
+
+#### Two bugs the first live run exposed
+
+A full run stored 1,071 of 1,077 indexed policies. Chasing the missing six
+found two real defects, both of the same shape — a silent drop:
+
+1. **Five policies have no inline body at all**; their entire text is an
+   *attachment*. Mount Vernon's **0115 (DASA / student harassment and
+   bullying)** is one — a substantive policy that would simply have been
+   absent. BoardDocs fills those from a separate endpoint that took some
+   digging: `BD-GetPublicFiles?open` with `id=<policy unique>` (not
+   `parentid`, despite that being the attribute in the item HTML). Both DASA
+   PDFs now come down with the policy. 20 policies across the four districts
+   carry attachments.
+2. **Content-hash dedupe dropped a real policy.** White Plains' 1741
+   HOME-SCHOOLED STUDENTS is byte-identical to another policy, so the
+   manifest — which dedupes on `sha256` — skipped it, and its number and
+   permalink with it. That is right for meeting PDFs (the same file linked
+   from two agendas is one document) and wrong for policies: two policies
+   with the same text are still two policies. The key is now
+   `(source_url, sha256)`, which also means an *amended* policy is no longer
+   skipped as already-seen — hash alone would drop the twin, URL alone would
+   never notice the amendment.
+
+3. **Word/RTF attachments reached the PDF reader.** A policy's attachment is
+   whatever the district uploaded, and six are Word or RTF — White Plains'
+   *5700 Purchasing Regulation* (14 KB of text), *5830 Expense
+   Reimbursement*, Mount Vernon's *7530-R Child Abuse and Maltreatment*.
+   PyMuPDF cannot open any of them, so each was a policy present by title
+   with nothing behind it. `herald.office_text` reads both with the standard
+   library (docx is a zip of XML; RTF is control words around text).
+
+   Underneath that sat a **filename bug affecting every source**: BoardDocs
+   link text reads "Regulation 5830.docx (22 KB)", whose Python suffix is
+   `.docx (22 kb)` — so files were stored under names no extractor could
+   dispatch on. Attachment filenames now come from the URL, and `RawStore`
+   rejects any "extension" that is not a dot plus a few alphanumerics.
+
+Final run: **1,071 policy bodies + 31 attachments = 1,102 documents**, 0
+skipped. Four policies are genuinely empty at the source — a title with no
+body and no file — and are now *counted and reported* rather than vanishing.
+Ingest dry-run over the result: **1,096 ingested, 3,022 chunks**.
+
+### Still open
+
+* One legacy binary `.doc` attachment (White Plains 5152F) stays unreadable
+  — it needs a real converter, and there is exactly one in the corpus. It
+  errors rather than silently ingesting as empty.
+* A handful of attachment PDFs are scans (`no_text`) — the existing OCR
+  pipeline covers them.
+* Slug guessing found `irvington` and `dobbs_ferry` are also on the
+  BoardPolicyOnline portal — useful if the peer set ever widens.
+
+**Test suite: 271 green.**
 
 ---
 

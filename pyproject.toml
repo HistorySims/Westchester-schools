@@ -54,6 +54,12 @@ dev = [
 analysis = [
     "bertopic>=0.16",
 ]
+# Headless-browser group: the policy portals are Blazor Server apps whose
+# text only exists after the client renders, so they need a real browser.
+# Install with `uv sync --group browser` (CI does this in policy-fetch.yml).
+browser = [
+    "playwright>=1.48",
+]
 
 [tool.ruff]
 line-length = 100

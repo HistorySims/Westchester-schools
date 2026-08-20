@@ -1,0 +1,102 @@
+name: policy-boarddocs
+
+# The other half of the policy corpus.
+#
+# Four peer districts (Tarrytowns, White Plains, Mount Vernon, Greenburgh
+# Central) have no external policy portal — but they serve their whole adopted
+# manual through BoardDocs' own policy console. Those endpoints looked locked:
+# every call answered "No Access". That was the `status` parameter, not
+# authorization. `status=active` returns the full index anonymously.
+#
+# Each policy is stored with the district's own permalink
+# (Board.nsf/goto?open&id=<unique>) as its source_url, plus the console's
+# Adopted / Last Reviewed dates — metadata the portal manuals never state.
+#
+# Districts whose manual is on a portal are skipped, so no policy is stored
+# twice; run `policy-fetch` for those.
+#
+#   Actions -> policy-boarddocs -> Run workflow
+#
+# Then ingest what it stored:
+#   Actions -> ingest -> Run workflow (run_id = this run)
+#
+# No secrets required.
+
+on:
+  workflow_dispatch:
+    inputs:
+      district:
+        description: "District to fetch (all = every district without a portal)"
+        type: choice
+        options:
+          - all
+          - tarrytowns
+          - white-plains
+          - mount-vernon
+          - greenburgh-central
+          - port-chester-rye
+          - ossining
+          - peekskill
+          - elmsford
+        default: all
+      dry_run:
+        description: "List the manual, but write nothing"
+        type: boolean
+        default: false
+      limit:
+        description: "Stop after N policies per district (empty = all)"
+        type: string
+        default: ""
+      skip_portal:
+        description: "Skip districts already covered by policy-fetch (recommended)"
+        type: boolean
+        default: true
+      min_interval:
+        description: "Minimum seconds between requests (politeness)"
+        type: string
+        default: "1"
+
+concurrency:
+  group: policy-boarddocs-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Fetch policy manuals from BoardDocs
+        run: |
+          uv run herald-scrape policy-boarddocs \
+            --peers data/targets/port_chester_peers.json \
+            ${{ inputs.district != 'all' && format('--only "{0}"', inputs.district) || '' }} \
+            ${{ inputs.dry_run && '--dry-run' || '' }} \
+            ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
+            ${{ inputs.skip_portal && '--skip-portal' || '--no-skip-portal' }} \
+            --min-interval "${{ inputs.min_interval }}" \
+            --out data/raw \
+            --report policy-boarddocs.md
+      - name: Publish report to run summary
+        if: always()
+        run: cat policy-boarddocs.md >> "$GITHUB_STEP_SUMMARY" || echo "(no report)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload fetched policies
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: policies-boarddocs
+          path: |
+            data/raw/**
+            policy-boarddocs.md
+          if-no-files-found: warn
+          retention-days: 14

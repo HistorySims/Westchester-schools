@@ -30,13 +30,29 @@ from rich.table import Table
 
 from herald.chunking import Chunk, chunk_agenda_text, classify_doc_type, parse_meeting_date
 from herald.embed import VoyageEmbedder
+from herald.html_text import extract_html
+from herald.office_text import extract_docx, extract_rtf
 from herald.pdf_text import ExtractedDoc, TableBlock, extract_pdf
 from herald.scrape.models import ManifestEntry
 
 logger = logging.getLogger(__name__)
 console = Console()
 
+#: Suffixes handled by the HTML extractor rather than PyMuPDF. The adopted
+#: policy manuals arrive as HTML (see ``herald.scrape.policy_manual``).
+HTML_SUFFIXES = (".html", ".htm")
+#: A policy's attachment is whatever the district uploaded, and some upload
+#: the regulation as Word or RTF. PyMuPDF cannot open those, so without these
+#: the policy is present by title with no text behind it.
+DOCX_SUFFIXES = (".docx",)
+RTF_SUFFIXES = (".rtf",)
+
 MIN_TEXT_CHARS = 200   # below this the "PDF" is likely scanned/empty
+# HTML needs no such floor: 100 characters of HTML really is a 100-character
+# document, not a scan we failed to read. Applying the PDF threshold here
+# would silently drop short-but-real policies ("9100 STAFF ETHICS", 143
+# chars) — precisely the false negatives the policy corpus exists to fix.
+MIN_HTML_TEXT_CHARS = 1
 MIN_CHUNK_CHARS = 40   # drop fragments too small to mean anything
 TABLE_MAX_CHARS = 24000  # safety cap on a single table chunk (well above real grids)
 DEFAULT_WAVE = 512     # chunks buffered before an embed+write flush
@@ -75,6 +91,24 @@ def resolve_local_path(entry: ManifestEntry, manifest_path: Path) -> Path | None
         if q.is_file():
             return q
     return None
+
+
+def extract_document(path: Path) -> ExtractedDoc:
+    """Extract a stored artifact, dispatching on its file type.
+
+    PDFs go through PyMuPDF; the policy manuals arrive as HTML and are parsed
+    as HTML rather than being round-tripped through a printer; Word and RTF
+    attachments get their own readers. Legacy binary ``.doc`` is left to
+    PyMuPDF, which raises — an honest error beats an empty document.
+    """
+    suffix = path.suffix.lower()
+    if suffix in HTML_SUFFIXES:
+        return extract_html(path)
+    if suffix in DOCX_SUFFIXES:
+        return extract_docx(path)
+    if suffix in RTF_SUFFIXES:
+        return extract_rtf(path)
+    return extract_pdf(path)
 
 
 # ---- chunk preparation -------------------------------------------------
@@ -345,18 +379,23 @@ async def ingest_manifests(
                 continue
 
             try:
-                extracted = extract_pdf(path)
+                extracted = extract_document(path)
             except Exception as exc:
                 stats.docs_error += 1
                 note = f"error: {exc}"
                 logger.warning("extract failed %s: %s", path, exc)
                 mark(doc_id, "error", error=str(exc)[:500])
                 continue
+            min_chars = (
+                MIN_HTML_TEXT_CHARS
+                if path.suffix.lower() in HTML_SUFFIXES + DOCX_SUFFIXES + RTF_SUFFIXES
+                else MIN_TEXT_CHARS
+            )
 
             if ocr_mode:
                 # A table-only born-digital PDF has little prose but real table
                 # content, so "has text" is judged on total recovered chars.
-                if extracted.content_chars >= MIN_TEXT_CHARS:
+                if extracted.content_chars >= min_chars:
                     stats.docs_skipped += 1
                     note = "has-text"
                     continue
@@ -396,7 +435,7 @@ async def ingest_manifests(
                     note = "no-tables"
                     continue
                 note = f"{len(chunks)} table(s)"
-            elif extracted.content_chars < MIN_TEXT_CHARS or not chunks:
+            elif extracted.content_chars < min_chars or not chunks:
                 stats.docs_no_text += 1
                 note = "no_text"      # in OCR mode: OCR recovered nothing usable
                 mark(doc_id, "no_text")
