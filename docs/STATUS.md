@@ -386,10 +386,31 @@ Two judgement calls worth knowing about:
 **Built:** policy endpoints + pure parsers on the existing BoardDocs adapter,
 `herald-scrape policy-boarddocs`, `.github/workflows/policy-boarddocs.yml`.
 
+#### Two bugs the first live run exposed
+
+A full run stored 1,071 of 1,077 indexed policies. Chasing the missing six
+found two real defects, both of the same shape — a silent drop:
+
+1. **Five policies have no inline body at all**; their entire text is an
+   *attachment*. Mount Vernon's **0115 (DASA / student harassment and
+   bullying)** is one — a substantive policy that would simply have been
+   absent. BoardDocs fills those from a separate endpoint that took some
+   digging: `BD-GetPublicFiles?open` with `id=<policy unique>` (not
+   `parentid`, despite that being the attribute in the item HTML). Both DASA
+   PDFs now come down with the policy. 20 policies across the four districts
+   carry attachments.
+2. **Content-hash dedupe dropped a real policy.** White Plains' 1741
+   HOME-SCHOOLED STUDENTS is byte-identical to another policy, so the
+   manifest — which dedupes on `sha256` — skipped it, and its number and
+   permalink with it. That is right for meeting PDFs (the same file linked
+   from two agendas is one document) and wrong for policies: two policies
+   with the same text are still two policies. The key is now
+   `(source_url, sha256)`, which also means an *amended* policy is no longer
+   skipped as already-seen — hash alone would drop the twin, URL alone would
+   never notice the amendment.
+
 ### Still open
 
-* Policies with **attachments** (BoardDocs marks these in the index title) —
-  the attached file is not yet pulled down with the policy body.
 * Slug guessing found `irvington` and `dobbs_ferry` are also on the
   BoardPolicyOnline portal — useful if the peer set ever widens.
 

@@ -281,6 +281,7 @@ class Manifest:
         self.path = Path(path)
         self._seen_urls: set[str] = set()
         self._seen_hashes: set[str] = set()
+        self._seen_url_hashes: set[tuple[str, str]] = set()
         if self.path.exists():
             self._load()
 
@@ -293,6 +294,7 @@ class Manifest:
                 rec = json.loads(line)
                 self._seen_urls.add(rec["source_url"])
                 self._seen_hashes.add(rec["sha256"])
+                self._seen_url_hashes.add((rec["source_url"], rec["sha256"]))
 
     def has_url(self, url: str) -> bool:
         return url in self._seen_urls
@@ -300,12 +302,25 @@ class Manifest:
     def has_hash(self, sha256: str) -> bool:
         return sha256 in self._seen_hashes
 
+    def has_url_hash(self, url: str, sha256: str) -> bool:
+        """Has *this* URL already been stored with *this* content?
+
+        The right dedupe key for documents that are distinct even when their
+        text is identical. Two board policies can share a body — a district
+        may adopt the same NYSSBA template text under two numbers — but they
+        are still two policies, with two numbers and two permalinks, and
+        dropping one answers "does this district have policy X?" with no.
+        Hash alone would drop it; URL alone would never notice an amendment.
+        """
+        return (url, sha256) in self._seen_url_hashes
+
     def append(self, entry: ManifestEntry) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(entry.model_dump_json() + "\n")
         self._seen_urls.add(entry.source_url)
         self._seen_hashes.add(entry.sha256)
+        self._seen_url_hashes.add((entry.source_url, entry.sha256))
 
     def entries(self) -> list[ManifestEntry]:
         if not self.path.exists():

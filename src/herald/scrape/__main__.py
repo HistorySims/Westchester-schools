@@ -657,7 +657,10 @@ def policy_fetch(
         for d in keep:
             body = d.html.encode("utf-8")
             sha = sha256_bytes(body)
-            if manifest.has_hash(sha):
+            # Keyed on (url, content): two policies can share a body — a
+            # district may adopt the same template text under two numbers —
+            # and both are still real policies with their own permalink.
+            if manifest.has_url_hash(d.source_url, sha):
                 skipped += 1
                 continue
             if dry_run:
@@ -704,6 +707,10 @@ def policy_boarddocs(
     portals: str = typer.Option(
         "data/targets/policy_portals.json",
         help="Portal targets; districts with a portal are skipped (see --skip-portal).",
+    ),
+    attachments: bool = typer.Option(
+        True,
+        help="Also download files attached to a policy — sometimes the whole policy.",
     ),
     skip_portal: bool = typer.Option(
         True,
@@ -785,7 +792,7 @@ def policy_boarddocs(
                 refs = refs[:limit]
             console.print(f"  {len(refs)} policies in the index")
 
-            stored = skipped = failed = 0
+            stored = skipped = failed = empty = attached = 0
             for i, ref in enumerate(refs, 1):
                 url = client.policy_url(ref.unique)
                 try:
@@ -794,36 +801,86 @@ def policy_boarddocs(
                     failed += 1
                     logger.warning("policy fetch failed %s: %s", ref.unique, exc)
                     continue
-                if not item.body_html:
-                    failed += 1
+                title = item.display_title or ref.display_title or ref.unique
+                if item.has_body:
+                    body = item.body_html.encode("utf-8")
+                    sha = sha256_bytes(body)
+                    # Keyed on (url, content), not content alone: two policies
+                    # can share a body while being two real policies with two
+                    # numbers and two permalinks.
+                    if manifest.has_url_hash(url, sha):
+                        skipped += 1
+                    elif dry_run:
+                        stored += 1
+                    else:
+                        doc = ScrapedDoc(
+                            district=slug,
+                            doc_type=DocType.policy,
+                            title=title,
+                            source_url=url,
+                            suggested_filename=f"{item.code or ref.unique}.html",
+                        )
+                        path = store.write(doc, body, default_ext=".html")
+                        manifest.append(make_manifest_entry(
+                            doc, local_path=path, sha256=sha, size_bytes=len(body),
+                            content_type="text/html",
+                        ))
+                        stored += 1
+                elif not ref.has_attachment:
+                    empty += 1
+
+                # Some policies carry their text ENTIRELY in an attachment
+                # (Mount Vernon's 0115 DASA has an empty body), so this is not
+                # an extra: skipping it loses whole policies.
+                if not attachments or not ref.has_attachment:
                     continue
-                body = item.body_html.encode("utf-8")
-                sha = sha256_bytes(body)
-                if manifest.has_hash(sha):
-                    skipped += 1
+                try:
+                    files = client.get_policy_files(ref)
+                except Exception as exc:
+                    logger.warning("attachment list failed %s: %s", ref.unique, exc)
                     continue
-                if dry_run:
-                    stored += 1
-                    continue
-                doc = ScrapedDoc(
-                    district=slug,
-                    doc_type=DocType.policy,
-                    title=item.display_title or ref.unique,
-                    source_url=url,
-                    suggested_filename=f"{item.code or ref.unique}.html",
-                )
-                path = store.write(doc, body, default_ext=".html")
-                manifest.append(make_manifest_entry(
-                    doc, local_path=path, sha256=sha, size_bytes=len(body),
-                    content_type="text/html",
-                ))
-                stored += 1
+                for fref in files:
+                    if dry_run:
+                        attached += 1
+                        continue
+                    try:
+                        resp = f.get(fref.url)
+                        blob = resp.content
+                    except Exception as exc:
+                        logger.warning("attachment fetch failed %s: %s", fref.url, exc)
+                        continue
+                    fsha = sha256_bytes(blob)
+                    if manifest.has_url_hash(fref.url, fsha):
+                        continue
+                    fdoc = ScrapedDoc(
+                        district=slug,
+                        doc_type=DocType.policy,
+                        title=f"{title} (attachment: {fref.title})"[:300],
+                        source_url=fref.url,
+                        suggested_filename=fref.title,
+                    )
+                    fpath = store.write(fdoc, blob, default_ext=".pdf")
+                    manifest.append(make_manifest_entry(
+                        fdoc, local_path=fpath, sha256=fsha, size_bytes=len(blob),
+                        content_type=resp.headers.get("Content-Type"),
+                    ))
+                    attached += 1
                 if i % 50 == 0:
-                    console.print(f"  [{i}/{len(refs)}] {item.display_title[:60]}")
+                    console.print(f"  [{i}/{len(refs)}] {title[:60]}")
 
         verb = "would store" if dry_run else "stored"
-        note = f"{verb}; {failed} without a body" if failed else verb
-        console.print(f"  {verb} {stored}, skipped {skipped}, no body {failed}")
+        bits = [verb]
+        if attached:
+            bits.append(f"{attached} attachment(s)")
+        if empty:
+            bits.append(f"{empty} with no body and no attachment")
+        if failed:
+            bits.append(f"{failed} fetch failure(s)")
+        note = "; ".join(bits)
+        console.print(
+            f"  {verb} {stored}, attachments {attached}, skipped {skipped}, "
+            f"empty {empty}, failed {failed}"
+        )
         lines.append(
             f"| {slug} | {', '.join(chosen)} | {len(refs)} | {stored} | {skipped} | {note} |"
         )

@@ -52,6 +52,12 @@ EP_AGENDA = "PRINT-AgendaDetailed"
 EP_POLICY_BOOKS = "BD-GetPolicyBooks"
 EP_POLICIES = "BD-GetPolicies"
 EP_POLICY_ITEM = "BD-GetPolicyItem"
+# Attachments hang off a policy separately: the item HTML only carries an
+# empty <div filetype="public" parentid="..."> that the UI fills by AJAX. Some
+# policies have NO inline body at all and live entirely in the attachment —
+# Mount Vernon's 0115 (DASA / bullying) is one — so skipping this endpoint
+# loses whole policies. Takes ``id=<policy unique>``; ``parentid`` is ignored.
+EP_POLICY_FILES = "BD-GetPublicFiles"
 #: The ``status`` BD-GetPolicies expects. This one value matters: every other
 #: spelling — ``""``, ``adopted``, ``published``, ``all`` — comes back with the
 #: bare string ``No Access``, which reads like an authorization wall and is
@@ -103,6 +109,12 @@ class PolicyRef:
     title: str
     section: str = ""
     book: str = ""
+    #: The index marks policies whose text is (or continues in) a file.
+    has_attachment: bool = False
+
+    @property
+    def display_title(self) -> str:
+        return f"{self.code} {self.title}".strip()
 
 
 @dataclass(frozen=True)
@@ -127,6 +139,16 @@ class PolicyItem:
     @property
     def display_title(self) -> str:
         return f"{self.code} {self.title}".strip()
+
+    @property
+    def has_body(self) -> bool:
+        """Whether the inline body holds any text.
+
+        BoardDocs returns an empty ``<div id="forcopy">`` for a policy whose
+        text lives entirely in an attachment, and storing that shell as a
+        document would put an empty "policy" in the corpus.
+        """
+        return bool(BeautifulSoup(self.body_html or "", "html.parser").get_text(strip=True))
 
 
 class PolicyAccessDenied(Exception):
@@ -276,9 +298,32 @@ def parse_policy_list(html: str, *, book: str = "") -> list[PolicyRef]:
         code = code_el.get_text(" ", strip=True) if code_el else ""
         if code_el:
             code_el.extract()
-        title = _ATTACHMENT_NOTE.sub("", el.get_text(" ", strip=True))
-        out.append(PolicyRef(unique=uid, code=code, title=title, section=section, book=book))
+        raw_title = el.get_text(" ", strip=True)
+        title = _ATTACHMENT_NOTE.sub("", raw_title)
+        out.append(PolicyRef(
+            unique=uid, code=code, title=title, section=section, book=book,
+            has_attachment=title != raw_title,
+        ))
     return out
+
+
+def parse_policy_files(html: str, *, base_url: str) -> list[FileRef]:
+    """Attachment links for one policy (``a.public-file`` rows)."""
+    soup = BeautifulSoup(html or "", "html.parser")
+    out: list[FileRef] = []
+    for a in soup.select("a.public-file, a[href]"):
+        href = a.get("href") or ""
+        if "/pfiles/" not in href and "/$file/" not in href.lower():
+            continue
+        url = href if href.startswith("http") else f"{_origin_of(base_url)}{href}"
+        name = unquote(href.rsplit("/", 1)[-1])
+        out.append(FileRef(url=url, title=a.get_text(" ", strip=True) or name))
+    return out
+
+
+def _origin_of(base_url: str) -> str:
+    m = re.match(r"(https?://[^/]+)", base_url)
+    return m.group(1) if m else base_url
 
 
 def parse_policy_item(
@@ -541,6 +586,12 @@ class BoardDocsClient:
         """One policy's metadata + body."""
         return parse_policy_item(
             self._post(EP_POLICY_ITEM, {"id": ref.unique}), unique=ref.unique, fallback=ref
+        )
+
+    def get_policy_files(self, ref: PolicyRef) -> list[FileRef]:
+        """Files attached to a policy — sometimes the policy's entire text."""
+        return parse_policy_files(
+            self._post(EP_POLICY_FILES, {"id": ref.unique}), base_url=self.base_url
         )
 
     def policy_url(self, unique: str) -> str:
