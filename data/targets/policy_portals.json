@@ -1,0 +1,56 @@
+{
+  "_comment": "Where each district's ADOPTED policy manual actually lives. Discovered 2026-08-20 from each district's BoardDocs /Public config (bd.policy_url / bd.policy_connected) and, for port-chester-rye, from its own /board/policies page. Every district here is on the NYSSBA policy service, but the manual is served by one of two third-party portals — NOT by BoardDocs (whose BD-GetPolicies API returns 'No Access' anonymously) and NOT by the district website (which links only a handful of loose PDFs). 'discover_from' is a district page known to link the portal, for districts whose portal URL we haven't pinned yet; the probe follows it.",
+  "vendors": {
+    "boardpolicyonline": {
+      "note": "Legacy ?b=<slug> redirects to v3.boardpolicyonline.com/b/<slug>. Section deep links use &s=<section_id>.",
+      "root": "https://boardpolicyonline.com/?b={slug}"
+    },
+    "microscribe": {
+      "note": "Folio infobase served through om_isapi.dll; depth/softpage params drive the tree.",
+      "root": "https://policy.microscribepub.com/cgi-bin/om_isapi.dll?depth=2&infobase={infobase}&softpage=PL_frame"
+    }
+  },
+  "districts": {
+    "port-chester-rye": {
+      "vendor": "boardpolicyonline",
+      "slug": "port_chester_rye",
+      "portal": "https://boardpolicyonline.com/?b=port_chester_rye",
+      "discover_from": "https://www.portchesterschools.org/board/policies"
+    },
+    "peekskill": {
+      "vendor": "boardpolicyonline",
+      "slug": "peekskill",
+      "portal": "http://boardpolicyonline.com/?b=peekskill"
+    },
+    "ossining": {
+      "vendor": "microscribe",
+      "infobase": "ossining.nfo",
+      "portal": "https://policy.microscribepub.com/cgi-bin/om_isapi.dll?depth=2&infobase=ossining.nfo&softpage=PL_frame"
+    },
+    "elmsford": {
+      "vendor": "microscribe",
+      "infobase": "elmsford.nfo",
+      "portal": "http://policy.microscribepub.com/cgi-bin/om_isapi.dll?clientID=1159186998&depth=2&infobase=elmsford.nfo&softpage=PL_frame"
+    },
+    "tarrytowns": {
+      "vendor": null,
+      "portal": null,
+      "discover_from": "https://www.tufsd.org/"
+    },
+    "mount-vernon": {
+      "vendor": null,
+      "portal": null,
+      "discover_from": "https://www.mtvernoncsd.org/"
+    },
+    "greenburgh-central": {
+      "vendor": null,
+      "portal": null,
+      "discover_from": "https://www.greenburghcsd.org/"
+    },
+    "white-plains": {
+      "vendor": null,
+      "portal": null,
+      "discover_from": "https://www.whiteplainspublicschools.org/"
+    }
+  }
+}

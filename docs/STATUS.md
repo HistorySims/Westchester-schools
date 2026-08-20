@@ -197,6 +197,83 @@ refresh is designed in [`REFRESH.md`](REFRESH.md) — one scheduled workflow,
 change-detected by extracted-text hash (drift-proof), that also retires the
 run-id hand-carrying between stages.
 
+### 📌 Pinned: where the salary thread stopped (2026-08-20)
+
+Paused mid-flight to fix the policy gap below. To resume, this is the state:
+
+- **Vision OCR works.** 13 scanned docs recovered, 776 chunks (elmsford 431,
+  greenburgh 178, tarrytowns 104, mount-vernon 49, white-plains 14). The
+  scanned CBAs are now searchable **prose**, so contract *policy* questions
+  (leave, grievance, class size) already work against them.
+- **Salary grids are still not extracted.** Four causes found and fixed in
+  sequence — a rotated-page renderer, a Postgres-invalid `\b` in the
+  candidate regex, a trailing space in a workflow input, and (the real one)
+  a **silent `max_tokens` truncation**: vision runs adaptive thinking by
+  default and the budget covered thinking + output together, so the one dense
+  rotated grid page burned it on thinking and emitted nothing, unflagged.
+  Fixed: 32k budget, streaming, loud `stop_reason` warning.
+- **Not yet verified.** The re-OCR of tarrytowns with those fixes has *not*
+  been run. Next step on resume: `ocr` (vision, reocr, tarrytowns) →
+  `extract --reextract`, and check the grid's known values survive
+  (Appendix A step 1 BA = 63,541 … step 17 DR = 146,177).
+- **Known-good side effect:** the candidate-filter fix took tarrytowns from
+  0 → 28 candidate tables and yielded **12 stipend rows** from a personnel
+  agenda, clean audit. Board-docs tables were invisible before it.
+- **Still open:** White Plains' CBA is born-digital with *image-only* pages
+  (49, 58–66) holding its grids; document-level `no_text` never flags it, so
+  **page-level OCR** remains unbuilt. Port Chester's CBA is fully scanned
+  (40 pages, zero text). `tarrytownlearningcenter.org` turns out to host
+  contracts for *multiple* districts — a better acquisition target than
+  eight separate union sites.
+
+---
+
+## Board policies — the corpus's biggest hole (current priority)
+
+A live question exposed it: *"which districts automatically deny course
+credit at N unexcused absences?"* returned "only Tarrytowns" with an honest
+hedge — while Port Chester's Policy 5100 says exactly that (12 absences →
+meeting; 18 → written notice of credit risk; 25 → credit loss). The answer
+layer behaved correctly; the corpus simply didn't contain the policy.
+
+**What we actually hold is a thin, accidental slice.** Policies reach the
+corpus two ways, neither of them the manual: whatever loose PDFs a district
+website happens to link (Port Chester: 18 discovered, **13 ingested**, none
+of them attendance), and whatever draft rides in as a board-meeting
+attachment while being amended (which is why Tarrytown's 5100 is present —
+and why its text still carries NYSSBA template brackets and "this is
+illustrative" boilerplate). A NY district manual runs to several hundred
+policies, so we hold ~4% of one district's. **Every policy question can
+return a confident false negative.**
+
+**Where the manuals actually live** (surveyed 2026-08-20 from each district's
+BoardDocs `/Public` config): all eight report
+`bd.policy_connected="NyssbaManagementConsole"` — the manual is **not** in
+BoardDocs. BoardDocs *does* expose a policy console
+(`BD-GetPolicyBooks`/`BD-GetPolicies`/`BD-GetPolicyItem`, recovered from
+`policies.js`) but returns **`No Access`** to anonymous callers. The manuals
+are on two third-party portals:
+
+| District | Portal |
+|---|---|
+| port-chester-rye | `boardpolicyonline.com/?b=port_chester_rye` (+ 7 section deep links) |
+| peekskill | `boardpolicyonline.com/?b=peekskill` |
+| ossining | `policy.microscribepub.com` (infobase `ossining.nfo`) |
+| elmsford | `policy.microscribepub.com` (infobase `elmsford.nfo`) |
+| tarrytowns, mount-vernon, greenburgh-central, white-plains | not yet pinned — discover from district site |
+
+Port Chester's own `/board/policies` page links the manual *and* the loose
+PDFs; the site crawler took the PDFs and walked past the manual, because it
+follows same-host pages and cross-domain **PDFs** — and a portal is a
+cross-domain **HTML app**.
+
+**Built so far:** `herald-scrape policy-probe` + `policy-probe.yml` —
+reconnaissance only (find each district's portal, capture what it returns:
+redirects, framesets, scripts, forms), because both vendors sit outside this
+project's egress allowlist and can only be reached from a networked runner.
+Targets in `data/targets/policy_portals.json`. The parser gets written from
+the captured bodies, not guessed — the same path the BoardDocs API took.
+
 **Test suite: 240 green.**
 
 ---

@@ -492,3 +492,78 @@ def contracts(
 
 if __name__ == "__main__":
     app()
+
+
+@app.command("policy-probe")
+def policy_probe(
+    targets: str = typer.Option(
+        "data/targets/policy_portals.json", help="Policy portal targets JSON."
+    ),
+    only: str | None = typer.Option(
+        None, help="Only these district slug(s), comma-separated."
+    ),
+    out: str = typer.Option("data/probe/policy", help="Where to save captured bodies."),
+    report: str | None = typer.Option(None, help="Write a markdown summary here."),
+    ignore_robots: bool = typer.Option(True, help="Bypass robots.txt (public records)."),
+    browser: bool = typer.Option(True, help="Present as a browser."),
+    user_agent: str = typer.Option(DEFAULT_USER_AGENT),
+    min_interval: float = typer.Option(2.0, help="Min seconds between requests."),
+) -> None:
+    """Find each district's policy-manual portal and capture what it returns.
+
+    Reconnaissance only — no downloads, no parsing. The adopted policy manual
+    is served by third-party portals (boardpolicyonline / microscribepub) that
+    sit outside this project's egress allowlist, so the structure has to be
+    captured from a networked runner before a parser can be written against
+    it (same path the BoardDocs API took; docs/SCRAPING.md).
+    """
+    from herald.scrape.policy import (
+        discover_portal,
+        load_portal_targets,
+        probe_portal,
+        render_report,
+        vendor_of,
+    )
+
+    districts = load_portal_targets(targets)
+    wanted = {s.strip() for s in (only or "").split(",") if s.strip()} or None
+    out_dir = Path(out)
+    probes: list = []
+    discovered: dict[str, list[str]] = {}
+
+    with _fetcher(
+        user_agent, min_interval, respect_robots=not ignore_robots, browser=browser
+    ) as f:
+        for slug, cfg in districts.items():
+            if slug.startswith("_") or (wanted and slug not in wanted):
+                continue
+            console.rule(slug)
+            urls: list[str] = []
+            if cfg.get("portal"):
+                urls.append(cfg["portal"])
+            if not urls and cfg.get("discover_from"):
+                console.print(f"  discovering from {cfg['discover_from']}")
+                urls = discover_portal(f, cfg["discover_from"])
+                if urls:
+                    discovered[slug] = urls
+                    console.print(f"  [green]found[/green]: {', '.join(urls[:3])}")
+                else:
+                    console.print("  [yellow]no portal link found[/yellow]")
+            for i, u in enumerate(urls[:3]):
+                p = probe_portal(
+                    f, slug, u, save_to=out_dir / f"{slug}_{i}_{vendor_of(u) or 'unknown'}.html"
+                )
+                probes.append(p)
+                console.print(
+                    f"  {u[:70]} -> {p.status or p.error[:40]} "
+                    f"({p.bytes_len}b, {len(p.frames)} frames, {len(p.scripts)} scripts)"
+                )
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "probes.json").write_text(
+        json.dumps([p.as_dict() for p in probes], indent=2), encoding="utf-8"
+    )
+    text = render_report(probes, discovered)
+    if report:
+        Path(report).write_text(text, encoding="utf-8")
+        console.print(f"report: {report}")
