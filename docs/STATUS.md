@@ -322,6 +322,13 @@ peekskill         1,918,717 chars -> 328 sections, 294 with policy text
 elmsford          1,586,614 chars -> 293 sections, 249 with policy text
 ```
 
+…and the whole chain, fetch → raw store → ingest, on Port Chester:
+
+```
+stored 523, skipped 0
+seen 523 | ingested 523 | skipped 0 | no_text 0 | missing 0 | errors 0 | 1798 chunks
+```
+
 **1,500 policies** across four districts, against the 13 we hold today.
 Port Chester's 5100 in the export contains the sentence the corpus was
 missing: *"any student with more than nine unexcused ATEDs for one-half year
