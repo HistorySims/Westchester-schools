@@ -242,6 +242,20 @@ class Fetcher:
         return self.request("POST", url, **kwargs)
 
 
+# A real extension: a dot and a few alphanumerics, nothing else. Link text is
+# a common source of filenames and often carries a size annotation — a link
+# reading "Regulation 5830.docx (22 KB)" yields the "extension" ".docx (22 kb)",
+# which stores the file under a name no extractor can dispatch on, so a Word
+# document silently reaches the PDF reader and fails.
+_EXT_RE = re.compile(r"^\.[A-Za-z0-9]{1,8}$")
+
+
+def _clean_ext(suffix: str) -> str:
+    """``suffix`` if it is plausibly a file extension, else ``""``."""
+    s = suffix.strip().lower()
+    return s if _EXT_RE.match(s) else ""
+
+
 class RawStore:
     """Writes downloaded bytes under ``<base>/<district>/<doc_type>/``.
 
@@ -255,7 +269,7 @@ class RawStore:
     def path_for(self, doc: ScrapedDoc, sha256: str, *, default_ext: str) -> Path:
         name = doc.suggested_filename or doc.title
         stem = slugify(Path(name).stem or doc.title)
-        ext = Path(name).suffix.lower() or default_ext
+        ext = _clean_ext(Path(name).suffix) or default_ext
         if not ext.startswith("."):
             ext = "." + ext
         fname = f"{sha256[:8]}_{stem}{ext}"

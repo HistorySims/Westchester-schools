@@ -31,6 +31,7 @@ from rich.table import Table
 from herald.chunking import Chunk, chunk_agenda_text, classify_doc_type, parse_meeting_date
 from herald.embed import VoyageEmbedder
 from herald.html_text import extract_html
+from herald.office_text import extract_docx, extract_rtf
 from herald.pdf_text import ExtractedDoc, TableBlock, extract_pdf
 from herald.scrape.models import ManifestEntry
 
@@ -40,6 +41,11 @@ console = Console()
 #: Suffixes handled by the HTML extractor rather than PyMuPDF. The adopted
 #: policy manuals arrive as HTML (see ``herald.scrape.policy_manual``).
 HTML_SUFFIXES = (".html", ".htm")
+#: A policy's attachment is whatever the district uploaded, and some upload
+#: the regulation as Word or RTF. PyMuPDF cannot open those, so without these
+#: the policy is present by title with no text behind it.
+DOCX_SUFFIXES = (".docx",)
+RTF_SUFFIXES = (".rtf",)
 
 MIN_TEXT_CHARS = 200   # below this the "PDF" is likely scanned/empty
 # HTML needs no such floor: 100 characters of HTML really is a 100-character
@@ -91,10 +97,17 @@ def extract_document(path: Path) -> ExtractedDoc:
     """Extract a stored artifact, dispatching on its file type.
 
     PDFs go through PyMuPDF; the policy manuals arrive as HTML and are parsed
-    as HTML rather than being round-tripped through a printer.
+    as HTML rather than being round-tripped through a printer; Word and RTF
+    attachments get their own readers. Legacy binary ``.doc`` is left to
+    PyMuPDF, which raises — an honest error beats an empty document.
     """
-    if path.suffix.lower() in HTML_SUFFIXES:
+    suffix = path.suffix.lower()
+    if suffix in HTML_SUFFIXES:
         return extract_html(path)
+    if suffix in DOCX_SUFFIXES:
+        return extract_docx(path)
+    if suffix in RTF_SUFFIXES:
+        return extract_rtf(path)
     return extract_pdf(path)
 
 
@@ -375,7 +388,7 @@ async def ingest_manifests(
                 continue
             min_chars = (
                 MIN_HTML_TEXT_CHARS
-                if path.suffix.lower() in HTML_SUFFIXES
+                if path.suffix.lower() in HTML_SUFFIXES + DOCX_SUFFIXES + RTF_SUFFIXES
                 else MIN_TEXT_CHARS
             )
 

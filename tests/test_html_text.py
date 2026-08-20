@@ -79,3 +79,42 @@ def test_short_policies_survive_the_pdf_scanned_page_threshold(tmp_path):
                  "ethical standard in the conduct of district business.</p>", encoding="utf-8")
     doc = extract_document(p)
     assert 0 < doc.content_chars < MIN_TEXT_CHARS
+
+
+def test_docx_and_rtf_attachments_are_readable(tmp_path):
+    # A policy's attachment is whatever the district uploaded, and some upload
+    # the regulation as Word or RTF. PyMuPDF cannot open either, so without a
+    # reader the policy is in the corpus by title with no text behind it.
+    import zipfile
+
+    docx = tmp_path / "5830-R.docx"
+    with zipfile.ZipFile(docx, "w") as z:
+        z.writestr(
+            "word/document.xml",
+            '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org'
+            '/wordprocessingml/2006/main"><w:body>'
+            "<w:p><w:r><w:t>Employees shall be reimbursed for </w:t></w:r>"
+            "<w:r><w:t>actual expenses.</w:t></w:r></w:p>"
+            "<w:p><w:r><w:t> </w:t></w:r></w:p>"
+            "<w:p><w:r><w:t>Receipts are required.</w:t></w:r></w:p>"
+            "</w:body></w:document>",
+        )
+    doc = extract_document(docx)
+    # runs inside a paragraph join; blank paragraphs drop out
+    assert doc.text == (
+        "Employees shall be reimbursed for actual expenses.\nReceipts are required."
+    )
+
+    rtf = tmp_path / "7530-R.rtf"
+    rtf.write_text(
+        r"{\rtf1\ansi{\fonttbl{\f0 Times;}}{\colortbl;\red0\green0\blue0;}"
+        r"\f0\fs24 Child abuse must be reported\par within 24 hours.\par "
+        r"An em dash \u8212?- ends this.}",
+        encoding="latin-1",
+    )
+    text = extract_document(rtf).text
+    assert "Child abuse must be reported" in text
+    assert "within 24 hours." in text
+    assert "Times" not in text              # font table dropped, not read as prose
+    assert "red0" not in text               # colour table too
+    assert "\u2014- ends this." in text      # \uN escape decoded, fallback char dropped

@@ -409,8 +409,32 @@ found two real defects, both of the same shape — a silent drop:
    skipped as already-seen — hash alone would drop the twin, URL alone would
    never notice the amendment.
 
+3. **Word/RTF attachments reached the PDF reader.** A policy's attachment is
+   whatever the district uploaded, and six are Word or RTF — White Plains'
+   *5700 Purchasing Regulation* (14 KB of text), *5830 Expense
+   Reimbursement*, Mount Vernon's *7530-R Child Abuse and Maltreatment*.
+   PyMuPDF cannot open any of them, so each was a policy present by title
+   with nothing behind it. `herald.office_text` reads both with the standard
+   library (docx is a zip of XML; RTF is control words around text).
+
+   Underneath that sat a **filename bug affecting every source**: BoardDocs
+   link text reads "Regulation 5830.docx (22 KB)", whose Python suffix is
+   `.docx (22 kb)` — so files were stored under names no extractor could
+   dispatch on. Attachment filenames now come from the URL, and `RawStore`
+   rejects any "extension" that is not a dot plus a few alphanumerics.
+
+Final run: **1,071 policy bodies + 31 attachments = 1,102 documents**, 0
+skipped. Four policies are genuinely empty at the source — a title with no
+body and no file — and are now *counted and reported* rather than vanishing.
+Ingest dry-run over the result: **1,096 ingested, 3,022 chunks**.
+
 ### Still open
 
+* One legacy binary `.doc` attachment (White Plains 5152F) stays unreadable
+  — it needs a real converter, and there is exactly one in the corpus. It
+  errors rather than silently ingesting as empty.
+* A handful of attachment PDFs are scans (`no_text`) — the existing OCR
+  pipeline covers them.
 * Slug guessing found `irvington` and `dobbs_ferry` are also on the
   BoardPolicyOnline portal — useful if the peer set ever widens.
 

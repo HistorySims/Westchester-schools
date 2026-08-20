@@ -414,7 +414,7 @@ def _files_from_html(agenda_html: str, *, base_url: str) -> list[FileRef]:
         if url in seen:
             continue
         seen.add(url)
-        title = a.get_text(strip=True) or a.get("title") or _filename_of(url)
+        title = a.get_text(strip=True) or a.get("title") or filename_of(url)
         out.append(FileRef(url=url, title=title))
     return out
 
@@ -428,7 +428,12 @@ def _join(base_url: str, href: str) -> str:
     return base_url.rstrip("/") + "/" + href
 
 
-def _filename_of(url: str) -> str:
+def filename_of(url: str) -> str:
+    """The real filename from a BoardDocs file URL.
+
+    More trustworthy than the link text, which often reads "Regulation
+    5830.docx (22 KB)" — a name whose "extension" is ``.docx (22 kb)``.
+    """
     tail = url.split("/$file/")[-1] if "/$file/" in url else url.rsplit("/", 1)[-1]
     return unquote(tail.split("?")[0]) or "attachment"
 
@@ -636,7 +641,7 @@ def iter_documents(
             logger.warning("agenda fetch failed for %s (%s): %s", meeting.name, meeting.unique, exc)
             continue
         for ref in files:
-            fname = _filename_of(ref.url)
+            fname = filename_of(ref.url)
             yield ScrapedDoc(
                 district=district,
                 doc_type=classify_filename(f"{ref.title} {fname}"),

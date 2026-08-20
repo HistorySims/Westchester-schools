@@ -735,7 +735,11 @@ def policy_boarddocs(
     console's ``Adopted`` / ``Last Reviewed`` dates, which the portal manuals
     only ever bury in prose.
     """
-    from herald.scrape.boarddocs import PolicyAccessDenied, choose_policy_books
+    from herald.scrape.boarddocs import (
+        PolicyAccessDenied,
+        choose_policy_books,
+        filename_of,
+    )
     from herald.scrape.core import make_manifest_entry, sha256_bytes
     from herald.scrape.models import DocType, ScrapedDoc
     from herald.scrape.policy import load_portal_targets
@@ -857,7 +861,11 @@ def policy_boarddocs(
                         doc_type=DocType.policy,
                         title=f"{title} (attachment: {fref.title})"[:300],
                         source_url=fref.url,
-                        suggested_filename=fref.title,
+                        # The URL carries the real filename; the link text
+                        # often appends a size ("… .docx (22 KB)"), which
+                        # would store a Word file under a bogus extension and
+                        # send it to the PDF reader.
+                        suggested_filename=filename_of(fref.url),
                     )
                     fpath = store.write(fdoc, blob, default_ext=".pdf")
                     manifest.append(make_manifest_entry(
