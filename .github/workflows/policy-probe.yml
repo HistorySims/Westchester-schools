@@ -1,0 +1,85 @@
+name: policy-probe
+
+# Reconnaissance for the biggest hole in the corpus: adopted BOARD POLICIES.
+#
+# We currently hold only a thin, accidental slice of each district's policy
+# manual — whatever loose PDFs the district website happens to link (Port
+# Chester: 13 ingested, out of a manual several hundred policies long), plus
+# whatever draft rides in as a board-meeting attachment while being amended.
+# So "which districts have policy X" returns confident false negatives.
+#
+# The real manual is served by third-party NYSSBA-connected portals
+# (boardpolicyonline.com / policy.microscribepub.com). Those are outside this
+# project's egress allowlist, so their structure can only be captured from a
+# networked runner — which is what this does. No downloads, no parsing: it
+# finds each district's portal and saves what it returns, so the parser can be
+# written against reality (the same way the BoardDocs API was reverse
+# -engineered; see docs/SCRAPING.md).
+#
+#   Actions -> policy-probe -> Run workflow
+#
+# No secrets required.
+
+on:
+  workflow_dispatch:
+    inputs:
+      district:
+        description: "District to probe (all = every district)"
+        type: choice
+        options:
+          - all
+          - port-chester-rye
+          - ossining
+          - peekskill
+          - tarrytowns
+          - elmsford
+          - mount-vernon
+          - greenburgh-central
+          - white-plains
+        default: all
+      min_interval:
+        description: "Minimum seconds between requests (politeness)"
+        type: string
+        default: "2"
+
+concurrency:
+  group: policy-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Probe policy portals
+        run: |
+          uv run herald-scrape policy-probe \
+            --targets data/targets/policy_portals.json \
+            ${{ inputs.district != 'all' && format('--only "{0}"', inputs.district) || '' }} \
+            --min-interval "${{ inputs.min_interval }}" \
+            --out data/probe/policy \
+            --report policy-probe.md
+      - name: Publish report to run summary
+        if: always()
+        run: cat policy-probe.md >> "$GITHUB_STEP_SUMMARY" || echo "(no report)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload captured portal bodies
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: policy-probe
+          path: |
+            data/probe/policy/**
+            policy-probe.md
+          if-no-files-found: warn
+          retention-days: 14
