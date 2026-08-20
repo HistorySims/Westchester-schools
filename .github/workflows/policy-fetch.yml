@@ -1,0 +1,98 @@
+name: policy-fetch
+
+# Pull whole ADOPTED POLICY MANUALS out of the BoardPolicyOnline portals.
+#
+# This closes the corpus's biggest hole. Until now we held only whatever loose
+# policy PDFs a district website happened to link (Port Chester: 13 documents,
+# out of a manual of 500+), so "which districts have policy X" answered with
+# confident false negatives.
+#
+# The manual is a Blazor Server app: no REST API, no fetchable HTML — every
+# byte of policy text is rendered server-side and pushed over a WebSocket. So
+# this drives a real browser, uses the portal's own bulk export (select the
+# whole table of contents, Print), and splits the returned HTML into one
+# document per policy. Each keeps the portal's deep link
+# (/b/<slug>/s/<id>) as its source_url, so answers can cite the live manual.
+#
+#   Actions -> policy-fetch -> Run workflow
+#
+# Then ingest what it stored:
+#   Actions -> ingest -> Run workflow (district = the one you fetched)
+#
+# No secrets required.
+
+on:
+  workflow_dispatch:
+    inputs:
+      district:
+        description: "District to fetch (all = every supported district)"
+        type: choice
+        options:
+          - all
+          - port-chester-rye
+          - peekskill
+          - ossining
+          - elmsford
+          - tarrytowns
+          - mount-vernon
+          - greenburgh-central
+          - white-plains
+        default: all
+      dry_run:
+        description: "Fetch + split, but write nothing"
+        type: boolean
+        default: false
+      keep_dividers:
+        description: "Also store section dividers (a title with no policy text)"
+        type: boolean
+        default: false
+      export_timeout:
+        description: "Seconds to wait for the server-side export"
+        type: string
+        default: "300"
+
+concurrency:
+  group: policy-fetch-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps (with the headless-browser group)
+        run: uv sync --frozen --group browser
+      - name: Install Chromium
+        run: uv run playwright install --with-deps chromium
+      - name: Fetch policy manuals
+        run: |
+          uv run herald-scrape policy-fetch \
+            --targets data/targets/policy_portals.json \
+            ${{ inputs.district != 'all' && format('--only "{0}"', inputs.district) || '' }} \
+            ${{ inputs.dry_run && '--dry-run' || '' }} \
+            ${{ inputs.keep_dividers && '--keep-dividers' || '' }} \
+            --export-timeout "${{ inputs.export_timeout }}" \
+            --out data/raw \
+            --report policy-fetch.md
+      - name: Publish report to run summary
+        if: always()
+        run: cat policy-fetch.md >> "$GITHUB_STEP_SUMMARY" || echo "(no report)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload fetched policies
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: policies
+          path: |
+            data/raw/**
+            policy-fetch.md
+          if-no-files-found: warn
+          retention-days: 14

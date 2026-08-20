@@ -1,8 +1,8 @@
 {
-  "_comment": "Where each district's ADOPTED policy manual actually lives. Discovered 2026-08-20 from each district's BoardDocs /Public config (bd.policy_url / bd.policy_connected) and, for port-chester-rye, from its own /board/policies page. Every district here is on the NYSSBA policy service, but the manual is served by one of two third-party portals — NOT by BoardDocs (whose BD-GetPolicies API returns 'No Access' anonymously) and NOT by the district website (which links only a handful of loose PDFs). 'discover_from' is a district page known to link the portal, for districts whose portal URL we haven't pinned yet; the probe follows it.",
+  "_comment": "Where each district's ADOPTED policy manual actually lives. Every district here is on the NYSSBA policy service, but the manual is served by a third-party portal — NOT by BoardDocs (whose BD-GetPolicies API returns 'No Access' anonymously) and NOT by the district website (which links only a handful of loose PDFs). boardpolicyonline.com is a Blazor Server app with no fetchable API, so herald.scrape.policy_manual drives it in a real browser and uses its own bulk export; see .github/workflows/policy-fetch.yml. A slug is confirmed by the shell size: a live book returns ~5 KB, an unknown slug returns 37 bytes. Ossining and Elmsford have migrated off the legacy MicroScribe Folio infobase onto the same v3 portal (MicroScribe Publishing Inc runs both). 'discover_from' is a district page known to link the portal, for districts whose portal we haven't pinned yet; the probe follows it.",
   "vendors": {
     "boardpolicyonline": {
-      "note": "Legacy ?b=<slug> redirects to v3.boardpolicyonline.com/b/<slug>. Section deep links use &s=<section_id>.",
+      "note": "Legacy ?b=<slug> redirects to v3.boardpolicyonline.com/b/<slug>. Section deep links are /b/<slug>/s/<section_id> (the export's div ids). Blazor Server: no REST API, needs a browser.",
       "root": "https://boardpolicyonline.com/?b={slug}"
     },
     "microscribe": {
@@ -20,17 +20,19 @@
     "peekskill": {
       "vendor": "boardpolicyonline",
       "slug": "peekskill",
-      "portal": "http://boardpolicyonline.com/?b=peekskill"
+      "portal": "https://boardpolicyonline.com/?b=peekskill"
     },
     "ossining": {
-      "vendor": "microscribe",
-      "infobase": "ossining.nfo",
-      "portal": "https://policy.microscribepub.com/cgi-bin/om_isapi.dll?depth=2&infobase=ossining.nfo&softpage=PL_frame"
+      "vendor": "boardpolicyonline",
+      "slug": "ossining",
+      "portal": "https://boardpolicyonline.com/?b=ossining",
+      "legacy_portal": "https://policy.microscribepub.com/cgi-bin/om_isapi.dll?depth=2&infobase=ossining.nfo&softpage=PL_frame"
     },
     "elmsford": {
-      "vendor": "microscribe",
-      "infobase": "elmsford.nfo",
-      "portal": "http://policy.microscribepub.com/cgi-bin/om_isapi.dll?clientID=1159186998&depth=2&infobase=elmsford.nfo&softpage=PL_frame"
+      "vendor": "boardpolicyonline",
+      "slug": "elmsford",
+      "portal": "https://boardpolicyonline.com/?b=elmsford",
+      "legacy_portal": "http://policy.microscribepub.com/cgi-bin/om_isapi.dll?clientID=1159186998&depth=2&infobase=elmsford.nfo&softpage=PL_frame"
     },
     "tarrytowns": {
       "vendor": null,

@@ -490,9 +490,6 @@ def contracts(
         console.print(f"manifest: {out_dir / 'manifest.jsonl'}")
 
 
-if __name__ == "__main__":
-    app()
-
 
 @app.command("policy-probe")
 def policy_probe(
@@ -567,3 +564,128 @@ def policy_probe(
     if report:
         Path(report).write_text(text, encoding="utf-8")
         console.print(f"report: {report}")
+
+
+@app.command("policy-fetch")
+def policy_fetch(
+    targets: str = typer.Option(
+        "data/targets/policy_portals.json", help="Policy portal targets JSON."
+    ),
+    only: str | None = typer.Option(
+        None, help="Only these district slug(s), comma-separated."
+    ),
+    out: str = typer.Option("data/raw", help="Root dir for the raw store."),
+    report: str | None = typer.Option(None, help="Write a markdown summary here."),
+    save_export: bool = typer.Option(
+        True, help="Also keep each district's whole-manual export HTML."
+    ),
+    keep_dividers: bool = typer.Option(
+        False, help="Also store section dividers (a title with no policy text)."
+    ),
+    dry_run: bool = typer.Option(False, help="Fetch + split, but write nothing."),
+    headless: bool = typer.Option(True, help="Run the browser headless."),
+    chromium: str | None = typer.Option(
+        None, help="Explicit Chromium binary (e.g. /opt/pw-browsers/chromium)."
+    ),
+    proxy: str | None = typer.Option(None, help="Proxy for the browser, e.g. http://host:port."),
+    tls12: bool = typer.Option(
+        False, help="Cap TLS at 1.2 (some egress middleboxes reset Chromium's TLS 1.3)."
+    ),
+    export_timeout: float = typer.Option(180.0, help="Seconds to wait for the server export."),
+) -> None:
+    """Pull whole adopted policy manuals out of the BoardPolicyOnline portals.
+
+    The manual is a Blazor Server app with no fetchable API — see
+    ``herald.scrape.policy_manual``. This drives the portal's own bulk export
+    (select the whole tree, Print), splits the returned HTML into one document
+    per policy, and files each into the same raw store + manifest the normal
+    ingest consumes. Every policy keeps the portal's own deep link
+    (``/b/<slug>/s/<id>``) as its ``source_url``, so answers can cite it.
+    """
+    from herald.scrape.core import make_manifest_entry, sha256_bytes
+    from herald.scrape.models import DocType, ScrapedDoc
+    from herald.scrape.policy import load_portal_targets
+    from herald.scrape.policy_manual import BrowserOptions, fetch_manual_export, split_export
+
+    districts = load_portal_targets(targets)
+    wanted = {s.strip() for s in (only or "").split(",") if s.strip()} or None
+    out_dir = Path(out)
+    manifest = Manifest(out_dir / "manifest.jsonl")
+    store = RawStore(out_dir)
+    opts = BrowserOptions(
+        headless=headless,
+        executable_path=chromium,
+        proxy={"server": proxy} if proxy else None,
+        tls12=tls12,
+        export_timeout=export_timeout,
+    )
+    lines = ["## Policy manual fetch", "",
+             "| district | sections | policies | stored | skipped (seen) | note |",
+             "|---|---:|---:|---:|---:|---|"]
+
+    for slug, cfg in districts.items():
+        if slug.startswith("_") or (wanted and slug not in wanted):
+            continue
+        console.rule(slug)
+        if cfg.get("vendor") != "boardpolicyonline" or not cfg.get("portal"):
+            note = f"vendor={cfg.get('vendor') or 'unknown'} — not supported yet"
+            console.print(f"  [yellow]skip[/yellow]: {note}")
+            lines.append(f"| {slug} | - | - | - | - | {note} |")
+            continue
+        try:
+            html, final_url = fetch_manual_export(cfg["portal"], options=opts)
+        except Exception as exc:
+            console.print(f"  [red]export failed[/red]: {exc}")
+            lines.append(f"| {slug} | - | - | - | - | export failed: {str(exc)[:60]} |")
+            continue
+
+        docs = split_export(html, portal_url=final_url)
+        keep = [d for d in docs if d.is_substantive or keep_dividers]
+        console.print(
+            f"  export {len(html):,} chars -> {len(docs)} sections, "
+            f"{sum(1 for d in docs if d.is_substantive)} with policy text"
+        )
+
+        if save_export and not dry_run:
+            raw_path = out_dir / slug / "policy" / "_manual_export.html"
+            raw_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_path.write_text(html, encoding="utf-8")
+
+        stored = skipped = 0
+        for d in keep:
+            body = d.html.encode("utf-8")
+            sha = sha256_bytes(body)
+            if manifest.has_hash(sha):
+                skipped += 1
+                continue
+            if dry_run:
+                stored += 1
+                continue
+            doc = ScrapedDoc(
+                district=slug,
+                doc_type=DocType.policy,
+                title=d.title or f"section {d.section_id}",
+                source_url=d.source_url,
+                suggested_filename=f"{d.number or d.section_id}.html",
+            )
+            path = store.write(doc, body, default_ext=".html")
+            manifest.append(make_manifest_entry(
+                doc, local_path=path, sha256=sha, size_bytes=len(body),
+                content_type="text/html",
+            ))
+            stored += 1
+        verb = "would store" if dry_run else "stored"
+        console.print(f"  {verb} {stored}, skipped {skipped} already in the manifest")
+        lines.append(
+            f"| {slug} | {len(docs)} | {len(keep)} | {stored} | {skipped} | {verb} |"
+        )
+
+    text = "\n".join(lines) + "\n"
+    if report:
+        Path(report).write_text(text, encoding="utf-8")
+        console.print(f"\nreport: {report}")
+    if not dry_run:
+        console.print(f"manifest: {out_dir / 'manifest.jsonl'}")
+
+if __name__ == "__main__":
+    app()

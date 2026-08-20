@@ -45,6 +45,20 @@ PORTAL_RE = re.compile(
 # Pages worth following when hunting for the portal link.
 _POLICY_PAGE = re.compile(r"polic", re.I)
 
+# Candidate data endpoints hiding in a bundle. The portals return a ~5 KB SPA
+# shell — the manual itself arrives over one of these — so the bundle is where
+# the real API lives, exactly as BoardDocs' policies.js gave up BD-GetPolicies.
+_ENDPOINT_RES = (
+    re.compile(r"""["'](/(?:api|rest|data|services?|v\d)/[^"'\s]{2,120})["']"""),
+    re.compile(r"""["'](https?://[^"'\s]{6,160}/(?:api|rest|graphql)[^"'\s]{0,80})["']"""),
+    re.compile(r"""["']([^"'\s]{2,120}\.(?:json|ashx|asmx|svc))(?:\?[^"'\s]{0,60})?["']"""),
+    re.compile(r"""fetch\(\s*["'`]([^"'`\s]{4,160})["'`]"""),
+    re.compile(r"""(?:axios|\$\.(?:get|post|ajax))\w*\(\s*["'`]([^"'`\s]{4,160})["'`]"""),
+    re.compile(r"""["'](/[A-Za-z0-9_\-/]*(?:polic|book|section|chapter)[A-Za-z0-9_\-/]*)["']""",
+               re.I),
+)
+_NOISE = re.compile(r"\.(png|jpe?g|gif|svg|css|woff2?|ttf|ico|map|mp4)$", re.I)
+
 
 def vendor_of(url: str) -> str | None:
     """Which portal vendor a URL belongs to, if any."""

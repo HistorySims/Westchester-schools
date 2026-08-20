@@ -254,27 +254,94 @@ BoardDocs. BoardDocs *does* expose a policy console
 `policies.js`) but returns **`No Access`** to anonymous callers. The manuals
 are on two third-party portals:
 
-| District | Portal |
-|---|---|
-| port-chester-rye | `boardpolicyonline.com/?b=port_chester_rye` (+ 7 section deep links) |
-| peekskill | `boardpolicyonline.com/?b=peekskill` |
-| ossining | `policy.microscribepub.com` (infobase `ossining.nfo`) |
-| elmsford | `policy.microscribepub.com` (infobase `elmsford.nfo`) |
-| tarrytowns, mount-vernon, greenburgh-central, white-plains | not yet pinned — discover from district site |
+| District | Portal | Policies available |
+|---|---|---:|
+| port-chester-rye | `boardpolicyonline.com/?b=port_chester_rye` | **523** |
+| ossining | `boardpolicyonline.com/?b=ossining` | **434** |
+| peekskill | `boardpolicyonline.com/?b=peekskill` | **294** |
+| elmsford | `boardpolicyonline.com/?b=elmsford` | **249** |
+| tarrytowns, mount-vernon, greenburgh-central, white-plains | **no portal** — see below | 0 |
+
+Ossining and Elmsford have migrated off the legacy MicroScribe Folio infobase
+onto the same v3 portal (MicroScribe Publishing Inc runs both brands), so
+**one extractor covers all four**. A slug is confirmed by response size: a
+live book returns ~5 KB of SPA shell, an unknown slug returns 37 bytes.
 
 Port Chester's own `/board/policies` page links the manual *and* the loose
 PDFs; the site crawler took the PDFs and walked past the manual, because it
 follows same-host pages and cross-domain **PDFs** — and a portal is a
 cross-domain **HTML app**.
 
-**Built so far:** `herald-scrape policy-probe` + `policy-probe.yml` —
-reconnaissance only (find each district's portal, capture what it returns:
-redirects, framesets, scripts, forms), because both vendors sit outside this
-project's egress allowlist and can only be reached from a networked runner.
-Targets in `data/targets/policy_portals.json`. The parser gets written from
-the captured bodies, not guessed — the same path the BoardDocs API took.
+### Solved: how to get a whole manual out (2026-08-20)
 
-**Test suite: 240 green.**
+`boardpolicyonline.com` is a **Blazor Server** app. There is no REST API to
+call — the page is a ~5 KB shell, every byte of policy text is rendered
+server-side and pushed down a SignalR WebSocket, and `export.js` / `shared.js`
+/ `search.js` / `boot.js` contain **no URL strings at all**. A plain HTTP
+client can never see a single policy, which is why `policy-probe` could
+characterize the portal but not read it.
+
+What the app *does* expose is its own bulk export. The toolbar's Print button
+calls the JS interop function `PrintDocument(html)` with **the entire selected
+subtree as one HTML document**. So: check the root node of the table of
+contents, click Print, override `window.PrintDocument` to capture instead of
+print. Port Chester's whole manual arrives in one round trip — 2.4 MB, 570
+sections, 1.6 M characters.
+
+The export is generously structured: one `div.export-section` per policy
+carrying `id` (the *same* section id the portal's own deep links use) and
+`data-bookmark-title` ("5100 ATTENDANCE"). Every policy therefore gets a
+stable, citable `source_url` of `/b/<slug>/s/<id>` — **better provenance than
+the loose PDFs we scrape today.**
+
+Two things that had to be discovered by trying:
+
+* The app **hard-depends on jQuery from `code.jquery.com`**. Without it the
+  Blazor circuit throws and the page renders only "An unknown error occurred
+  while processing your request." jQuery is now vendored in
+  `src/herald/scrape/assets/` and served by request interception, so the
+  scrape does not depend on a third-party CDN being up.
+* Chromium's TLS 1.3 ClientHello is reset by some egress middleboxes that
+  `curl` sails through (`net::ERR_CONNECTION_RESET` on *every* host, not just
+  the portal). `--tls12` exists for those environments; CI does not need it.
+
+**Built:** `herald.scrape.policy_manual` (browser driver + export splitter),
+`herald-scrape policy-fetch`, `.github/workflows/policy-fetch.yml`, and
+`herald.html_text` so ingest reads HTML natively instead of round-tripping
+policies through a printer. Ingest's 200-char "this PDF is a scan" floor is
+**not** applied to HTML — it would have silently dropped 14 short-but-real
+policies per manual ("9100 STAFF ETHICS", 143 chars), which is the exact
+false-negative failure this work exists to fix.
+
+Verified end-to-end against all four live portals:
+
+```
+port-chester-rye  2,418,944 chars -> 570 sections, 523 with policy text
+ossining          2,304,689 chars -> 524 sections, 434 with policy text
+peekskill         1,918,717 chars -> 328 sections, 294 with policy text
+elmsford          1,586,614 chars -> 293 sections, 249 with policy text
+```
+
+**1,500 policies** across four districts, against the 13 we hold today.
+Port Chester's 5100 in the export contains the sentence the corpus was
+missing: *"any student with more than nine unexcused ATEDs for one-half year
+or 18 unexcused ATEDs for a full year will not receive credit for that
+course."*
+
+### Still open
+
+* **Four districts have no portal at all.** tarrytowns, mount-vernon,
+  greenburgh-central and white-plains publish only loose policy PDFs on their
+  own sites (checked their real policy pages, not the 404s the first probe
+  captured). Their BoardDocs policy console is `NyssbaManagementConsole` like
+  everyone else's, and anonymous `Public?open&id=policies` is refused. Their
+  manuals may not be online in any machine-readable form; the honest position
+  is that policy answers cover four districts, not eight, and answers must
+  say so.
+* Slug guessing found `irvington` and `dobbs_ferry` are also on the portal —
+  useful if the peer set ever widens.
+
+**Test suite: 271 green.**
 
 ---
 
