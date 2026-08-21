@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from datetime import date
 from pathlib import Path
 
@@ -37,9 +38,11 @@ from herald.scrape.core import (
     BROWSER_HEADERS,
     BROWSER_USER_AGENT,
     DEFAULT_USER_AGENT,
+    RETRY_STATUSES_WITH_FORBIDDEN,
     Fetcher,
     Manifest,
     RawStore,
+    slugify,
 )
 from herald.scrape.runner import (
     DistrictResult,
@@ -62,7 +65,10 @@ def _fetcher(
     min_interval: float,
     respect_robots: bool = True,
     browser: bool = True,
+    **retry: object,
 ) -> Fetcher:
+    """``retry`` passes ``retry_statuses`` / ``max_retries`` /
+    ``retry_base_delay`` through to the Fetcher for hosts that need it."""
     if browser:
         # Present as a browser (some hosts 403 non-browser clients) while
         # keeping an honest contact via the From header + polite rate limit.
@@ -71,11 +77,13 @@ def _fetcher(
             headers={**BROWSER_HEADERS, "From": CONTACT_EMAIL},
             min_request_interval=min_interval,
             respect_robots=respect_robots,
+            **retry,  # type: ignore[arg-type]
         )
     return Fetcher(
         user_agent=user_agent,
         min_request_interval=min_interval,
         respect_robots=respect_robots,
+        **retry,  # type: ignore[arg-type]
     )
 
 
@@ -717,9 +725,18 @@ def policy_boarddocs(
         help="Skip districts whose manual comes from an external portal, so the "
              "corpus never holds two copies of one policy.",
     ),
+    resume: bool = typer.Option(
+        True,
+        help="Skip policies already in the manifest WITHOUT re-requesting them, so a "
+             "run that was cut short can be finished by running again.",
+    ),
     ignore_robots: bool = typer.Option(True, help="Bypass robots.txt (public records)."),
     user_agent: str = typer.Option(BROWSER_USER_AGENT),
     min_interval: float = typer.Option(1.0, help="Min seconds between requests."),
+    retry_base_delay: float = typer.Option(
+        5.0, help="First backoff after a rate-trip, doubling each retry."
+    ),
+    max_retries: int = typer.Option(5, help="Retries per request before giving up."),
 ) -> None:
     """Pull adopted policy manuals out of the BoardDocs policy console.
 
@@ -757,6 +774,11 @@ def policy_boarddocs(
     lines = ["## BoardDocs policy manuals", "",
              "| district | books | policies | stored | skipped (seen) | note |",
              "|---|---|---:|---:|---:|---|"]
+    # A district that came back with nothing at all. Collected rather than
+    # raised, so one blocked district never costs us the other three — but
+    # reported as a non-zero exit at the end, because the previous run
+    # returned a green check over 20 policies out of 1,077.
+    broken: list[str] = []
 
     for t in targets:
         slug = t.district
@@ -768,7 +790,13 @@ def policy_boarddocs(
             lines.append(f"| {slug} | - | - | - | - | on external portal |")
             continue
         with _fetcher(
-            user_agent, min_interval, respect_robots=not ignore_robots, browser=True
+            user_agent, min_interval, respect_robots=not ignore_robots, browser=True,
+            # BoardDocs answers a rate-tripped client with 403, not 429. Read
+            # literally that is "never"; in practice the block lifts, so back
+            # off and try again rather than discarding the policy.
+            retry_statuses=RETRY_STATUSES_WITH_FORBIDDEN,
+            retry_base_delay=retry_base_delay,
+            max_retries=max_retries,
         ) as f:
             client = BoardDocsClient(state=t.state, slug=t.slug, fetcher=f)
             try:
@@ -776,6 +804,7 @@ def policy_boarddocs(
             except Exception as exc:
                 console.print(f"  [red]book list failed[/red]: {exc}")
                 lines.append(f"| {slug} | - | - | - | - | books failed: {str(exc)[:50]} |")
+                broken.append(f"{slug}: book list failed ({str(exc)[:60]})")
                 continue
             if not books:
                 # Not a failure: this district's manual is on an external
@@ -799,6 +828,13 @@ def policy_boarddocs(
             stored = skipped = failed = empty = attached = 0
             for i, ref in enumerate(refs, 1):
                 url = client.policy_url(ref.unique)
+                if resume and manifest.has_url(url):
+                    # Already collected by an earlier run. Skipping before the
+                    # request is the point: a run that was cut off partway
+                    # resumes where it stopped instead of spending its whole
+                    # rate budget re-fetching what it already has.
+                    skipped += 1
+                    continue
                 try:
                     item = client.get_policy(ref)
                 except Exception as exc:
@@ -876,6 +912,8 @@ def policy_boarddocs(
                 if i % 50 == 0:
                     console.print(f"  [{i}/{len(refs)}] {title[:60]}")
 
+        if refs and not (stored or skipped):
+            broken.append(f"{slug}: every one of {len(refs)} policies failed")
         verb = "would store" if dry_run else "stored"
         bits = [verb]
         if attached:
@@ -893,13 +931,110 @@ def policy_boarddocs(
             f"| {slug} | {', '.join(chosen)} | {len(refs)} | {stored} | {skipped} | {note} |"
         )
 
+    if broken:
+        lines += ["", "**Districts that returned nothing:**", ""]
+        lines += [f"- {b}" for b in broken]
     text = "\n".join(lines) + "\n"
     if report:
         Path(report).write_text(text, encoding="utf-8")
         console.print(f"\nreport: {report}")
     if not dry_run:
         console.print(f"manifest: {out_dir / 'manifest.jsonl'}")
+    if broken:
+        console.print(
+            f"\n[red]{len(broken)} district(s) returned nothing[/red] — run again to "
+            "resume; policies already stored are skipped without a request."
+        )
+        for b in broken:
+            console.print(f"  [red]\u00b7[/red] {b}")
+        raise typer.Exit(1)
 
+
+
+@app.command("policy-import")
+def policy_import(
+    snapshot: str = typer.Option(
+        "data/snapshots/boarddocs-policies.jsonl.gz",
+        help="Gzipped JSONL snapshot: one policy per line.",
+    ),
+    only: str | None = typer.Option(
+        None, help="Only these district slug(s), comma-separated."
+    ),
+    out: str = typer.Option("data/raw", help="Root dir for the raw store."),
+    report: str | None = typer.Option(None, help="Write a markdown summary here."),
+    dry_run: bool = typer.Option(False, help="Read + count only; write nothing."),
+) -> None:
+    """Load the committed policy snapshot into the raw store — no network.
+
+    BoardDocs caps an anonymous datacenter IP at roughly twenty policy fetches
+    before it answers 403 for the whole host, which makes ``policy-boarddocs``
+    unusable from a CI runner: 19 policies a run against a 1,077-policy corpus.
+    From an ordinary connection the same scrape completes without a single
+    refusal, so the manuals were collected there and committed as one 1.7 MB
+    file (see docs/STATUS.md).
+
+    This expands that file into exactly what a scrape would have left behind —
+    the same raw store, the same manifest, the same ``source_url`` permalinks —
+    so ingest cannot tell the difference. Refreshing means regenerating the
+    snapshot from an unblocked connection, not changing anything here.
+    """
+    import gzip
+
+    from herald.scrape.core import make_manifest_entry, sha256_bytes
+    from herald.scrape.models import DocType, ScrapedDoc
+
+    path = Path(snapshot)
+    if not path.is_file():
+        console.print(f"[red]no snapshot at {path}[/red]")
+        raise typer.Exit(1)
+    wanted = {s.strip() for s in (only or "").split(",") if s.strip()} or None
+    out_dir = Path(out)
+    manifest = Manifest(out_dir / "manifest.jsonl")
+    store = RawStore(out_dir)
+    stored: Counter[str] = Counter()
+    skipped: Counter[str] = Counter()
+
+    with gzip.open(path, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            slug = rec["district"]
+            if wanted and slug not in wanted:
+                continue
+            body = rec["html"].encode("utf-8")
+            sha = sha256_bytes(body)
+            if manifest.has_url_hash(rec["source_url"], sha):
+                skipped[slug] += 1
+                continue
+            stored[slug] += 1
+            if dry_run:
+                continue
+            doc = ScrapedDoc(
+                district=slug,
+                doc_type=DocType.policy,
+                title=rec["title"],
+                source_url=rec["source_url"],
+                suggested_filename=f"{slugify(rec['title'])[:60]}.html",
+            )
+            local = store.write(doc, body, default_ext=".html")
+            manifest.append(make_manifest_entry(
+                doc, local_path=local, sha256=sha, size_bytes=len(body),
+                content_type="text/html",
+            ))
+
+    verb = "would import" if dry_run else "imported"
+    lines = ["## Policy snapshot import", "",
+             "| district | " + verb + " | skipped (already held) |", "|---|---:|---:|"]
+    for slug in sorted(set(stored) | set(skipped)):
+        console.print(f"  {slug}: {verb} {stored[slug]}, skipped {skipped[slug]}")
+        lines.append(f"| {slug} | {stored[slug]} | {skipped[slug]} |")
+    console.print(f"\n[bold]{verb} {sum(stored.values())}[/bold], "
+                  f"skipped {sum(skipped.values())}")
+    if report:
+        Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        console.print(f"report: {report}")
 
 if __name__ == "__main__":
     app()

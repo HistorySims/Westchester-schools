@@ -39,10 +39,14 @@ Thumbs.db
 
 # Local data / scratch (scraped raw files + manifest live here and are NOT
 # committed) — but curated crawl targets under data/targets/ are config and
-# ARE version-controlled.
+# ARE version-controlled, and so is data/snapshots/: acquisitions that cannot
+# be re-run from CI (BoardDocs 403s a datacenter IP after ~20 policies), so
+# the corpus would otherwise have no way to get them. See docs/STATUS.md.
 /data/*
 !/data/targets/
 !/data/targets/**
+!/data/snapshots/
+!/data/snapshots/**
 /tmp/
 *.sqlite
 *.db

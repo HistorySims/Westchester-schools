@@ -10,6 +10,7 @@ import pytest
 from herald.scrape.core import (
     BROWSER_HEADERS,
     BROWSER_USER_AGENT,
+    RETRY_STATUSES_WITH_FORBIDDEN,
     Fetcher,
     Manifest,
     RawStore,
@@ -142,6 +143,47 @@ def test_fetcher_retries_then_succeeds(httpx_mock):
         resp = f.get("https://x.test/a")
     assert resp.text == "ok"
     assert len(httpx_mock.get_requests()) == 2
+
+
+def test_403_is_terminal_by_default():
+    # "You may not" does not improve with patience, and retrying a real
+    # refusal just hammers someone's server.
+    assert 403 not in _fast_fetcher().retry_statuses
+
+
+def test_403_can_be_opted_in_as_retryable(httpx_mock):
+    # BoardDocs answers a *rate-tripped* client with 403 rather than 429. Read
+    # literally that ends the scrape; in practice the block lifts. The last
+    # live run lost 1,057 of 1,077 policies to exactly this.
+    httpx_mock.add_response(url="https://x.test/p", status_code=403)
+    httpx_mock.add_response(url="https://x.test/p", status_code=403)
+    httpx_mock.add_response(url="https://x.test/p", status_code=200, text="policy")
+    with Fetcher(min_request_interval=0.0, retry_base_delay=0.0,
+                 respect_robots=False,
+                 retry_statuses=RETRY_STATUSES_WITH_FORBIDDEN) as f:
+        assert f.get("https://x.test/p").text == "policy"
+    assert len(httpx_mock.get_requests()) == 3
+
+
+def test_opting_403_in_does_not_make_every_client_error_retryable(httpx_mock):
+    httpx_mock.add_response(url="https://x.test/gone", status_code=404)
+    with Fetcher(min_request_interval=0.0, retry_base_delay=0.0,
+                 respect_robots=False,
+                 retry_statuses=RETRY_STATUSES_WITH_FORBIDDEN) as f, \
+            pytest.raises(httpx.HTTPStatusError):
+        f.get("https://x.test/gone")
+    assert len(httpx_mock.get_requests()) == 1
+
+
+def test_a_size_annotation_is_not_a_file_extension(tmp_path):
+    # BoardDocs link text reads "Regulation 5830.docx (22 KB)". Trusting that
+    # as an extension stored the file where no extractor could dispatch on it,
+    # so a Word document reached the PDF reader and failed.
+    store = RawStore(tmp_path)
+    doc = _doc(suggested_filename="Regulation 5830.docx (22 KB)", doc_type=DocType.policy)
+    assert store.path_for(doc, "a" * 64, default_ext=".pdf").suffix == ".pdf"
+    clean = _doc(suggested_filename="Regulation%205830.docx", doc_type=DocType.policy)
+    assert store.path_for(clean, "a" * 64, default_ext=".pdf").suffix == ".docx"
 
 
 def test_fetcher_raises_on_client_error(httpx_mock):
