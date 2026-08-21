@@ -16,10 +16,15 @@ name: policy-fetch
 #
 #   Actions -> policy-fetch -> Run workflow
 #
-# Then ingest what it stored:
-#   Actions -> ingest -> Run workflow (district = the one you fetched)
+# That is the whole thing: the job ingests what it fetched before it finishes,
+# because the files are already on its disk. Shipping them out as an artifact
+# and back into a second run only existed to move bytes between two runners.
+# Set `ingest: no` to fetch without touching the corpus; the artifact is
+# uploaded either way, so `ingest` can still be run against it later.
 #
-# No secrets required.
+# Secrets (only when ingest = write):
+#   SUPABASE_DB_URL  - Supabase session-mode pooler connection string
+#   VOYAGE_API_KEY   - Voyage AI key (voyage-3.5)
 
 on:
   workflow_dispatch:
@@ -51,6 +56,15 @@ on:
         type: string
         default: "300"
 
+      ingest:
+        description: "Ingest into the corpus when the fetch finishes"
+        type: choice
+        options:
+          - write
+          - dry-run
+          - "no"
+        default: write
+
 concurrency:
   group: policy-fetch-${{ github.ref }}
   cancel-in-progress: false
@@ -61,6 +75,9 @@ permissions:
 jobs:
   fetch:
     runs-on: ubuntu-latest
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -86,6 +103,22 @@ jobs:
       - name: Publish report to run summary
         if: always()
         run: cat policy-fetch.md >> "$GITHUB_STEP_SUMMARY" || echo "(no report)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Sanity-check secrets (real ingest only)
+        if: ${{ inputs.ingest == 'write' }}
+        run: |
+          [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
+          [ -n "$VOYAGE_API_KEY" ]  || { echo "VOYAGE_API_KEY secret is missing"; exit 1; }
+          echo "secrets present (lengths only): db=${#SUPABASE_DB_URL} voyage=${#VOYAGE_API_KEY}"
+      - name: Ingest
+        if: ${{ inputs.ingest != 'no' && !inputs.dry_run }}
+        run: |
+          uv run herald-ingest run \
+            --root data/raw \
+            --report ingest-report.md \
+            ${{ inputs.ingest == 'write' && '--no-dry-run' || '--dry-run' }}
+      - name: Publish ingest report to run summary
+        if: ${{ always() && inputs.ingest != 'no' && !inputs.dry_run }}
+        run: cat ingest-report.md >> "$GITHUB_STEP_SUMMARY" || echo "(no ingest report)" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload fetched policies
         if: always()
         uses: actions/upload-artifact@v4

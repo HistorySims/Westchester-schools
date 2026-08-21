@@ -3,10 +3,14 @@ name: ingest
 # Ingest scraped school documents into the corpus database:
 # manifest -> PDF text -> structural chunks -> Voyage embeddings -> Postgres.
 #
-# Point it at a finished scrape-all / crawl-sites run: pass that run's id
-# (the number in its URL) and this job downloads its artifacts, finds every
-# manifest.jsonl, and ingests the documents they record. Re-runs are cheap:
-# already-ingested documents (by content hash) are skipped.
+# Pick a workflow from the dropdown and this job finds its latest successful
+# run by itself, downloads that run's artifacts, finds every manifest.jsonl,
+# and ingests the documents they record. A run id is only needed to reach back
+# to an OLDER run. Re-runs are cheap: already-ingested documents (by content
+# hash) are skipped.
+#
+# The policy workflows ingest inline when they finish, so this is for
+# re-ingesting, backfills, and the crawl workflows.
 #
 # 'tables_backfill' inverts that: instead of skipping ingested docs, it
 # reprocesses them and adds ONLY their whole-table (kind='table') chunks —
@@ -24,10 +28,23 @@ name: ingest
 on:
   workflow_dispatch:
     inputs:
+      from_workflow:
+        description: "Ingest the LATEST successful run of this workflow (no run id needed)"
+        type: choice
+        options:
+          - policy-fetch
+          - policy-boarddocs
+          - crawl-sites
+          - scrape-all
+          - crawl-contracts
+          - ocr
+          - "(use run_id below)"
+        default: policy-fetch
       run_id:
-        description: "Actions run id of the scrape/crawl run whose artifacts to ingest"
-        required: true
+        description: "Specific run id — only needed to ingest an OLDER run"
+        required: false
         type: string
+        default: ""
       district:
         description: "District to scope to (all = every district)"
         type: choice
@@ -90,10 +107,39 @@ jobs:
           [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
           [ -n "$VOYAGE_API_KEY" ]  || { echo "VOYAGE_API_KEY secret is missing"; exit 1; }
           echo "secrets present (lengths only): db=${#SUPABASE_DB_URL} voyage=${#VOYAGE_API_KEY}"
-      - name: Download scrape artifacts (run ${{ inputs.run_id }})
+      - name: Resolve the run to ingest
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WF: ${{ inputs.from_workflow }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          # An explicit run id always wins; otherwise take the newest
+          # successful run of the chosen workflow, so nobody has to copy a
+          # 12-digit number off a phone screen.
+          if [ -n "$RUN_ID" ]; then
+            echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "ingesting run $RUN_ID (explicit)"
+            exit 0
+          fi
+          if [ "$WF" = "(use run_id below)" ]; then
+            echo "Pick a workflow, or paste a run id." >&2
+            exit 1
+          fi
+          resolved=$(curl -fsS \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/$WF.yml/runs?status=success&per_page=1" \
+            | python3 -c "import json,sys; r=json.load(sys.stdin)['workflow_runs']; print(r[0]['id'] if r else '')")
+          [ -n "$resolved" ] || { echo "No successful $WF run to ingest." >&2; exit 1; }
+          echo "run_id=$resolved" >> "$GITHUB_OUTPUT"
+          echo "ingesting latest successful $WF run: $resolved"
+          echo "-> https://github.com/${{ github.repository }}/actions/runs/$resolved" >> "$GITHUB_STEP_SUMMARY"
+      - name: Download scrape artifacts (run ${{ steps.resolve.outputs.run_id }})
         uses: actions/download-artifact@v4
         with:
-          run-id: ${{ inputs.run_id }}
+          run-id: ${{ steps.resolve.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: data/artifacts
       - name: Apply schema
