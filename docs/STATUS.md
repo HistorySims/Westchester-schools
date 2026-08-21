@@ -329,14 +329,20 @@ peekskill         1,918,717 chars -> 328 sections, 294 with policy text
 elmsford          1,586,614 chars -> 293 sections, 249 with policy text
 ```
 
-…and the whole chain, fetch → raw store → ingest, on Port Chester:
+**1,500 policies** across four districts, against the 13 we held before.
+
+#### In the corpus, live (2026-08-21)
+
+`policy-fetch` run `32416837008` → `ingest` run `32436611943`:
 
 ```
-stored 523, skipped 0
-seen 523 | ingested 523 | skipped 0 | no_text 0 | missing 0 | errors 0 | 1798 chunks
+seen 1500 | ingested 1500 | skipped 0 | no_text 0 | missing 0 | errors 0 | 5455 chunks
+  port-chester-rye 1798 · ossining 1532 · peekskill 1074 · elmsford 1051
 ```
 
-**1,500 policies** across four districts, against the 13 we hold today.
+A clean sweep — every document extracted, chunked and embedded, nothing
+lost to a scan or a parse failure. The policy corpus went from **13
+documents to 1,500** in one run.
 Port Chester's 5100 in the export contains the sentence the corpus was
 missing: *"any student with more than nine unexcused ATEDs for one-half year
 or 18 unexcused ATEDs for a full year will not receive credit for that
