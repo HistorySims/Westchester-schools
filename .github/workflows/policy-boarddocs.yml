@@ -55,10 +55,14 @@ on:
         description: "Skip districts already covered by policy-fetch (recommended)"
         type: boolean
         default: true
+      fresh:
+        description: "Ignore the last run and start over (default: resume where it stopped)"
+        type: boolean
+        default: false
       min_interval:
         description: "Minimum seconds between requests (politeness)"
         type: string
-        default: "1"
+        default: "2"
 
       ingest:
         description: "Ingest into the corpus when the fetch finishes"
@@ -75,6 +79,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read   # read the previous run's artifact to resume from it
 
 jobs:
   fetch:
@@ -92,7 +97,46 @@ jobs:
         run: uv python install
       - name: Sync deps
         run: uv sync --frozen
+      - name: Find the previous run to resume from
+        id: prev
+        if: ${{ !inputs.fresh }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # BoardDocs answers a rate-tripped client with 403, and once it trips
+          # the rest of the run is lost. So each run starts from the previous
+          # run's manifest and skips what is already collected WITHOUT
+          # requesting it, turning one impossible 1,077-policy run into a few
+          # taps. The previous run is taken whatever its conclusion — a run
+          # that failed partway is exactly the one worth resuming.
+          prev=$(curl -fsS \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/policy-boarddocs.yml/runs?per_page=20" \
+            | jq -r --argjson me ${{ github.run_id }} \
+                '[.workflow_runs[] | select(.id != $me and .status == "completed")][0].id // ""')
+          echo "run_id=$prev" >> "$GITHUB_OUTPUT"
+          echo "previous run: ${prev:-(none - first run)}"
+      - name: Restore what the previous run collected
+        if: ${{ !inputs.fresh && steps.prev.outputs.run_id != '' }}
+        continue-on-error: true      # a missing/expired artifact just means a cold start
+        uses: actions/download-artifact@v4
+        with:
+          name: policies-boarddocs
+          run-id: ${{ steps.prev.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: .
+      - name: Report what was restored
+        run: |
+          if [ -f data/raw/manifest.jsonl ]; then
+            echo "resuming with $(wc -l < data/raw/manifest.jsonl) policies already collected"
+          else
+            echo "starting cold — no previous manifest"
+          fi
       - name: Fetch policy manuals from BoardDocs
+        id: fetch
+        continue-on-error: true   # a blocked district must not cost us the rest
         run: |
           uv run herald-scrape policy-boarddocs \
             --peers data/targets/port_chester_peers.json \
@@ -100,6 +144,7 @@ jobs:
             ${{ inputs.dry_run && '--dry-run' || '' }} \
             ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
             ${{ inputs.skip_portal && '--skip-portal' || '--no-skip-portal' }} \
+            ${{ inputs.fresh && '--no-resume' || '--resume' }} \
             --min-interval "${{ inputs.min_interval }}" \
             --out data/raw \
             --report policy-boarddocs.md
@@ -107,13 +152,13 @@ jobs:
         if: always()
         run: cat policy-boarddocs.md >> "$GITHUB_STEP_SUMMARY" || echo "(no report)" >> "$GITHUB_STEP_SUMMARY"
       - name: Sanity-check secrets (real ingest only)
-        if: ${{ inputs.ingest == 'write' }}
+        if: ${{ always() && inputs.ingest == 'write' }}
         run: |
           [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
           [ -n "$VOYAGE_API_KEY" ]  || { echo "VOYAGE_API_KEY secret is missing"; exit 1; }
           echo "secrets present (lengths only): db=${#SUPABASE_DB_URL} voyage=${#VOYAGE_API_KEY}"
       - name: Ingest
-        if: ${{ inputs.ingest != 'no' && !inputs.dry_run }}
+        if: ${{ always() && inputs.ingest != 'no' && !inputs.dry_run }}
         run: |
           uv run herald-ingest run \
             --root data/raw \
@@ -132,3 +177,10 @@ jobs:
             policy-boarddocs.md
           if-no-files-found: warn
           retention-days: 14
+      - name: Fail if any district returned nothing
+        if: ${{ steps.fetch.outcome == 'failure' }}
+        run: |
+          echo "A district came back empty — see the report above." >&2
+          echo "Everything that did come back is stored, ingested and in the" >&2
+          echo "artifact. Run this workflow again to resume from here." >&2
+          exit 1

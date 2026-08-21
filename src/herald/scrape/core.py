@@ -47,6 +47,14 @@ BROWSER_HEADERS = {
     "Sec-Fetch-Site": "same-origin",
 }
 
+#: Statuses worth trying again: rate limits and transient server faults.
+RETRY_STATUSES = (429, 500, 502, 503, 504)
+#: 403 is normally terminal — "you may not" does not improve with patience.
+#: But BoardDocs answers a *rate-tripped* client with 403 rather than 429, and
+#: that block does lift, so the scrapers that talk to it opt 403 in explicitly
+#: rather than reading a WAF cooldown as a permanent refusal.
+RETRY_STATUSES_WITH_FORBIDDEN = (403, *RETRY_STATUSES)
+
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -143,12 +151,14 @@ class Fetcher:
         retry_base_delay: float = 1.0,
         timeout: float = 30.0,
         respect_robots: bool = True,
+        retry_statuses: tuple[int, ...] = RETRY_STATUSES,
         client: httpx.Client | None = None,
     ) -> None:
         self.min_request_interval = min_request_interval
         self.jitter = jitter
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
+        self.retry_statuses = retry_statuses
         self._last_request = 0.0
         self._owns_client = client is None
         base_headers = {"User-Agent": user_agent, **(headers or {})}
@@ -225,7 +235,7 @@ class Fetcher:
                 logger.warning("network error on %s (attempt %d): %s", url, attempt + 1, exc)
                 self._sleep_for_retry(None, attempt)
                 continue
-            if resp.status_code in (429, 500, 502, 503, 504) and attempt < self.max_retries:
+            if resp.status_code in self.retry_statuses and attempt < self.max_retries:
                 logger.warning("HTTP %d on %s, retrying", resp.status_code, url)
                 self._sleep_for_retry(resp, attempt)
                 continue

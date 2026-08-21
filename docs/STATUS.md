@@ -428,8 +428,38 @@ skipped. Four policies are genuinely empty at the source — a title with no
 body and no file — and are now *counted and reported* rather than vanishing.
 Ingest dry-run over the result: **1,096 ingested, 3,022 chunks**.
 
+#### BoardDocs 403s a datacenter IP (2026-08-21)
+
+The first live `policy-boarddocs` run stored **20 policies out of 1,077** and
+still reported success. From this container at 0.35 s intervals the same
+scrape pulls all 1,077 without a single refusal; from a GitHub Actions runner
+Tarrytowns got 20 through, the next 222 came back `403 Forbidden`, and the
+other three districts were refused at the front door — even
+`Board.nsf/Public`. It is not the user-agent (already a browser one, and the
+first 20 succeeded): it is a rate/volume trip on their WAF against an IP with
+no reputation.
+
+Three fixes, in order of how much they matter:
+
+1. **Resume.** Each run restores the previous run's artifact and skips every
+   policy already in the manifest *without requesting it*. Re-running a
+   cut-off Tarrytowns now takes **4.7 seconds instead of four minutes**, so a
+   run that gets blocked is progress rather than a loss — tap Run again.
+2. **403 is retryable here, and only here.** `Fetcher` takes
+   `retry_statuses`; BoardDocs opts in via `RETRY_STATUSES_WITH_FORBIDDEN`
+   with a 5 s base backoff (5/10/20/40/80 s). Everywhere else 403 stays
+   terminal, because "you may not" does not improve with patience.
+3. **A wiped-out district fails the job.** Per-district errors are still
+   caught so one blocked district never costs the other three, but they are
+   collected and the command exits non-zero — after ingest and the artifact
+   upload, so a partial run keeps everything it did collect.
+
+Default `min_interval` is now 2 s.
+
 ### Still open
 
+* Whether resume converges in a couple of taps or the WAF blocks earlier each
+  time. If it is the latter the answer is a slower interval, not more taps.
 * One legacy binary `.doc` attachment (White Plains 5152F) stays unreadable
   — it needs a real converter, and there is exactly one in the corpus. It
   errors rather than silently ingesting as empty.
