@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from datetime import date
 from pathlib import Path
 
@@ -41,6 +42,7 @@ from herald.scrape.core import (
     Fetcher,
     Manifest,
     RawStore,
+    slugify,
 )
 from herald.scrape.runner import (
     DistrictResult,
@@ -947,6 +949,92 @@ def policy_boarddocs(
             console.print(f"  [red]\u00b7[/red] {b}")
         raise typer.Exit(1)
 
+
+
+@app.command("policy-import")
+def policy_import(
+    snapshot: str = typer.Option(
+        "data/snapshots/boarddocs-policies.jsonl.gz",
+        help="Gzipped JSONL snapshot: one policy per line.",
+    ),
+    only: str | None = typer.Option(
+        None, help="Only these district slug(s), comma-separated."
+    ),
+    out: str = typer.Option("data/raw", help="Root dir for the raw store."),
+    report: str | None = typer.Option(None, help="Write a markdown summary here."),
+    dry_run: bool = typer.Option(False, help="Read + count only; write nothing."),
+) -> None:
+    """Load the committed policy snapshot into the raw store — no network.
+
+    BoardDocs caps an anonymous datacenter IP at roughly twenty policy fetches
+    before it answers 403 for the whole host, which makes ``policy-boarddocs``
+    unusable from a CI runner: 19 policies a run against a 1,077-policy corpus.
+    From an ordinary connection the same scrape completes without a single
+    refusal, so the manuals were collected there and committed as one 1.7 MB
+    file (see docs/STATUS.md).
+
+    This expands that file into exactly what a scrape would have left behind —
+    the same raw store, the same manifest, the same ``source_url`` permalinks —
+    so ingest cannot tell the difference. Refreshing means regenerating the
+    snapshot from an unblocked connection, not changing anything here.
+    """
+    import gzip
+
+    from herald.scrape.core import make_manifest_entry, sha256_bytes
+    from herald.scrape.models import DocType, ScrapedDoc
+
+    path = Path(snapshot)
+    if not path.is_file():
+        console.print(f"[red]no snapshot at {path}[/red]")
+        raise typer.Exit(1)
+    wanted = {s.strip() for s in (only or "").split(",") if s.strip()} or None
+    out_dir = Path(out)
+    manifest = Manifest(out_dir / "manifest.jsonl")
+    store = RawStore(out_dir)
+    stored: Counter[str] = Counter()
+    skipped: Counter[str] = Counter()
+
+    with gzip.open(path, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            slug = rec["district"]
+            if wanted and slug not in wanted:
+                continue
+            body = rec["html"].encode("utf-8")
+            sha = sha256_bytes(body)
+            if manifest.has_url_hash(rec["source_url"], sha):
+                skipped[slug] += 1
+                continue
+            stored[slug] += 1
+            if dry_run:
+                continue
+            doc = ScrapedDoc(
+                district=slug,
+                doc_type=DocType.policy,
+                title=rec["title"],
+                source_url=rec["source_url"],
+                suggested_filename=f"{slugify(rec['title'])[:60]}.html",
+            )
+            local = store.write(doc, body, default_ext=".html")
+            manifest.append(make_manifest_entry(
+                doc, local_path=local, sha256=sha, size_bytes=len(body),
+                content_type="text/html",
+            ))
+
+    verb = "would import" if dry_run else "imported"
+    lines = ["## Policy snapshot import", "",
+             "| district | " + verb + " | skipped (already held) |", "|---|---:|---:|"]
+    for slug in sorted(set(stored) | set(skipped)):
+        console.print(f"  {slug}: {verb} {stored[slug]}, skipped {skipped[slug]}")
+        lines.append(f"| {slug} | {stored[slug]} | {skipped[slug]} |")
+    console.print(f"\n[bold]{verb} {sum(stored.values())}[/bold], "
+                  f"skipped {sum(skipped.values())}")
+    if report:
+        Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        console.print(f"report: {report}")
 
 if __name__ == "__main__":
     app()

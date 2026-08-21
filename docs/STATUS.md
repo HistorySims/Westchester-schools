@@ -462,10 +462,47 @@ Three fixes, in order of how much they matter:
 
 Default `min_interval` is now 2 s.
 
+#### The cap is on the IP, not the pace (2026-08-21)
+
+Two live runs settled it: **19 policies at `min_interval=2`, 20 at
+`min_interval=1`.** Pacing does not move it. BoardDocs allows an anonymous
+datacenter IP roughly twenty `BD-GetPolicyItem` calls and then answers 403
+for the *whole host* — after Tarrytowns tripped it, `Board.nsf/Public` itself
+was refused for Mount Vernon, Greenburgh and White Plains. From an ordinary
+connection the same scrape pulls all 1,077 without a single refusal. Resume
+would net ~19 a run: **55 taps**, with no guarantee the cap holds still.
+
+There is also no bulk endpoint to fall back on. `policies.js` names only
+`BD-GetPolicyBooks` / `BD-GetPolicies` / `BD-GetPolicyItem` (plus editor
+calls), and every `PRINT-*` guess a BoardDocs naming convention suggests
+(`PRINT-Policies`, `PRINT-PolicyBook`, …) 404s. Unlike the portal manuals,
+there is no whole-book export to grab.
+
+**So the acquisition moved off CI.** The manuals were collected from an
+unblocked connection and committed as
+`data/snapshots/boarddocs-policies.jsonl.gz` — **1,071 policies, 1.7 MB**,
+one JSON object per policy carrying district, title, BoardDocs permalink,
+fetch time and body HTML. `herald-scrape policy-import` expands it into the
+same raw store and manifest a scrape would have left, with the same
+`source_url` permalinks, so ingest cannot tell the difference. It is
+idempotent, and `data/snapshots/` is the second exception to the "no data in
+git" rule after `data/targets/`.
+
+`policy-boarddocs` now takes a **`source`** input: `snapshot` (default, no
+network, all 1,071), `boarddocs` (scrape live — for a machine that is not
+blocked), or `both`. Verified end to end:
+
+```
+policy-import   imported 1071, skipped 0   (re-run: imported 0, skipped 1071)
+ingest dry-run  seen 1071 | ingested 1071 | no_text 0 | errors 0 | 2774 chunks
+  greenburgh-central 809 · tarrytowns 752 · mount-vernon 669 · white-plains 544
+```
+
 ### Still open
 
-* Whether resume converges in a couple of taps or the WAF blocks earlier each
-  time. If it is the latter the answer is a slower interval, not more taps.
+* **Refreshing the snapshot** needs an unblocked connection — it is not
+  something CI can do. The 31 policy attachments (15 MB of PDF/Word) are
+  deliberately *not* in the snapshot; they need a separate pass.
 * One legacy binary `.doc` attachment (White Plains 5152F) stays unreadable
   — it needs a real converter, and there is exactly one in the corpus. It
   errors rather than silently ingesting as empty.
