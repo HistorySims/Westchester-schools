@@ -32,7 +32,13 @@ from herald.chunking import Chunk, chunk_agenda_text, classify_doc_type, parse_m
 from herald.embed import VoyageEmbedder
 from herald.html_text import extract_html
 from herald.office_text import extract_docx, extract_rtf
-from herald.pdf_text import ExtractedDoc, TableBlock, extract_pdf
+from herald.pdf_text import (
+    ExtractedDoc,
+    TableBlock,
+    extract_pdf,
+    image_only_pages,
+    merge_extracted,
+)
 from herald.scrape.models import ManifestEntry
 
 logger = logging.getLogger(__name__)
@@ -200,6 +206,7 @@ class IngestStats:
     docs_error: int = 0
     docs_ingested: int = 0
     docs_ocr_candidate: int = 0     # OCR dry-run: a no-text doc that would be OCR'd
+    docs_partial_ocr: int = 0       # text-bearing docs whose scanned pages were recovered
     docs_tables_backfilled: int = 0  # tables-only: ingested docs that gained table chunks
     docs_no_tables: int = 0          # tables-only: ingested docs with no detectable table
     chunks_written: int = 0
@@ -238,7 +245,8 @@ async def ingest_manifests(
     wave_size: int = DEFAULT_WAVE,
     on_doc=None,                     # callback(entry, status) for progress
     ocr_mode: bool = False,          # only (re)process no-text docs, via OCR
-    ocr_fn=None,                     # callable(path)->ExtractedText; None = dry count
+    ocr_fn=None,                     # callable(path, pages)->Extracted*; None = dry count
+    partial_ocr: bool = False,       # also OCR scanned pages inside text-bearing PDFs
     reocr: bool = False,             # re-OCR docs already OCR'd, replacing their chunks
     tables_only: bool = False,       # backfill: add table chunks to already-ingested docs
 ) -> IngestStats:
@@ -393,28 +401,49 @@ async def ingest_manifests(
             )
 
             if ocr_mode:
+                scan_pages: list[int] = []
                 # A table-only born-digital PDF has little prose but real table
                 # content, so "has text" is judged on total recovered chars.
                 if extracted.content_chars >= min_chars:
-                    stats.docs_skipped += 1
-                    note = "has-text"
-                    continue
+                    # ...but a document can have plenty of text and still hide
+                    # its grids. White Plains' CBA is born-digital and never
+                    # trips the document-level gate, yet pages 49 and 58-66 are
+                    # flat images holding the salary schedules. Those pages
+                    # extract as nothing and nobody notices.
+                    if partial_ocr and path.suffix.lower() == ".pdf":
+                        try:
+                            scan_pages = image_only_pages(path)
+                        except Exception as exc:
+                            logger.warning("page probe failed %s: %s", path, exc)
+                    if not scan_pages:
+                        stats.docs_skipped += 1
+                        note = "has-text"
+                        continue
                 if ocr_fn is None:
                     # fast dry pass: count the candidate, don't spend on OCR
                     stats.docs_ocr_candidate += 1
                     stats.ocr_candidates[entry.district] += 1
-                    note = "ocr-candidate"
+                    note = (f"ocr-candidate ({len(scan_pages)} scanned page(s))"
+                            if scan_pages else "ocr-candidate")
                     continue
                 try:
-                    result = ocr_fn(path)
+                    result = ocr_fn(path, scan_pages or None)
                     # tesseract engine returns flat ExtractedText (no tables);
                     # the vision engine returns an ExtractedDoc whose Markdown
                     # tables are kept as whole table chunks for herald-extract.
-                    extracted = (
+                    recovered = (
                         result if isinstance(result, ExtractedDoc)
                         else ExtractedDoc(
                             text=result.text, tables=[], page_count=result.page_count)
                     )
+                    # Page-level OCR ADDS to a document that already read fine;
+                    # whole-document OCR replaces one that read as nothing.
+                    extracted = (
+                        merge_extracted(extracted, recovered) if scan_pages else recovered
+                    )
+                    if scan_pages:
+                        stats.docs_partial_ocr += 1
+                        note = f"ocr+{len(scan_pages)}p"
                 except Exception as exc:
                     stats.docs_error += 1
                     note = f"ocr-error: {exc}"
@@ -1097,6 +1126,11 @@ def ocr(
     max_pages: int | None = typer.Option(
         None, help="Cap pages OCR'd per document (None = all)."
     ),
+    partial: bool = typer.Option(
+        False,
+        help="Also OCR scanned pages INSIDE documents that otherwise have text "
+             "(White Plains' CBA is born-digital but its salary grids are images).",
+    ),
     reocr: bool = typer.Option(
         False,
         help="Re-OCR docs already OCR'd (e.g. upgrade a Tesseract pass to vision), "
@@ -1145,14 +1179,15 @@ def ocr(
                 raise typer.BadParameter("ANTHROPIC_API_KEY is not set.")
             client = anthropic.Anthropic()
 
-            def ocr_fn(path):
+            def ocr_fn(path, pages=None):
                 return ocr_pdf_vision(
-                    path, client=client, model=model, dpi=dpi, max_pages=max_pages)
+                    path, client=client, model=model, dpi=dpi,
+                    max_pages=max_pages, pages=pages)
         else:
             from herald.ocr import ocr_pdf
 
-            def ocr_fn(path):
-                return ocr_pdf(path, dpi=dpi, max_pages=max_pages)
+            def ocr_fn(path, pages=None):
+                return ocr_pdf(path, dpi=dpi, max_pages=max_pages, pages=pages)
 
     done = 0
 
@@ -1170,7 +1205,8 @@ def ocr(
         try:
             return await ingest_manifests(
                 pairs, conn=conn, voyage=voyage, wave_size=wave_size,
-                on_doc=on_doc, ocr_mode=True, ocr_fn=ocr_fn, reocr=reocr,
+                on_doc=on_doc, ocr_mode=True, ocr_fn=ocr_fn, partial_ocr=partial,
+                reocr=reocr,
             )
         finally:
             if voyage is not None:

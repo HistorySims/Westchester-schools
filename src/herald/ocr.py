@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 
 import fitz  # PyMuPDF
@@ -100,28 +101,37 @@ def _encode_png(img, *, max_bytes: int = _MAX_IMAGE_BYTES) -> bytes:
 
 
 def _render_pages(
-    path: str | Path, *, dpi: int, max_pages: int | None
+    path: str | Path, *, dpi: int, max_pages: int | None,
+    only: Sequence[int] | None = None,
 ) -> tuple[list[tuple[int, bytes]], int]:
     """Rasterize pages to upright, size-capped PNG bytes.
 
     Returns ``([(page_no, png)], page_count)``; ``page_count`` is the
     document's true length even when ``max_pages`` caps how many are rendered.
+    ``only`` restricts rendering to those 1-based page numbers — the whole
+    point of page-level OCR is to pay for the four scanned pages in a
+    seventy-page document, not the seventy.
     """
     from PIL import Image
 
+    wanted = set(only) if only is not None else None
     pages: list[tuple[int, bytes]] = []
     with fitz.open(str(path)) as doc:
         page_count = doc.page_count
         for i, page in enumerate(doc):
-            if max_pages is not None and i >= max_pages:
+            page_no = i + 1
+            if wanted is not None and page_no not in wanted:
+                continue
+            if max_pages is not None and len(pages) >= max_pages:
                 break
             pix = page.get_pixmap(dpi=dpi)
             img = Image.open(io.BytesIO(pix.tobytes("png")))
-            pages.append((i + 1, _encode_png(upright(img))))
+            pages.append((page_no, _encode_png(upright(img))))
     return pages, page_count
 
 
-def ocr_pdf(path: str | Path, *, dpi: int = 300, max_pages: int | None = None) -> ExtractedText:
+def ocr_pdf(path: str | Path, *, dpi: int = 300, max_pages: int | None = None,
+            pages: Sequence[int] | None = None) -> ExtractedText:
     """OCR every page of a scanned PDF (or image) with Tesseract.
 
     Returns flat text (no table structure). Raises whatever PyMuPDF/Tesseract
@@ -130,12 +140,17 @@ def ocr_pdf(path: str | Path, *, dpi: int = 300, max_pages: int | None = None) -
     import pytesseract
     from PIL import Image
 
+    wanted = set(pages) if pages is not None else None
     texts: list[str] = []
+    done = 0
     with fitz.open(str(path)) as doc:
         page_count = doc.page_count
         for i, page in enumerate(doc):
-            if max_pages is not None and i >= max_pages:
+            if wanted is not None and (i + 1) not in wanted:
+                continue
+            if max_pages is not None and done >= max_pages:
                 break
+            done += 1
             pix = page.get_pixmap(dpi=dpi)
             img = Image.open(io.BytesIO(pix.tobytes("png")))
             texts.append(pytesseract.image_to_string(img))
@@ -204,6 +219,7 @@ def ocr_pdf_vision(
     model: str = DEFAULT_VISION_MODEL,
     dpi: int = 200,
     max_pages: int | None = None,
+    pages: Sequence[int] | None = None,
 ) -> ExtractedDoc:
     """Transcribe a scanned PDF to text + table blocks with Claude vision.
 
@@ -213,10 +229,10 @@ def ocr_pdf_vision(
     ordinary text. Raises on API/render errors; the ingest loop catches
     per-document.
     """
-    pages, page_count = _render_pages(path, dpi=dpi, max_pages=max_pages)
+    rendered, page_count = _render_pages(path, dpi=dpi, max_pages=max_pages, only=pages)
     prose_parts: list[str] = []
     tables: list[TableBlock] = []
-    for page_no, png in pages:
+    for page_no, png in rendered:
         md = _transcribe_page(client, model, png, page_no=page_no)
         prose, page_tables = split_markdown_tables(md, page=page_no)
         if prose:

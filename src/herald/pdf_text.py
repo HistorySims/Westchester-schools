@@ -18,10 +18,13 @@ Two extractors:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 import fitz  # PyMuPDF
+
+logger = logging.getLogger(__name__)
 
 # A "table" worth pulling out has at least this many rows and columns; smaller
 # find_tables hits are usually a two-column key/value block or a stray ruling,
@@ -82,6 +85,65 @@ def extract_pdf_text(path: str | Path) -> ExtractedText:
     with fitz.open(str(path)) as doc:
         pages = [page.get_text("text") for page in doc]
     return ExtractedText(text=sanitize("\n".join(pages).strip()), page_count=len(pages))
+
+
+#: A page holding this little extractable text is not really text-bearing.
+IMAGE_PAGE_MAX_CHARS = 120
+#: ...and an image must cover this much of it to be the page's actual content,
+#: rather than a logo on an otherwise blank divider page.
+IMAGE_PAGE_MIN_COVERAGE = 0.45
+
+
+def image_only_pages(
+    path: str | Path,
+    *,
+    max_chars: int = IMAGE_PAGE_MAX_CHARS,
+    min_coverage: float = IMAGE_PAGE_MIN_COVERAGE,
+) -> list[int]:
+    """1-based pages that are a scan pasted into an otherwise readable PDF.
+
+    The document-level "is this scanned?" test cannot see these. White Plains'
+    CBA is born-digital and full of text, so it never trips that gate — but its
+    salary grids live on pages 49 and 58-66 as flat images, which extract as
+    nothing. The document looks fine and the grids are simply absent.
+
+    A page qualifies when it yields almost no text *and* carries an image
+    covering a real share of it. Both halves matter: text alone would flag
+    blank separator pages, images alone would flag every page with a letterhead.
+    """
+    out: list[int] = []
+    with fitz.open(str(path)) as doc:
+        for pno, page in enumerate(doc, start=1):
+            if len(page.get_text("text").strip()) > max_chars:
+                continue
+            page_area = abs(page.rect.get_area())
+            if page_area <= 0:
+                continue
+            covered = 0.0
+            try:
+                for img in page.get_images(full=True):
+                    for rect in page.get_image_rects(img[0]):
+                        covered = max(covered, abs(rect.get_area()) / page_area)
+            except Exception:  # a malformed image entry must not lose the page
+                logger.debug("image probe failed on page %s of %s", pno, path)
+                continue
+            if covered >= min_coverage:
+                out.append(pno)
+    return out
+
+
+def merge_extracted(base: ExtractedDoc, add: ExtractedDoc) -> ExtractedDoc:
+    """Fold OCR'd pages into a born-digital extraction, keeping both.
+
+    The base document's prose is authoritative — it was read, not guessed — so
+    it leads, and the recovered pages are appended with their tables.
+    """
+    text = "\n\n".join(t for t in (base.text, add.text) if t).strip()
+    return ExtractedDoc(
+        text=text,
+        tables=[*base.tables, *add.tables],
+        page_count=base.page_count or add.page_count,
+    )
 
 
 def _covered(block: fitz.Rect, tables: list[fitz.Rect]) -> bool:
