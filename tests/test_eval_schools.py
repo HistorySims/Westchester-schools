@@ -115,3 +115,57 @@ def test_the_shipped_case_file_loads_and_is_well_formed():
         for e in c.expect_present:
             assert e.must_match, f"{c.id}/{e.district} has nothing to match"
             assert all(m.strip() for m in e.must_match), c.id
+
+
+def test_the_right_words_in_the_wrong_document_is_a_failure():
+    # Once acquisition is fixed, this becomes the dominant failure mode: a
+    # question about students and phones returns the STAFF cell-phone
+    # reimbursement policy. Well-retrieved, plausible, wrong. Recall alone
+    # scores it as a pass.
+    case = _case(
+        id="student-devices",
+        expect_present=(Expectation(
+            "white-plains",
+            ("sole grounds for the suspension",),
+            must_not_match=("cellphone reimbursement",),
+        ),),
+    )
+    right = grade_case(case, {"white-plains": ["...sole grounds for the suspension..."]})
+    assert right.passed
+
+    wrong = grade_case(case, {"white-plains": [
+        "...sole grounds for the suspension...",
+        "8332-R CELLPHONE REIMBURSEMENT OPTION: you are required to carry a cell phone.",
+    ]})
+    assert not wrong.passed
+    assert wrong.results[0].forbidden == ["cellphone reimbursement"]
+    assert "wrong passage" in wrong.results[0].detail
+
+
+def test_missing_and_forbidden_are_reported_together():
+    case = _case(
+        id="both",
+        expect_present=(Expectation("x", ("needed",), must_not_match=("banned",)),),
+    )
+    r = grade_case(case, {"x": ["this chunk is banned content"]})
+    assert not r.passed
+    assert r.results[0].missing == ["needed"]
+    assert r.results[0].forbidden == ["banned"]
+    assert "missing" in r.results[0].detail and "wrong passage" in r.results[0].detail
+
+
+def test_must_not_match_is_optional_and_defaults_to_permissive():
+    r = grade_case(_case(), {"tarrytowns": [ATED, "any other chunk at all"]})
+    assert r.passed
+
+
+def test_the_shipped_suite_covers_more_than_one_failure_mode():
+    # Six acquisition cases all testing "did the document survive" would leave
+    # retrieval precision, vocabulary mismatch and chunking untested.
+    cases = load_cases(DEFAULT_CASES)
+    kinds = {c.kind for c in cases}
+    assert {"coverage", "norm", "outlier", "negative"} <= kinds
+    assert any(e.must_not_match for c in cases for e in c.expect_present), \
+        "no case checks that the WRONG passage stayed out"
+    # at least one case spans every district we hold a full manual for
+    assert max(len(c.expect_present) for c in cases) >= 4

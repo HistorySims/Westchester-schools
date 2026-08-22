@@ -540,7 +540,17 @@ in what we hold" is not "no such rule". A **negative control** fails if any
 district returns evidence for a rule that exists nowhere — a suite that only
 rewards recall teaches the system to confabulate.
 
-Six shipped cases, each anchored to a string read out of a document we hold:
+Ten shipped cases, each anchored to a string read out of a document we hold.
+The first six test **acquisition** — did the document survive. The later four
+test the failure modes a corpus only develops once acquisition works:
+**precision** (four districts file the same state device mandate under four
+different numbers — 7316, 5695, 5695, 5695 — while every district also has a
+staff cell-phone policy sharing the vocabulary, so `must_not_match` fails the
+case if the reimbursement policy answers a question about students),
+**semantic recall** ("THERAPY DOGS" vs "Use of Assistance Animals"),
+**chunking** (one ChatGPT sentence inside a very long Code of Conduct), and
+**document choice** (the confiscation procedure lives in 4526.2-R, not the
+policy it implements). The original six:
 the attendance/credit threshold across three districts, Mount Vernon's
 attachment-only DASA policy, White Plains' identical-twin 1741, its Word-only
 purchasing regulation, the Tarrytowns salary grid (**expected to fail until
