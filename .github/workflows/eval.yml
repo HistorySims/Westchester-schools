@@ -1,0 +1,83 @@
+name: eval
+
+# Ask the corpus questions whose answers are KNOWN, and check the right
+# passage comes back.
+#
+# Every failure this project has hit has the same shape: a document absent, or
+# present but unreadable, and an answer layer reporting the gap as a fact about
+# the world. "Only Tarrytowns denies credit at 18 absences" was true of the
+# corpus and false of Westchester. Unit tests cannot catch that — the code was
+# correct each time.
+#
+# This grades RETRIEVAL, not prose: whether the corpus can put the right
+# passage in front of the answer layer. That is deterministic, costs only the
+# query embeddings, and needs no Anthropic key.
+#
+# Run it after any ingest, OCR or reclassify pass. A case that starts failing
+# means the corpus lost something.
+#
+#   Actions -> eval -> Run workflow
+#
+# Required secrets: SUPABASE_DB_URL, VOYAGE_API_KEY
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Only these case id(s), comma-separated (empty = all)"
+        required: false
+        type: string
+        default: ""
+      per_district:
+        description: "Evidence passages retrieved per district"
+        type: string
+        default: "8"
+      rerank:
+        description: "Voyage rerank the fused pool (as the real ask path does)"
+        type: boolean
+        default: true
+      fail_on_regression:
+        description: "Fail the run if any case fails"
+        type: boolean
+        default: true
+
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Sanity-check secrets
+        run: |
+          [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
+          [ -n "$VOYAGE_API_KEY" ]  || { echo "VOYAGE_API_KEY secret is missing"; exit 1; }
+          echo "secrets present (lengths only): db=${#SUPABASE_DB_URL} voyage=${#VOYAGE_API_KEY}"
+      - name: Grade the corpus
+        run: |
+          uv run herald-eval \
+            --cases data/eval/schools_cases.json \
+            ${{ inputs.only && format('--only "{0}"', inputs.only) || '' }} \
+            --per-district "${{ inputs.per_district }}" \
+            ${{ inputs.rerank && '--rerank' || '--no-rerank' }} \
+            --report eval-report.md \
+            ${{ inputs.fail_on_regression && '--fail-on-regression' || '--no-fail-on-regression' }}
+      - name: Publish report to run summary
+        if: always()
+        run: cat eval-report.md >> "$GITHUB_STEP_SUMMARY" || echo "(no report)" >> "$GITHUB_STEP_SUMMARY"

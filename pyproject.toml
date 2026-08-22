@@ -32,6 +32,7 @@ herald-ask = "herald.ask_schools:app"
 herald-cluster = "herald.cluster_schools:app"
 herald-score = "herald.score_schools:app"
 herald-extract = "herald.extract_schools:app"
+herald-eval = "herald.eval_schools:app"
 
 [build-system]
 requires = ["hatchling"]
