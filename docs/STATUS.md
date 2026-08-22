@@ -524,6 +524,31 @@ ingest dry-run  seen 1071 | ingested 1071 | no_text 0 | errors 0 | 2774 chunks
 
 ---
 
+## Corpus eval — the regression net (2026-08-21)
+
+`herald-eval` + the `eval` workflow ask the corpus questions whose answers are
+**known** and check the right passage comes back. See [`EVAL.md`](EVAL.md).
+
+This exists because every failure here has had the same shape — a document
+absent or unreadable, and the answer layer reporting the gap as a fact about
+the world. The code was correct each time; the tests were green each time.
+
+It grades **retrieval, not prose**: deterministic, no Anthropic key, costs
+only the query embeddings. Presence expectations are strong; `no_known_rule`
+is recorded but never graded as a required "no", because "no matching sentence
+in what we hold" is not "no such rule". A **negative control** fails if any
+district returns evidence for a rule that exists nowhere — a suite that only
+rewards recall teaches the system to confabulate.
+
+Six shipped cases, each anchored to a string read out of a document we hold:
+the attendance/credit threshold across three districts, Mount Vernon's
+attachment-only DASA policy, White Plains' identical-twin 1741, its Word-only
+purchasing regulation, the Tarrytowns salary grid (**expected to fail until
+the re-OCR runs** — it names the pending work rather than hiding it), and the
+negative control.
+
+---
+
 ## The peer set
 
 Eight districts chosen as demographic/socioeconomic peers of Port Chester
