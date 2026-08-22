@@ -85,6 +85,10 @@ def classify_doc_type(title: str) -> str:
     low = re.sub(r"[-_]+", " ", title.lower())
     if "minute" in low:
         return "minutes"
+    # Before the meeting keywords: a "Board Meeting Transcript" is a
+    # transcript, not an agenda.
+    if "transcript" in low:
+        return "transcript"
     if any(k in low for k in ("agenda", "business meeting", "work session", "boe meeting",
                               "board meeting", "special meeting", "regular meeting", "retreat")):
         return "agenda"
@@ -94,6 +98,15 @@ def classify_doc_type(title: str) -> str:
         return "handbook"
     if "contract" in low or "agreement" in low or "mou" in low:
         return "contract"
+    # After the policy check, so "Budget Adoption Policy" is a policy — a rule
+    # about budgets, not a budget. (Policies scraped from a manual never reach
+    # here at all: they arrive already typed, and this only runs on 'other'.)
+    # Audits are deliberately NOT included: they are financial documents but
+    # not spending plans, and folding them in would mean "show me the budget"
+    # returns audit reports.
+    if any(k in low for k in ("budget", "financial statement", "tax report card",
+                              "fiscal accountability")):
+        return "budget"
     return "other"
 
 

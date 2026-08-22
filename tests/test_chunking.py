@@ -90,3 +90,32 @@ def test_oversize_item_is_split_with_unique_paths():
 def test_returns_chunk_objects():
     chunks = chunk_agenda_text(AGENDA)
     assert all(isinstance(c, Chunk) for c in chunks)
+
+
+def test_budget_and_transcript_are_classifiable_at_all():
+    # Both are DocType members, but the classifier had no rule for either, so
+    # 118 documents with "budget" in the title sat in 'other' — invisible to a
+    # doc_type='budget' filter. A type you can store but never derive is a
+    # silent hole in every coverage answer.
+    assert classify_doc_type("2026-2027 Adopted Budget") == "budget"
+    assert classify_doc_type("Budget Presentation (Spanish)") == "budget"
+    assert classify_doc_type("Property Tax Report Card 2026-27") == "budget"
+    assert classify_doc_type("Financial Statement FY25") == "budget"
+    assert classify_doc_type("Board Meeting Transcript 3-12-26") == "transcript"
+
+
+def test_a_policy_about_budgets_is_still_a_policy():
+    assert classify_doc_type("Budget Adoption Policy") == "policy"
+    assert classify_doc_type("6700-R Purchasing Regulation") == "policy"
+
+
+def test_a_transcript_beats_the_meeting_keywords():
+    # "board meeting" would otherwise make this an agenda.
+    assert classify_doc_type("Regular Board Meeting Transcript") == "transcript"
+
+
+def test_audits_are_not_folded_into_budget():
+    # An audit is a financial document but not a spending plan; counting it as
+    # a budget makes "show me the budget" return audit reports.
+    assert classify_doc_type("Independent Auditor Report 2025") == "other"
+    assert classify_doc_type("Claims Audit Report") == "other"

@@ -68,6 +68,10 @@ on:
         description: "Apply the schema first (safe to re-run; needed once on a fresh DB)"
         type: boolean
         default: false
+      reclassify:
+        description: "Instead of ingesting: recompute doc_type from the title for 'other' docs"
+        type: boolean
+        default: false
       tables_backfill:
         description: "Backfill table chunks into already-ingested docs (adds kind='table' only)"
         type: boolean
@@ -107,8 +111,16 @@ jobs:
           [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
           [ -n "$VOYAGE_API_KEY" ]  || { echo "VOYAGE_API_KEY secret is missing"; exit 1; }
           echo "secrets present (lengths only): db=${#SUPABASE_DB_URL} voyage=${#VOYAGE_API_KEY}"
+      - name: Reclassify doc_type in place
+        if: ${{ inputs.reclassify }}
+        run: |
+          uv run herald-ingest reclassify \
+            ${{ inputs.district != 'all' && format('--district "{0}"', inputs.district) || '' }} \
+            --report ingest-report.md \
+            ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}
       - name: Resolve the run to ingest
         id: resolve
+        if: ${{ !inputs.reclassify }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WF: ${{ inputs.from_workflow }}
@@ -137,15 +149,17 @@ jobs:
           echo "ingesting latest successful $WF run: $resolved"
           echo "-> https://github.com/${{ github.repository }}/actions/runs/$resolved" >> "$GITHUB_STEP_SUMMARY"
       - name: Download scrape artifacts (run ${{ steps.resolve.outputs.run_id }})
+        if: ${{ !inputs.reclassify }}
         uses: actions/download-artifact@v4
         with:
           run-id: ${{ steps.resolve.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: data/artifacts
       - name: Apply schema
-        if: ${{ inputs.init_db && !inputs.dry_run }}
+        if: ${{ inputs.init_db && !inputs.dry_run && !inputs.reclassify }}
         run: uv run herald-ingest init-db
       - name: Ingest
+        if: ${{ !inputs.reclassify }}
         run: |
           uv run herald-ingest ${{ inputs.tables_backfill && 'tables' || 'run' }} \
             --root data/artifacts \
