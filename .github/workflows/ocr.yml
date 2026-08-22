@@ -18,16 +18,30 @@ name: ocr
 #   SUPABASE_DB_URL, VOYAGE_API_KEY, and (engine=vision) ANTHROPIC_API_KEY
 #
 # Note: OCR needs the original files, which live in the scrape run's
-# artifacts (14-day retention). Run before they expire. For the teacher
-# CBAs, use the crawl-contracts download run id (e.g. 31863253727).
+# artifacts (14-day retention), so pick the workflow that downloaded them —
+# crawl-contracts for the teacher CBAs. The latest successful run of that
+# workflow is found automatically; run_id is only for reaching an older one,
+# and if the artifacts have expired you must re-run the crawl first.
 
 on:
   workflow_dispatch:
     inputs:
+      from_workflow:
+        description: "OCR the LATEST successful run of this workflow (no run id needed)"
+        type: choice
+        options:
+          - crawl-contracts
+          - crawl-sites
+          - scrape-all
+          - policy-fetch
+          - policy-boarddocs
+          - "(use run_id below)"
+        default: crawl-contracts
       run_id:
-        description: "Actions run id of the scrape run whose no-text docs to OCR"
-        required: true
+        description: "Specific run id — DIGITS ONLY, and only to reach an OLDER run"
+        required: false
         type: string
+        default: ""
       district:
         description: "District to scope to (all = every district)"
         type: choice
@@ -109,10 +123,46 @@ jobs:
             echo "ANTHROPIC_API_KEY secret is missing (needed for engine=vision)"; exit 1
           fi
           echo "secrets present (lengths only): db=${#SUPABASE_DB_URL} voyage=${#VOYAGE_API_KEY} anthropic=${#ANTHROPIC_API_KEY}"
-      - name: Download scrape artifacts (run ${{ inputs.run_id }})
+      - name: Resolve the run to OCR
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WF: ${{ inputs.from_workflow }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          # A run id typed into the wrong box used to reach download-artifact as
+          # "workflow run NaN" and fail with a bare "Not Found". Catch it here,
+          # where the message can say what actually went wrong.
+          if [ -n "$RUN_ID" ]; then
+            case "$RUN_ID" in
+              ''|*[!0-9]*)
+                echo "run_id must be digits only — got '$RUN_ID'." >&2
+                echo "That looks like a district. Leave run_id empty and use the" >&2
+                echo "'District to scope to' dropdown instead." >&2
+                exit 1 ;;
+            esac
+            echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "using run $RUN_ID (explicit)"
+            exit 0
+          fi
+          if [ "$WF" = "(use run_id below)" ]; then
+            echo "Pick a workflow, or paste a run id." >&2
+            exit 1
+          fi
+          resolved=$(curl -fsS \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/$WF.yml/runs?status=success&per_page=1" \
+            | jq -r '.workflow_runs[0].id // ""')
+          [ -n "$resolved" ] || { echo "No successful $WF run to OCR." >&2; exit 1; }
+          echo "run_id=$resolved" >> "$GITHUB_OUTPUT"
+          echo "using latest successful $WF run: $resolved"
+          echo "-> https://github.com/${{ github.repository }}/actions/runs/$resolved" >> "$GITHUB_STEP_SUMMARY"
+      - name: Download scrape artifacts (run ${{ steps.resolve.outputs.run_id }})
         uses: actions/download-artifact@v4
         with:
-          run-id: ${{ inputs.run_id }}
+          run-id: ${{ steps.resolve.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: data/artifacts
       - name: OCR
