@@ -1210,5 +1210,95 @@ def ocr(
         console.print(f"report: {report}")
 
 
+@app.command()
+def reclassify(
+    district: str | None = typer.Option(
+        None, help="Only this district slug.", callback=_clean_slug
+    ),
+    from_type: str = typer.Option(
+        "other", help="Only re-examine documents currently of this type."
+    ),
+    limit: int | None = typer.Option(None, help="Stop after N documents."),
+    report: str | None = typer.Option(None, help="Write a markdown summary here."),
+    dry_run: bool = typer.Option(True, help="Show what would change; write nothing."),
+) -> None:
+    """Recompute ``doc_type`` from the title for already-ingested documents.
+
+    ``classify_doc_type`` gained rules over time — budget and transcript were
+    missing entirely, so 118 documents with "budget" in their title sat in
+    ``other`` and were invisible to a ``doc_type='budget'`` filter. Fixing the
+    classifier only helps future ingests; this repairs the corpus in place.
+
+    Only documents currently typed ``--from-type`` are touched, so a type set
+    deliberately by a scraper (a policy from a manual, a contract from a union
+    site) is never second-guessed. ``chunks.doc_type`` is denormalized from the
+    document, so it is updated in the same transaction — otherwise retrieval
+    would filter on one value and the document list on another.
+    """
+    url = os.environ.get("SUPABASE_DB_URL", "")
+    if not url:
+        console.print("[red]SUPABASE_DB_URL is not set[/red]")
+        raise typer.Exit(1)
+
+    from herald.schools_db import connect_raw
+
+    where = ["d.ingest_status = 'ingested'", "d.doc_type = %s"]
+    params: list[object] = [from_type]
+    if district:
+        where.append("di.slug = %s")
+        params.append(district)
+    sql = (
+        "select d.id, di.slug, d.title, d.doc_type from documents d "
+        "join districts di on di.id = d.district_id where " + " and ".join(where) +
+        " order by di.slug, d.title"
+    )
+    if limit:
+        sql += f" limit {int(limit)}"
+
+    changed: Counter[str] = Counter()
+    per_district: Counter[str] = Counter()
+    examples: dict[str, tuple[str, str]] = {}
+    seen = 0
+
+    with connect_raw(url) as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+        seen = len(rows)
+        for doc_id, slug, title, current in rows:
+            new = classify_doc_type(title)
+            if new == current:
+                continue
+            changed[new] += 1
+            per_district[slug] += 1
+            examples.setdefault(new, (slug, title))
+            if dry_run:
+                continue
+            cur.execute("update documents set doc_type = %s where id = %s", (new, doc_id))
+            cur.execute("update chunks set doc_type = %s where document_id = %s", (new, doc_id))
+        if dry_run:
+            conn.rollback()
+        else:
+            conn.commit()
+
+    verb = "would reclassify" if dry_run else "reclassified"
+    console.print(f"examined {seen} document(s) of type {from_type!r}; "
+                  f"{verb} {sum(changed.values())}")
+    lines = [f"## Reclassify (`{from_type}`)", "",
+             f"Examined {seen}; {verb} {sum(changed.values())}.", "",
+             "| new doc_type | documents | example |", "|---|---:|---|"]
+    for t, n in changed.most_common():
+        slug, title = examples[t]
+        console.print(f"  -> {t}: {n}   e.g. {slug} {title[:60]!r}")
+        lines.append(f"| {t} | {n} | {slug} — {title[:60]} |")
+    if per_district:
+        lines += ["", "| district | reclassified |", "|---|---:|"]
+        lines += [f"| {s} | {n} |" for s, n in per_district.most_common()]
+    if dry_run:
+        lines += ["", "_Dry run — nothing written._"]
+    if report:
+        Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        console.print(f"report: {report}")
+
+
 if __name__ == "__main__":
     app()
