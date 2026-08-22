@@ -219,12 +219,21 @@ Paused mid-flight to fix the policy gap below. To resume, this is the state:
 - **Known-good side effect:** the candidate-filter fix took tarrytowns from
   0 → 28 candidate tables and yielded **12 stipend rows** from a personnel
   agenda, clean audit. Board-docs tables were invisible before it.
-- **Still open:** White Plains' CBA is born-digital with *image-only* pages
-  (49, 58–66) holding its grids; document-level `no_text` never flags it, so
-  **page-level OCR** remains unbuilt. Port Chester's CBA is fully scanned
-  (40 pages, zero text). `tarrytownlearningcenter.org` turns out to host
-  contracts for *multiple* districts — a better acquisition target than
-  eight separate union sites.
+- **Page-level OCR is now built** (2026-08-21). White Plains' CBA is
+  born-digital and full of text, so the document-level `no_text` gate never
+  fired — while pages 49 and 58–66, which hold the salary grids, are flat
+  images that extract as nothing. The document looked fine and the grids were
+  simply absent. `pdf_text.image_only_pages` finds them (little text **and**
+  an image covering ≥45% of the page — text alone flags blank dividers,
+  images alone flag every letterhead); both OCR engines take a `pages=`
+  subset, so a 70-page CBA costs 9 pages of transcription, not 70; and
+  `merge_extracted` folds the recovered grids into the born-digital prose
+  rather than replacing it. Opt-in via `herald-ingest ocr --partial` and the
+  `partial` toggle on the `ocr` workflow, because it costs money and most
+  text-bearing documents genuinely need nothing.
+- **Still open:** Port Chester's CBA is fully scanned (40 pages, zero text).
+  `tarrytownlearningcenter.org` turns out to host contracts for *multiple*
+  districts — a better acquisition target than eight separate union sites.
 
 ---
 

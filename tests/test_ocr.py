@@ -265,7 +265,7 @@ def test_ocr_mode_vision_writes_table_chunks(tmp_path):
                     f"{60000 + s * 1700} |" for s in range(1, 12))
     )
 
-    def fake_vision(path):
+    def fake_vision(path, pages=None):
         return ocr_mod.ExtractedDoc(
             text="Teacher salary schedule per the 2022-2025 agreement. " * 6,
             tables=[ocr_mod.TableBlock(page=1, markdown=table_md)],
@@ -299,7 +299,7 @@ def test_reocr_replaces_chunks_of_already_ingested_scan(tmp_path):
 
     grid = "| Step | MA+30 |\n| --- | --- |\n| 1 | 82000 |\n| 2 | 84000 |"
 
-    def fake_vision(path):
+    def fake_vision(path, pages=None):
         return ocr_mod.ExtractedDoc(
             text="Teacher salary schedule per the 2022-2025 agreement. " * 6,
             tables=[ocr_mod.TableBlock(page=1, markdown=grid)],
@@ -327,7 +327,7 @@ def test_ocr_mode_real_run_recovers_and_writes(tmp_path):
     conn, voyage = FakeConn(), FakeVoyage()
     ocr_text = "1. Call to Order\nThe board convened at 7 PM. " * 20
 
-    def fake_ocr(path):
+    def fake_ocr(path, pages=None):
         return ocr_mod.ExtractedText(text=ocr_text, page_count=4)
 
     stats = asyncio.run(ingest_manifests(
@@ -338,3 +338,156 @@ def test_ocr_mode_real_run_recovers_and_writes(tmp_path):
     assert any("insert into chunks" in sql for sql, _ in conn.many)
     marks = [p for sql, p in conn.calls if "update documents set" in sql]
     assert marks and marks[0][0] == "ingested"
+
+
+def _mixed_pdf(path, *, text_pages=2, image_pages=(3,)):
+    """A born-digital PDF with a flat image pasted on some pages.
+
+    The White Plains CBA shape: plenty of text overall, so the document-level
+    "is this scanned?" gate never fires, but the salary grids are images.
+    """
+    import fitz
+
+    doc = fitz.open()
+    total = text_pages + len(image_pages)
+    img_png = _noise_png(600, 800)
+    for pno in range(1, total + 1):
+        page = doc.new_page(width=612, height=792)
+        if pno in image_pages:
+            page.insert_image(fitz.Rect(20, 20, 592, 772), stream=img_png)
+        else:
+            page.insert_text((72, 100), "Article " + str(pno) + ". " + ("Terms follow. " * 40))
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+def _noise_png(w, h):
+    import io as _io
+
+    from PIL import Image
+
+    img = Image.new("L", (w, h), 220)
+    for x in range(0, w, 7):          # some ink so it is not a blank image
+        for y in range(0, h, 11):
+            img.putpixel((x, y), 30)
+    buf = _io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_image_only_pages_finds_the_scan_inside_a_readable_pdf(tmp_path):
+    from herald.pdf_text import extract_pdf, image_only_pages
+
+    pdf = _mixed_pdf(tmp_path / "cba.pdf", text_pages=2, image_pages=(3, 4))
+    # the document as a whole reads fine — this is why nobody noticed
+    assert extract_pdf(pdf).content_chars > 200
+    assert image_only_pages(pdf) == [3, 4]
+
+
+def test_a_text_page_with_a_letterhead_is_not_an_image_page(tmp_path):
+    import fitz
+
+    from herald.pdf_text import image_only_pages
+
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_image(fitz.Rect(20, 20, 120, 80), stream=_noise_png(100, 60))  # small logo
+    page.insert_text((72, 200), "Real text on the page. " * 30)
+    pdf = tmp_path / "letterhead.pdf"
+    doc.save(str(pdf))
+    doc.close()
+    assert image_only_pages(pdf) == []
+
+
+def test_a_blank_page_is_not_an_image_page(tmp_path):
+    import fitz
+
+    from herald.pdf_text import image_only_pages
+
+    doc = fitz.open()
+    doc.new_page(width=612, height=792)
+    pdf = tmp_path / "blank.pdf"
+    doc.save(str(pdf))
+    doc.close()
+    assert image_only_pages(pdf) == []
+
+
+def test_rendering_only_the_scanned_pages_skips_the_rest(tmp_path):
+    from herald.ocr import _render_pages
+
+    pdf = _mixed_pdf(tmp_path / "cba.pdf", text_pages=3, image_pages=(4, 5))
+    rendered, page_count = _render_pages(pdf, dpi=50, max_pages=None, only=[4, 5])
+    assert [p for p, _ in rendered] == [4, 5]
+    assert page_count == 5              # true length, not the rendered count
+
+
+def test_merge_keeps_the_born_digital_text_and_adds_the_recovered_grid():
+    from herald.pdf_text import ExtractedDoc, TableBlock, merge_extracted
+
+    base = ExtractedDoc(text="Article 1. Terms.", tables=[], page_count=70)
+    add = ExtractedDoc(text="", tables=[TableBlock(page=49, markdown="| BA | MA |")],
+                       page_count=1)
+    merged = merge_extracted(base, add)
+    assert "Article 1. Terms." in merged.text
+    assert [t.page for t in merged.tables] == [49]
+    assert merged.page_count == 70      # the base document's length wins
+
+
+def test_partial_ocr_recovers_a_grid_from_a_document_that_reads_fine(tmp_path):
+    # The White Plains failure: a born-digital CBA whose salary schedules are
+    # flat images. It sails past the document-level "is this scanned?" gate,
+    # so before --partial its grids were simply absent from the corpus and
+    # nothing reported a problem.
+    from tests.test_ingest_schools import FakeConn, FakeVoyage
+
+    raw = tmp_path / "data" / "raw"
+    (raw / "white-plains" / "contract").mkdir(parents=True)
+    pdf = raw / "white-plains" / "contract" / "aa_cba.pdf"
+    _mixed_pdf(pdf, text_pages=3, image_pages=(4, 5))
+    m = raw / "manifest.jsonl"
+    entry = _entry(str(pdf))
+
+    asked: list = []
+
+    def fake_ocr(path, pages=None):
+        asked.append(pages)
+        return ocr_mod.ExtractedDoc(
+            text="",
+            tables=[ocr_mod.TableBlock(page=p, markdown="| Step | BA | MA |\n|---|---|---|\n"
+                                                        "| 1 | 63,541 | 68,000 |")
+                    for p in (pages or [])],
+            page_count=len(pages or []),
+        )
+
+    conn, voyage = FakeConn(), FakeVoyage()
+    stats = asyncio.run(ingest_manifests(
+        [(entry, m)], conn=conn, voyage=voyage,
+        ocr_mode=True, ocr_fn=fake_ocr, partial_ocr=True,
+    ))
+
+    assert asked == [[4, 5]]              # only the scanned pages were paid for
+    assert stats.docs_partial_ocr == 1
+    assert stats.docs_ingested == 1
+    assert stats.docs_skipped == 0        # NOT written off as "has-text"
+
+
+def test_without_partial_the_same_document_is_still_skipped(tmp_path):
+    # Guards the default: page-level OCR costs money, so it is opt-in, and a
+    # normal OCR pass must keep ignoring documents that already have text.
+    from tests.test_ingest_schools import FakeConn, FakeVoyage
+
+    raw = tmp_path / "data" / "raw"
+    (raw / "white-plains" / "contract").mkdir(parents=True)
+    pdf = raw / "white-plains" / "contract" / "aa_cba.pdf"
+    _mixed_pdf(pdf, text_pages=3, image_pages=(4, 5))
+
+    def fake_ocr(path, pages=None):
+        raise AssertionError("should not be called")
+
+    stats = asyncio.run(ingest_manifests(
+        [(_entry(str(pdf)), raw / "manifest.jsonl")],
+        conn=FakeConn(), voyage=FakeVoyage(),
+        ocr_mode=True, ocr_fn=fake_ocr, partial_ocr=False,
+    ))
+    assert stats.docs_skipped == 1 and stats.docs_partial_ocr == 0

@@ -47,6 +47,10 @@ on:
         type: choice
         options: ["tesseract", "vision"]
         default: "vision"
+      partial:
+        description: "Also OCR scanned pages INSIDE docs that otherwise have text"
+        type: boolean
+        default: false
       reocr:
         description: "Re-OCR docs already OCR'd (upgrade a Tesseract pass to vision), replacing their chunks"
         type: boolean
@@ -117,6 +121,7 @@ jobs:
             --root data/artifacts \
             --engine "${{ inputs.engine }}" \
             --dpi "${{ inputs.dpi }}" \
+            ${{ inputs.partial && '--partial' || '--no-partial' }} \
             ${{ inputs.reocr && '--reocr' || '--no-reocr' }} \
             ${{ inputs.district != 'all' && format('--district "{0}"', inputs.district) || '' }} \
             ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
