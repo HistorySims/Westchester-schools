@@ -359,6 +359,35 @@ def test_tables_backfill_skips_not_yet_ingested(tmp_path, monkeypatch):
     assert conn.many == []                # nothing inserted
 
 
+def test_no_text_document_records_its_page_count(tmp_path):
+    # A scanned PDF is marked no_text — and no_text is exactly the set we may
+    # later pay a per-page vision bill to OCR. Marking the status without the
+    # page count left the entire OCR backlog costed at NULL: the database knew
+    # which documents needed OCR but not how big any of them was.
+    raw = tmp_path / "data" / "raw"
+    pdf = raw / "port-chester-rye" / "minutes" / "scanned.pdf"
+    pdf.parent.mkdir(parents=True)
+    doc = fitz.open()
+    for _ in range(3):
+        doc.new_page()        # image-less, text-less: extracts as nothing
+    doc.save(str(pdf))
+    doc.close()
+
+    conn = FakeConn()
+    stats = asyncio.run(ingest_manifests(
+        [(_entry(str(pdf), district="port-chester-rye"), raw / "manifest.jsonl")],
+        conn=conn, voyage=FakeVoyage(),
+    ))
+    assert stats.docs_no_text == 1 and stats.chunks_written == 0
+
+    marks = [p for sql, p in conn.calls if "update documents set" in sql]
+    assert marks, "the document was never marked"
+    status, _err, _date, _type, page_count, text_chars = marks[0][:6]
+    assert status == "no_text"
+    assert page_count == 3, "page count dropped — OCR cost is unknowable without it"
+    assert text_chars == 0
+
+
 def test_ingest_skips_already_ingested(tmp_path):
     class DoneCursor(FakeCursor):
         def execute(self, sql, params=None):
