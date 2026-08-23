@@ -69,6 +69,43 @@ Use **two or more** `must_match` strings where you can. One is often a false
 pass: "18 unexcused" alone could come from a sentence about mailing a letter,
 not about denying credit.
 
+### `must_not_match` — the other half
+
+Recall is a weak test once a corpus is large. Every district has a student
+device policy *and* a staff cell-phone reimbursement policy, and they share
+almost all their vocabulary. A question about students that returns the
+reimbursement policy is well-retrieved, plausible, and wrong — and a suite
+that only checks recall scores it as a pass.
+
+```json
+{"district": "white-plains",
+ "must_match": ["sole grounds for the suspension"],
+ "must_not_match": ["CELLPHONE REIMBURSEMENT"]}
+```
+
+Reach for this whenever the right and wrong answers are near neighbours in
+embedding space. The report distinguishes the three outcomes — nothing came
+back, the right document came back incomplete, the wrong document came back —
+because they have different fixes.
+
+## What each case is actually testing
+
+Acquisition cases ("did the document survive") are only one failure mode, and
+the one we have already fixed. The suite deliberately spans others:
+
+| case | failure mode |
+|---|---|
+| `attendance-credit-threshold` | acquisition — the original policy gap |
+| `dasa-attachment-only` | a policy whose entire text is an attachment |
+| `identical-twin-policy` | content-hash dedupe dropping a real policy |
+| `word-attachment-regulation` | a format PyMuPDF cannot open |
+| `student-device-rule-norm` | **precision** — four different policy numbers for one mandate, against four staff policies that share the vocabulary |
+| `vocabulary-mismatch-therapy-dogs` | **semantic recall** — "THERAPY DOGS" vs "Use of Assistance Animals". If this passes on FTS alone the embedding leg is doing nothing |
+| `needle-in-a-long-document` | **chunking** — one sentence about ChatGPT inside a very long Code of Conduct |
+| `regulation-not-the-policy` | **document choice** — the procedure is in the `-R`, not the policy it implements |
+| `salary-grid-recovered` | OCR of a rotated grid (**expected to fail** until the re-OCR runs) |
+| `negative-control-…` | confabulation |
+
 ## A failing case is not always a bug
 
 `salary-grid-recovered` is expected to fail until the Tarrytowns vision-OCR

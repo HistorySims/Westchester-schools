@@ -119,3 +119,43 @@ def test_audits_are_not_folded_into_budget():
     # a budget makes "show me the budget" return audit reports.
     assert classify_doc_type("Independent Auditor Report 2025") == "other"
     assert classify_doc_type("Claims Audit Report") == "other"
+
+
+def test_a_cba_named_after_a_union_acronym_is_still_a_contract():
+    # "Tarrytown-TAT-2022-2025.pdf" matches no keyword — no rule can be
+    # expected to know TAT is the Tarrytown Association of Teachers. Judged on
+    # the filename alone it stayed 'other', invisible to every
+    # doc_type='contract' filter, while its salary grid sat in the corpus.
+    url = "https://tarrytownlearningcenter.org/wp-content/uploads/contracts/tat.pdf"
+    assert classify_doc_type("Tarrytown-TAT-2022-2025.pdf") == "other"
+    assert classify_doc_type("Tarrytown-TAT-2022-2025.pdf", url) == "contract"
+
+
+def test_the_url_test_is_narrower_than_the_title_test():
+    # A path segment is structural evidence; prose vocabulary in a URL is not.
+    # A newsletter ABOUT negotiations must not be filed as a contract.
+    assert classify_doc_type("Some Newsletter",
+                             "https://x.org/news/contract-negotiations-update") == "other"
+    assert classify_doc_type("Board Update",
+                             "https://x.org/news/budget-vote-results") == "other"
+    assert classify_doc_type("2026-27 Overview",
+                             "https://x.org/district/budget/overview.pdf") == "budget"
+
+
+def test_the_title_still_wins_over_the_url():
+    # The URL is a fallback, consulted only when the title says nothing.
+    assert classify_doc_type("January 2024 Minutes",
+                             "https://x.org/contracts/jan.pdf") == "minutes"
+
+
+def test_both_classifiers_share_one_contract_vocabulary():
+    # They drifted: site.py knew "collective bargaining" and "federation of
+    # teachers" meant a contract and the ingest-time classifier did not, so
+    # anything reaching ingest as 'other' stayed 'other'.
+    from herald.scrape.models import DocType
+    from herald.scrape.site import classify_link
+
+    for title in ("Collective Bargaining Agreement 2022-25", "TAT Salary Schedule",
+                  "Federation of Teachers contract", "Memorandum of Agreement"):
+        assert classify_doc_type(title) == "contract", title
+        assert classify_link("https://x.org/a.pdf", title) is DocType.contract, title

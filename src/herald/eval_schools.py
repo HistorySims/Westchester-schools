@@ -53,6 +53,11 @@ class Expectation:
     district: str
     must_match: tuple[str, ...]
     source: str = ""
+    #: Strings whose presence means the WRONG passage came back. Recall alone
+    #: is a weak test once a corpus is large: a question about students and
+    #: phones will happily return the staff cell-phone reimbursement policy,
+    #: which is a plausible, well-retrieved, wrong answer.
+    must_not_match: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -72,6 +77,7 @@ class ExpectationResult:
     expectation: Expectation
     passed: bool
     missing: list[str] = field(default_factory=list)
+    forbidden: list[str] = field(default_factory=list)
     chunks_seen: int = 0
 
     @property
@@ -80,7 +86,12 @@ class ExpectationResult:
             return "ok"
         if not self.chunks_seen:
             return "no evidence retrieved for this district"
-        return "retrieved, but missing: " + ", ".join(repr(m) for m in self.missing)
+        bits = []
+        if self.missing:
+            bits.append("missing: " + ", ".join(repr(m) for m in self.missing))
+        if self.forbidden:
+            bits.append("wrong passage, matched: " + ", ".join(repr(m) for m in self.forbidden))
+        return "retrieved, but " + "; ".join(bits)
 
 
 @dataclass
@@ -119,6 +130,7 @@ def load_cases(path: str | Path = DEFAULT_CASES) -> list[EvalCase]:
                     district=e["district"],
                     must_match=tuple(e["must_match"]),
                     source=e.get("source", ""),
+                    must_not_match=tuple(e.get("must_not_match", ())),
                 )
                 for e in c.get("expect_present", [])
             ),
@@ -139,10 +151,12 @@ def grade_case(case: EvalCase, by_district: dict[str, list[str]]) -> CaseResult:
         chunks = by_district.get(exp.district, [])
         haystack = normalize(" \n ".join(chunks))
         missing = [m for m in exp.must_match if normalize(m) not in haystack]
+        forbidden = [m for m in exp.must_not_match if normalize(m) in haystack]
         res.results.append(ExpectationResult(
             expectation=exp,
-            passed=not missing and bool(chunks),
+            passed=not missing and not forbidden and bool(chunks),
             missing=missing,
+            forbidden=forbidden,
             chunks_seen=len(chunks),
         ))
     if case.expect_no_evidence:

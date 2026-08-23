@@ -30,6 +30,33 @@ MERGE_MIN = 250       # a segment smaller than this merges into its neighbor
 TARGET = 1600         # a section at/under this is emitted as one chunk
 MAX_CHARS = 3200      # a chunk over this is window-split
 
+# Shared with herald.scrape.site so the scrape-time and ingest-time
+# classifiers cannot drift apart. They had: site.py knew that "collective
+# bargaining" and "federation of teachers" mean a contract, and this one did
+# not, so a CBA that reached ingest as 'other' stayed 'other' — invisible to
+# every doc_type='contract' filter while its salary grid sat in the corpus.
+CONTRACT_WORDS = (
+    r"collective\s*bargain|negotiat|bargaining\s*unit|\bcba\b|\bmou\b|\bmoa\b"
+    r"|memorandum of (agreement|understanding)|\bcontract\b|\bagreement\b"
+    r"|salary\s*schedule|step\s*schedule|teachers?\s*associat|faculty\s*associat"
+    r"|federation of teachers"
+)
+_CONTRACT_RE = re.compile(CONTRACT_WORDS, re.I)
+
+# The URL gets a NARROWER test than the title. A path segment is structural —
+# a file under /contracts/ is a contract — while prose vocabulary is not: a
+# newsletter at /news/contract-negotiations-update is about a contract, and
+# typing it as one would put a press release in the salary corpus.
+_URL_TYPE_RES: tuple[tuple[re.Pattern[str], str], ...] = (
+    # The trailing group must END the segment: a hyphen would let
+    # /news/contract-negotiations-update match, filing a press release as a
+    # contract.
+    (re.compile(r"/(?:contracts?|cba|collective[-_]?bargaining"
+                r"|negotiated[-_]?agreements?)(?:/|\.|$)", re.I), "contract"),
+    (re.compile(r"/handbooks?(?:/|\.|$)", re.I), "handbook"),
+    (re.compile(r"/budgets?(?:/|\.|$)", re.I), "budget"),
+)
+
 _MONTHS = (
     "January|February|March|April|May|June|July|August|September|October|November|December"
 )
@@ -81,7 +108,16 @@ def parse_meeting_date(text: str) -> date | None:
         return None
 
 
-def classify_doc_type(title: str) -> str:
+def classify_doc_type(title: str, source_url: str = "") -> str:
+    """Best guess at a document's type from its title, and its URL if known.
+
+    The URL is evidence the title often lacks. A teacher contract saved as
+    "Tarrytown-TAT-2022-2025.pdf" matches no keyword at all — no rule can be
+    expected to know that TAT is the Tarrytown Association of Teachers — but
+    it was downloaded from a page whose path says "contracts". Judging on the
+    filename alone left that CBA typed 'other', invisible to every
+    doc_type='contract' filter, with its salary grid sitting in the corpus.
+    """
     low = re.sub(r"[-_]+", " ", title.lower())
     if "minute" in low:
         return "minutes"
@@ -96,7 +132,7 @@ def classify_doc_type(title: str) -> str:
         return "policy"
     if "handbook" in low:
         return "handbook"
-    if "contract" in low or "agreement" in low or "mou" in low:
+    if _CONTRACT_RE.search(low):
         return "contract"
     # After the policy check, so "Budget Adoption Policy" is a policy — a rule
     # about budgets, not a budget. (Policies scraped from a manual never reach
@@ -107,6 +143,10 @@ def classify_doc_type(title: str) -> str:
     if any(k in low for k in ("budget", "financial statement", "tax report card",
                               "fiscal accountability")):
         return "budget"
+    # Nothing in the title. Fall back to where the file was published.
+    for pattern, doc_type in _URL_TYPE_RES:
+        if pattern.search(source_url or ""):
+            return doc_type
     return "other"
 
 
