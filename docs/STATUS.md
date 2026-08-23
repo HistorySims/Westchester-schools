@@ -636,6 +636,30 @@ attachment sprawl (6,558 chunks — it backs up nearly every consent-agenda
 item as its own file), not a corpus-wide problem. Worth remembering before
 reading `other` as a quality signal.
 
+**And 898 of the 900 come from BoardDocs** — so this was never really a
+classifier problem. Fetching a live agenda showed the label was there all
+along and being discarded: attachments sit in `div.print-files` inside
+`div.container.item.agendaorder`, and the item's own heading says plainly
+what the file is.
+
+| file | agenda item |
+|---|---|
+| `Min Org 7.9.26.pdf` | Minutes Reorganization and Regular Meeting July 9, 2026 |
+| `Draft Policy 8636 - Artificial Intelligence.pdf` | Policy 8636 Artificial Intelligence (AI) |
+| `2026-2027 Mid-Westchester Consortium…` | Special Education **Agreement** |
+
+`FileRef` now carries `item_title`, and it becomes the document's title as
+well as a classification signal. On the sample agenda that retyped 1 of 15
+files — `Min Org 7.9.26.pdf` defeats even the abbreviation rule, since "min"
+is followed by "org" rather than a date — but it improved the **title of all
+15**, which is the bigger win: a citation reading "Minutes Reorganization and
+Regular Meeting July 9, 2026" beats one reading "Min Org 7.9.26.pdf
+(3,798 KB)". Many of the 898 are genuinely miscellaneous (club charters,
+asset disposals) and will stay `other`, correctly.
+
+This only affects **future** BoardDocs crawls — existing documents keep the
+titles they were ingested with. A re-crawl is what would apply it.
+
 ### An open taxonomy question
 
 `treasurer's` (43) is a real, recurring document class with nowhere to go.

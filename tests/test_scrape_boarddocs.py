@@ -293,3 +293,73 @@ def test_download_docs_is_idempotent(httpx_mock, tmp_path):
     assert second.downloaded == 0
     assert second.skipped_seen == 3
     assert len(Manifest(mpath).entries()) == 3  # no duplicate rows
+
+
+# Trimmed from a live tufsd agenda (PRINT-AgendaDetailed). The shape that
+# matters: attachments sit in div.print-files inside div.container.item
+# .agendaorder, and the item's own heading is the first bold block.
+AGENDA_WITH_ITEMS = """
+<div tabindex="0" class="container item agendaorder">
+  <div style="font-weight: bold;">Subject 9.2 Minutes Reorganization and Regular
+     Meeting July 9, 2026</div>
+  <div role="heading" class="print-files">
+    <div>File Attachments</div>
+    <div class="public-file print-file" unique="DWV1">
+      <a target="_blank" href="/ny/tufsd/Board.nsf/files/DWV1/$file/Min%20Org%207.9.26.pdf">Min
+         Org 7.9.26.pdf (3,798 KB)</a></div>
+  </div>
+</div>
+<div tabindex="0" class="container item agendaorder">
+  <div style="font-weight: bold;">Subject 6.3 Consideration for a Memorial Plaque</div>
+  <div class="print-files">
+    <div class="public-file"><a href="/ny/tufsd/Board.nsf/files/DWV2/$file/JP%20playground.pdf">JP
+       playground dedication.pdf (2,916 KB)</a></div>
+    <div class="public-file"><a href="/ny/tufsd/Board.nsf/files/DWV3/$file/Memo.pdf">Memo to
+       BOE, memorial plaque.pdf (93 KB)</a></div>
+  </div>
+</div>
+"""
+TUFSD_BASE = "https://go.boarddocs.com/ny/tufsd/Board.nsf"
+
+
+def test_an_attachment_carries_the_agenda_item_it_hangs_under():
+    from herald.scrape.boarddocs import parse_agenda_files
+
+    refs = parse_agenda_files(AGENDA_WITH_ITEMS, base_url=TUFSD_BASE)
+    assert len(refs) == 3
+    assert refs[0].item_title == (
+        "Minutes Reorganization and Regular Meeting July 9, 2026"
+    )
+    # BoardDocs' own numbering chrome is not part of the subject
+    assert not refs[0].item_title.lower().startswith("subject")
+    # two files under one item both get it
+    assert refs[1].item_title == refs[2].item_title == "Consideration for a Memorial Plaque"
+
+
+def test_the_agenda_item_types_a_file_its_own_name_cannot():
+    # "Min Org 7.9.26.pdf" defeats even the abbreviation rule — "min" is
+    # followed by "org", not a date. The agenda item says "Minutes" outright.
+    from herald.chunking import classify_doc_type
+    from herald.scrape.boarddocs import parse_agenda_files
+
+    ref = parse_agenda_files(AGENDA_WITH_ITEMS, base_url=TUFSD_BASE)[0]
+    assert classify_doc_type(ref.title) == "other"
+    assert classify_doc_type(f"{ref.item_title} {ref.title}") == "minutes"
+
+
+def test_best_title_prefers_the_item_and_falls_back_to_the_filename():
+    from herald.scrape.boarddocs import FileRef, parse_agenda_files
+
+    ref = parse_agenda_files(AGENDA_WITH_ITEMS, base_url=TUFSD_BASE)[0]
+    # a citation reads the subject, not "Min Org 7.9.26.pdf (3,798 KB)"
+    assert ref.best_title.startswith("Minutes Reorganization")
+    assert FileRef(url="u", title="only.pdf").best_title == "only.pdf"
+
+
+def test_an_attachment_outside_an_agenda_item_still_parses():
+    from herald.scrape.boarddocs import parse_agenda_files
+
+    loose = '<a href="/ny/tufsd/Board.nsf/files/X/$file/loose.pdf">loose.pdf</a>'
+    refs = parse_agenda_files(loose, base_url=TUFSD_BASE)
+    assert len(refs) == 1 and refs[0].item_title == ""
+    assert refs[0].best_title == "loose.pdf"

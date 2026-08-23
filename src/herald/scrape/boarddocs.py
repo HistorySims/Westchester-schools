@@ -98,6 +98,17 @@ class Meeting:
 class FileRef:
     url: str
     title: str
+    #: The agenda item this attachment hangs under, e.g. "Minutes
+    #: Reorganization and Regular Meeting July 9, 2026". BoardDocs names the
+    #: file itself "Min Org 7.9.26.pdf" — meaningless to a classifier and
+    #: worse as a citation — while the item states plainly what it is. 898 of
+    #: the corpus's 900 untyped documents are BoardDocs attachments, and this
+    #: is the label that was being thrown away.
+    item_title: str = ""
+
+    @property
+    def best_title(self) -> str:
+        return self.item_title or self.title
 
 
 @dataclass(frozen=True)
@@ -402,6 +413,32 @@ def _files_from_json(data: object, *, base_url: str) -> list[FileRef]:
     return out
 
 
+#: BoardDocs prefixes every agenda item heading with "Subject 9.2 " — its own
+#: numbering chrome, not part of the subject.
+_SUBJECT_PREFIX = re.compile(r"^\s*subject\s+[\d.]+\s*", re.I)
+
+
+def _item_title_for(anchor) -> str:
+    """The agenda item an attachment sits under, if it can be found.
+
+    Attachments live in ``div.print-files`` inside
+    ``div.container.item.agendaorder``; the item's own heading is the first
+    bold block in that container.
+    """
+    item = anchor.find_parent("div", class_="agendaorder")
+    if item is None:
+        return ""
+    head = item.find(
+        lambda t: t.name == "div" and "font-weight: bold" in (t.get("style") or "")
+    )
+    if head is None:
+        return ""
+    # Real headings wrap across source lines, so the inner newline and indent
+    # survive get_text() and would land in the document title verbatim.
+    text = re.sub(r"\s+", " ", head.get_text(" ", strip=True))
+    return _SUBJECT_PREFIX.sub("", text).strip()
+
+
 def _files_from_html(agenda_html: str, *, base_url: str) -> list[FileRef]:
     soup = BeautifulSoup(agenda_html, "html.parser")
     seen: set[str] = set()
@@ -415,7 +452,7 @@ def _files_from_html(agenda_html: str, *, base_url: str) -> list[FileRef]:
             continue
         seen.add(url)
         title = a.get_text(strip=True) or a.get("title") or filename_of(url)
-        out.append(FileRef(url=url, title=title))
+        out.append(FileRef(url=url, title=title, item_title=_item_title_for(a)))
     return out
 
 
@@ -642,10 +679,15 @@ def iter_documents(
             continue
         for ref in files:
             fname = filename_of(ref.url)
+            # The agenda item leads: it says "Minutes Reorganization and
+            # Regular Meeting July 9, 2026" where the file says
+            # "Min Org 7.9.26.pdf". Better for the classifier and far better
+            # as the label a citation shows. The filename still rides along
+            # for classification, and still names the file on disk.
             yield ScrapedDoc(
                 district=district,
-                doc_type=classify_filename(f"{ref.title} {fname}"),
-                title=ref.title,
+                doc_type=classify_filename(f"{ref.item_title} {ref.title} {fname}"),
+                title=ref.best_title,
                 source_url=ref.url,
                 date=meeting.date,
                 meeting_id=meeting.unique,
