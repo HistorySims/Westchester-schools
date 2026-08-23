@@ -179,7 +179,7 @@ def prepare_document(
     )
     doc_type = str(entry.doc_type)
     if doc_type == "other":
-        doc_type = classify_doc_type(entry.title)
+        doc_type = classify_doc_type(entry.title, entry.source_url)
     doc_meta = dict(
         district=entry.district,
         meeting_date=meeting_date,
@@ -1284,7 +1284,7 @@ def reclassify(
         where.append("di.slug = %s")
         params.append(district)
     sql = (
-        "select d.id, di.slug, d.title, d.doc_type from documents d "
+        "select d.id, di.slug, d.title, d.doc_type, d.source_url from documents d "
         "join districts di on di.id = d.district_id where " + " and ".join(where) +
         " order by di.slug, d.title"
     )
@@ -1300,8 +1300,8 @@ def reclassify(
         cur.execute(sql, params)
         rows = cur.fetchall()
         seen = len(rows)
-        for doc_id, slug, title, current in rows:
-            new = classify_doc_type(title)
+        for doc_id, slug, title, current, source_url in rows:
+            new = classify_doc_type(title, source_url or "")
             if new == current:
                 continue
             changed[new] += 1

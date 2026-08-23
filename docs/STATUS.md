@@ -212,10 +212,25 @@ Paused mid-flight to fix the policy gap below. To resume, this is the state:
   default and the budget covered thinking + output together, so the one dense
   rotated grid page burned it on thinking and emitted nothing, unflagged.
   Fixed: 32k budget, streaming, loud `stop_reason` warning.
-- **Not yet verified.** The re-OCR of tarrytowns with those fixes has *not*
-  been run. Next step on resume: `ocr` (vision, reocr, tarrytowns) →
-  `extract --reextract`, and check the grid's known values survive
-  (Appendix A step 1 BA = 63,541 … step 17 DR = 146,177).
+- **VERIFIED 2026-08-22.** The re-OCR ran (42 seen, 2 recovered, 118 chunks)
+  and Appendix A came back as a real Markdown table:
+  `| Step | 2022 - 23 BA | BA15 | BA30 (Frozen) | MA | … | DR |` /
+  `| 1 | 63,541 | 66,399 | 69,229 | 70,961 | …` — the pinned step-1 BA value,
+  all twelve lanes, school year in the header. The `max_tokens` fix works.
+  Next: `extract --reextract` to read it into `salary_schedule`.
+- **The same run exposed a new bug.** A `doc_type='contract'` query for
+  tarrytowns returned six table chunks and *none* of them the grid — because
+  `Tarrytown-TAT-2022-2025.pdf` is typed **`other`**. It matches no keyword,
+  and no rule can be expected to know TAT is the Tarrytown Association of
+  Teachers. Two causes, both fixed: the ingest-time and scrape-time
+  classifiers had drifted apart (`site.py` knew "collective bargaining" and
+  "federation of teachers" meant a contract; `classify_doc_type` knew only
+  `contract|agreement|mou`), and neither consulted the **URL**, which is
+  where the evidence actually was — the file sits under `/contracts/`. The
+  vocabulary is now shared, and the URL is a fallback with a deliberately
+  *narrower* test: a path segment must end, so `/news/contract-negotiations`
+  no longer files a press release as a contract. `herald-extract` was never
+  affected — it selects on content keywords, not `doc_type`.
 - **Known-good side effect:** the candidate-filter fix took tarrytowns from
   0 → 28 candidate tables and yielded **12 stipend rows** from a personnel
   agenda, clean audit. Board-docs tables were invisible before it.

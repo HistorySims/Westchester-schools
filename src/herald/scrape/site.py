@@ -16,6 +16,7 @@ from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
+from herald.chunking import CONTRACT_WORDS
 from herald.scrape.core import Fetcher
 from herald.scrape.models import DocType, ScrapedDoc
 
@@ -24,11 +25,7 @@ logger = logging.getLogger(__name__)
 # URL/anchor keyword -> doc type, in priority order (first match wins).
 _RULES: list[tuple[re.Pattern[str], DocType]] = [
     (re.compile(r"handbook", re.I), DocType.handbook),
-    (re.compile(r"collective\s*bargain|negotiat|bargaining\s*unit|\bcba\b|\bmou\b|\bmoa\b"
-                r"|memorandum of (agreement|understanding)|\bcontract\b|\bagreement\b"
-                r"|salary\s*schedule|step\s*schedule|teachers?\s*associat|faculty\s*associat"
-                r"|federation of teachers", re.I),
-     DocType.contract),
+    (re.compile(CONTRACT_WORDS, re.I), DocType.contract),
     (re.compile(r"\bpolic(y|ies)\b|regulation|by-?law", re.I), DocType.policy),
     (re.compile(r"budget|adopted\s+budget|financial\s+statement", re.I), DocType.budget),
     (re.compile(r"minutes", re.I), DocType.minutes),
