@@ -574,6 +574,41 @@ negative control.
 
 ---
 
+## What "pay Google last year" revealed (2026-08-23)
+
+A live question — *"How much did each district pay Google last year?"* —
+produced an answer that was **right to refuse**:
+
+> *"This means the corpus as searched does not surface a Google-specific
+> expenditure — it does not mean the districts did not pay Google last year."*
+
+That paragraph is the epistemics this project has been building toward, and it
+is now guarded by an eval case. But the run exposed two real problems.
+
+**"last year" was silently dropped.** `--since` was empty and nothing read the
+question, so a time-scoped question was answered from evidence dated **2013 to
+2026**. `herald.timeframe` now reads the question: resolvable phrases ("in
+2024", "the 2023-24 school year", "since 2022") become a date filter, and
+**vague ones are reported, never guessed**. "Last year" in August could be the
+2025 calendar year or the 2025-26 school year, and district documents run on
+the latter — so the answer now carries a line, directly under the heading,
+saying it was not scoped and what the evidence actually spans. A school year
+is July–June, which is why "2023-24" is not the window "2023".
+
+**The question is unanswerable by document class, not by coverage.** All 32
+retrieved passages were budget books, topically perfect and structurally
+incapable of naming a vendor: budgets appropriate by *function code*
+("CONTRACT SRV NETWORK", "BOCES SERVICES"), never by payee. Vendor payments
+live in the monthly **warrant / check register** the board approves and in
+claims-auditor reports — a document class we do not acquire at all. Those are
+usually BoardDocs agenda attachments, so they are probably reachable.
+
+That distinction is worth keeping straight: a coverage gap is fixed by
+crawling harder, a document-class gap is not fixed at all until someone
+notices the answer can never be in the documents being searched.
+
+---
+
 ## The peer set
 
 Eight districts chosen as demographic/socioeconomic peers of Port Chester

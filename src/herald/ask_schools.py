@@ -35,6 +35,7 @@ from herald.schools_retrieval import (
     Panel,
     retrieve_panel,
 )
+from herald.timeframe import detect_timeframe, scope_note, span_of
 
 console = Console()
 
@@ -228,10 +229,16 @@ async def synthesize(
 
 # ---- rendering ---------------------------------------------------------
 
-def render_markdown(ans: Answer) -> str:
+def render_markdown(ans: Answer, *, scope: str = "") -> str:
     lines = [
         f"# {ans.panel.question}",
         "",
+    ]
+    # Directly under the heading, not in a footer: someone who asked about
+    # "last year" needs to see BEFORE the answer that it was not scoped.
+    if scope:
+        lines += [scope, ""]
+    lines += [
         ans.text,
         "",
         "---",
@@ -319,6 +326,19 @@ def ask(
     slugs = [s.strip() for s in (districts or "").split(",") if s.strip()] or None
     date_from = _dt.date.fromisoformat(since) if since else None
     date_to = _dt.date.fromisoformat(until) if until else None
+    # A question can carry a timeframe the retrieval never sees. An explicit
+    # --since/--until always wins; otherwise a resolvable phrase ("in 2024",
+    # "the 2023-24 school year") is applied, and a vague one ("last year") is
+    # reported rather than guessed — see herald.timeframe.
+    frame = detect_timeframe(question) if not (since or until) else None
+    frame_applied = False
+    if frame is not None and frame.resolved:
+        date_from, date_to = frame.date_from, frame.date_to
+        frame_applied = True
+        console.print(f"[dim]scoped by the question: {frame.describe()}[/dim]")
+    elif frame is not None:
+        console.print(f"[yellow]{frame.describe()} is ambiguous — no date filter "
+                      f"applied[/yellow]")
 
     conn = schools_db.connect(_env("SUPABASE_DB_URL"))
     voyage_key = _env("VOYAGE_API_KEY")
@@ -371,10 +391,14 @@ def ask(
                 f"panel: {n} passages from {len(panel.by_district)} district(s); "
                 f"empty: {', '.join(panel.empty_districts) or 'none'}"
             )
+            note = scope_note(
+                frame, applied=frame_applied,
+                evidence_span=span_of([c.meeting_date for c in panel.all_chunks()]),
+            )
             if evidence_only:
-                return render_evidence_only(panel)
+                return render_evidence_only(panel) + (f"\n{note}\n" if note else "")
             ans = await synthesize(panel, api_key=_env("ANTHROPIC_API_KEY"), model=model)
-            return render_markdown(ans)
+            return render_markdown(ans, scope=note)
         finally:
             await voyage.aclose()
             if reranker is not None:
