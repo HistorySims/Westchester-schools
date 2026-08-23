@@ -609,6 +609,46 @@ notices the answer can never be in the documents being searched.
 
 ---
 
+## The 908 `other` documents (2026-08-23)
+
+A reclassify pass moved only 8 of 908, so we looked at what the 908 actually
+are rather than guessing. Grouped by the first word of the title:
+
+| first word | docs | districts | example |
+|---|---:|---:|---|
+| min | **90** | 1 | `Min 1.11.24.pdf` |
+| boe | 51 | 3 | `BoE Presentation - Cultural Arts` |
+| treasurer's | 43 | 1 | `Treasurer's Report April 2023.pdf` |
+| fixed | 25 | 1 | `Fixed Asset Disposal - 20 Chromebook Carts.pdf` |
+| charters / charter / club | ~33 | 1 | `Club Charters 11-07-24.pdf` |
+
+Two things fall out of that shape.
+
+**Ninety of them are minutes.** BoardDocs names the attachment
+`Min 4.18.23.pdf`, and "min" is not "minute", so the whole Tarrytowns meeting
+record was unfilterable. Fixed with an anchored rule that requires the date
+which follows — a bare `min` prefix would swallow every *minimum*,
+*mini-grant* and *minority* report in the corpus, and there is a test for
+each direction.
+
+**Nearly every group is one district.** This is Tarrytowns' BoardDocs
+attachment sprawl (6,558 chunks — it backs up nearly every consent-agenda
+item as its own file), not a corpus-wide problem. Worth remembering before
+reading `other` as a quality signal.
+
+### An open taxonomy question
+
+`treasurer's` (43) is a real, recurring document class with nowhere to go.
+A Treasurer's Report is a **financial statement**, not a spending plan, and
+`DocType` has only `budget`. Folding it in would mean "show me the budget"
+returns monthly cash reports — the same reason audits were deliberately
+excluded. The honest options are a new `financial` type (treasurer's reports,
+audits, and the warrant registers we do not yet acquire) or leaving them
+`other` and accepting they cannot be filtered to. That is a schema decision,
+not a classifier one, so it is recorded here rather than guessed at.
+
+---
+
 ## The peer set
 
 Eight districts chosen as demographic/socioeconomic peers of Port Chester
