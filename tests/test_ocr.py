@@ -108,8 +108,13 @@ def test_ocr_mode_dry_run_counts_candidates_only(tmp_path):
     assert stats.ocr_candidates["port-chester-rye"] == 1
     assert stats.docs_skipped == 1         # the born-digital one
     assert stats.chunks_written == 0       # nothing OCR'd or written
+    # Documents are the wrong unit for pricing a per-page bill, so the free
+    # dry run counts PAGES too — that is what lets it price the paid run.
+    assert stats.ocr_candidate_pages["port-chester-rye"] == 1
     report = render_report(stats, dry_run=True, ocr=True)
-    assert "OCR candidates by district" in report and "port-chester-rye" in report
+    assert "OCR candidates" in report and "port-chester-rye" in report
+    assert "page(s)" in report and "est. cost" in report
+    assert "$" in report                   # a dry run now quotes the paid one
 
 
 def test_upright_rotates_using_osd(monkeypatch):
@@ -548,3 +553,42 @@ def test_without_partial_the_same_document_is_still_skipped(tmp_path):
         ocr_mode=True, ocr_fn=fake_ocr, partial_ocr=False,
     ))
     assert stats.docs_skipped == 1 and stats.docs_partial_ocr == 0
+
+
+def test_dry_run_prices_a_partial_pass_without_spending_anything(tmp_path):
+    # The question "what will this cost?" is answerable for free: the dry run
+    # already runs image_only_pages, so it knows the exact page count a paid
+    # run would transcribe. Counting documents alone could not price it — one
+    # 56-page budget deck costs what fifty one-page policies cost.
+    from PIL import Image
+
+    raw = tmp_path / "data" / "raw"
+    (raw / "ossining" / "budget").mkdir(parents=True)
+    deck = raw / "ossining" / "budget" / "aa_deck.pdf"
+
+    # A "slide deck": page 1 is text, pages 2-4 are full-page chart images.
+    doc = fitz.open()
+    doc.new_page().insert_textbox(
+        fitz.Rect(36, 36, 560, 800), "Directors' Budget Presentation. " * 40)
+    buf = io.BytesIO()
+    Image.effect_noise((600, 800), 64).convert("RGB").save(buf, format="PNG")
+    for _ in range(3):
+        page = doc.new_page()
+        page.insert_image(page.rect, stream=buf.getvalue())
+    doc.save(str(deck))
+    doc.close()
+
+    stats = asyncio.run(ingest_manifests(
+        [(_entry(str(deck), district="ossining", doc_type=DocType.budget),
+          raw / "manifest.jsonl")],
+        ocr_mode=True, ocr_fn=None, partial_ocr=True,   # dry + partial
+    ))
+
+    assert stats.docs_ocr_candidate == 1
+    assert stats.ocr_candidate_pages["ossining"] == 3   # the image pages only
+    assert stats.chunks_written == 0                    # nothing spent, nothing written
+
+    report = render_report(stats, dry_run=True, ocr=True)
+    assert "3 page(s)" in report
+    assert "ossining" in report
+    assert "estimate" in report.lower()   # never passed off as a measurement
