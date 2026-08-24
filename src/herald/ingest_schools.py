@@ -1175,6 +1175,7 @@ def ocr(
     conn = None
     voyage = None
     ocr_fn = None
+    vision_usage = None
     if not dry_run:
         from herald import schools_db
 
@@ -1187,16 +1188,17 @@ def ocr(
         if engine == "vision":
             import anthropic
 
-            from herald.ocr import ocr_pdf_vision
+            from herald.ocr import VisionUsage, ocr_pdf_vision
 
             if not os.environ.get("ANTHROPIC_API_KEY", ""):
                 raise typer.BadParameter("ANTHROPIC_API_KEY is not set.")
             client = anthropic.Anthropic()
+            vision_usage = VisionUsage()
 
             def ocr_fn(path, pages=None):
                 return ocr_pdf_vision(
                     path, client=client, model=model, dpi=dpi,
-                    max_pages=max_pages, pages=pages)
+                    max_pages=max_pages, pages=pages, usage=vision_usage)
         else:
             from herald.ocr import ocr_pdf
 
@@ -1253,11 +1255,59 @@ def ocr(
         for d, n in stats.by_district.most_common():
             console.print(f"  {d}: {n} chunks recovered")
 
+    cost_note = ""
+    if vision_usage is not None and vision_usage.pages:
+        cost_note = _vision_cost_note(vision_usage)
+        console.print(f"\n[bold]spend[/bold] — {vision_usage.summary()}")
+
     if report:
-        Path(report).write_text(
-            render_report(stats, dry_run=dry_run, ocr=True), encoding="utf-8"
-        )
+        body = render_report(stats, dry_run=dry_run, ocr=True)
+        Path(report).write_text(body + cost_note, encoding="utf-8")
         console.print(f"report: {report}")
+
+
+def _vision_cost_note(usage) -> str:
+    """A markdown block saying what the run spent, and what that implies.
+
+    A pilot run over a handful of documents exists to price a large one, so the
+    report does that arithmetic here rather than leaving it to whoever reads
+    the summary later.
+    """
+    from herald.ocr import VISION_RATES_INTRO, VISION_RATES_STANDARD, vision_rates
+
+    rate_in, rate_out = vision_rates()
+    per_page = usage.per_page_usd()
+    other = (VISION_RATES_STANDARD
+             if (rate_in, rate_out) == VISION_RATES_INTRO else VISION_RATES_INTRO)
+    lines = [
+        "",
+        "## Vision OCR spend",
+        "",
+        f"- Pages transcribed: **{usage.pages:,}**",
+        f"- Tokens: {usage.input_tokens:,} in / {usage.output_tokens:,} out "
+        "(output includes adaptive thinking)",
+        f"- Rate applied: ${rate_in:.2f} in / ${rate_out:.2f} out per MTok",
+        f"- **Cost: ${usage.cost_usd():.2f}** (${per_page:.4f}/page)",
+        "",
+        "Projected from this run's measured rate:",
+        "",
+        "| pages | at this rate | at "
+        f"${other[0]:.0f}/${other[1]:.0f} |",
+        "| ---: | ---: | ---: |",
+    ]
+    for n in (100, 1_000, 2_500, 10_000):
+        lines.append(
+            f"| {n:,} | ${usage.project_usd(n):.2f} "
+            f"| ${usage.project_usd(n, other):.2f} |"
+        )
+    if usage.truncated_pages:
+        lines += [
+            "",
+            f"> **{usage.truncated_pages} page(s) hit max_tokens and were "
+            "truncated.** Those pages are incomplete — re-run them before "
+            "trusting their content.",
+        ]
+    return "\n".join(lines) + "\n"
 
 
 @app.command()
