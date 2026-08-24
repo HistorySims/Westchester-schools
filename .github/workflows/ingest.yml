@@ -69,9 +69,17 @@ on:
         type: boolean
         default: false
       reclassify:
-        description: "Instead of ingesting: recompute doc_type from the title for 'other' docs"
+        description: "Instead of ingesting: recompute doc_type from the title"
         type: boolean
         default: false
+      reclassify_from:
+        description: "Which doc_type to re-examine (reclassify only). 'budget' pulls slide decks out."
+        type: choice
+        options:
+          - other
+          - budget
+          - agenda
+        default: other
       tables_backfill:
         description: "Backfill table chunks into already-ingested docs (adds kind='table' only)"
         type: boolean
@@ -115,6 +123,7 @@ jobs:
         if: ${{ inputs.reclassify }}
         run: |
           uv run herald-ingest reclassify \
+            --from-type "${{ inputs.reclassify_from }}" \
             ${{ inputs.district != 'all' && format('--district "{0}"', inputs.district) || '' }} \
             --report ingest-report.md \
             ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}

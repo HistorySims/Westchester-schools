@@ -49,6 +49,32 @@ _CONTRACT_RE = re.compile(CONTRACT_WORDS, re.I)
 # or a title that merely starts with those letters.
 _MIN_ABBREV = re.compile(r"^min[s.]?\s+\d")
 
+# A board slide deck. Checked BEFORE the meeting keywords, because
+# "OUFSD - BOE Meeting Presentation" is a deck and matching "boe meeting"
+# first typed it as an agenda; and before 'budget', because "Directors'
+# Budget Presentation" is 46 image pages of promotion, not a spending plan.
+# Genre, not subject: what makes it a presentation is that it was built to
+# be shown, whatever it is about.
+_PRESENTATION_RE = re.compile(
+    r"presentation|slide\s*deck|\bslides\b|power\s*point|\bpptx\b"
+    r"|budget\s*workshop|workshop\s*#|\bdata\s+dive\b",
+    re.I,
+)
+
+# Financial documents that are NOT spending plans: reports of money already
+# moved. Kept out of 'budget' on purpose — "show me the budget" must not
+# return audit reports — and previously they had nowhere to go, so 43
+# Treasurer's Reports sat in 'other'. Checked AFTER 'agenda' so that an
+# "Audit Committee Agenda" stays an agenda.
+# 'audit' cannot reach "auditorium": the optional suffix group leaves a word
+# character before the required boundary either way.
+_FINANCIAL_RE = re.compile(
+    r"\btreasurer|\bwarrant\b|check\s+register|claims\s+auditor"
+    r"|\baudit(?:s|or|ors|ed|ing)?\b|financial\s+statements?"
+    r"|extra\s*classroom",
+    re.I,
+)
+
 # The URL gets a NARROWER test than the title. A path segment is structural —
 # a file under /contracts/ is a contract — while prose vocabulary is not: a
 # newsletter at /news/contract-negotiations-update is about a contract, and
@@ -131,6 +157,9 @@ def classify_doc_type(title: str, source_url: str = "") -> str:
     # transcript, not an agenda.
     if "transcript" in low:
         return "transcript"
+    # Before the meeting keywords: "BOE Meeting Presentation" is a deck.
+    if _PRESENTATION_RE.search(low):
+        return "presentation"
     if any(k in low for k in ("agenda", "business meeting", "work session", "boe meeting",
                               "board meeting", "special meeting", "regular meeting", "retreat")):
         return "agenda"
@@ -140,14 +169,18 @@ def classify_doc_type(title: str, source_url: str = "") -> str:
         return "handbook"
     if _CONTRACT_RE.search(low):
         return "contract"
+    # Reports of money already spent, not plans for spending it. Before the
+    # budget check so a "Treasurer's Report" is not read as a budget, and
+    # after 'agenda' so an "Audit Committee Agenda" stays an agenda.
+    if _FINANCIAL_RE.search(low):
+        return "financial"
     # After the policy check, so "Budget Adoption Policy" is a policy — a rule
     # about budgets, not a budget. (Policies scraped from a manual never reach
     # here at all: they arrive already typed, and this only runs on 'other'.)
-    # Audits are deliberately NOT included: they are financial documents but
-    # not spending plans, and folding them in would mean "show me the budget"
-    # returns audit reports.
-    if any(k in low for k in ("budget", "financial statement", "tax report card",
-                              "fiscal accountability")):
+    # Audits are deliberately NOT here: they are financial documents but not
+    # spending plans, and folding them in would mean "show me the budget"
+    # returns audit reports. They now have 'financial' above.
+    if any(k in low for k in ("budget", "tax report card", "fiscal accountability")):
         return "budget"
     # Nothing in the title. Fall back to where the file was published.
     for pattern, doc_type in _URL_TYPE_RES:

@@ -15,6 +15,7 @@ import types
 from pathlib import Path
 
 import fitz
+import pytest
 
 from herald import ocr as ocr_mod
 from herald.ingest_schools import ingest_manifests, render_report
@@ -28,10 +29,11 @@ def _text_pdf(path: Path, text: str) -> None:
     doc.close()
 
 
-def _blank_pdf(path: Path) -> None:
-    # A page with no text layer — stands in for a scanned/image PDF.
+def _blank_pdf(path: Path, pages: int = 1) -> None:
+    # Pages with no text layer — stands in for a scanned/image PDF.
     doc = fitz.open()
-    doc.new_page()
+    for _ in range(pages):
+        doc.new_page()
     doc.save(str(path))
     doc.close()
 
@@ -106,8 +108,13 @@ def test_ocr_mode_dry_run_counts_candidates_only(tmp_path):
     assert stats.ocr_candidates["port-chester-rye"] == 1
     assert stats.docs_skipped == 1         # the born-digital one
     assert stats.chunks_written == 0       # nothing OCR'd or written
+    # Documents are the wrong unit for pricing a per-page bill, so the free
+    # dry run counts PAGES too — that is what lets it price the paid run.
+    assert stats.ocr_candidate_pages["port-chester-rye"] == 1
     report = render_report(stats, dry_run=True, ocr=True)
-    assert "OCR candidates by district" in report and "port-chester-rye" in report
+    assert "OCR candidates" in report and "port-chester-rye" in report
+    assert "page(s)" in report and "est. cost" in report
+    assert "$" in report                   # a dry run now quotes the paid one
 
 
 def test_upright_rotates_using_osd(monkeypatch):
@@ -200,23 +207,31 @@ class _FakeStream:
 
 
 class _FakeMessages:
-    def __init__(self, md: str, stop_reason: str = "end_turn") -> None:
+    def __init__(self, md: str, stop_reason: str = "end_turn",
+                 usage: tuple[int, int] | None = (2500, 1500)) -> None:
         self._md = md
         self._stop = stop_reason
+        self._usage = usage
         self.calls = 0
         self.max_tokens: int | None = None
 
     def stream(self, **kwargs):
         self.calls += 1
         self.max_tokens = kwargs.get("max_tokens")
-        return _FakeStream(types.SimpleNamespace(
+        msg = types.SimpleNamespace(
             content=[_FakeBlock(self._md)], stop_reason=self._stop,
-        ))
+        )
+        if self._usage is not None:
+            msg.usage = types.SimpleNamespace(
+                input_tokens=self._usage[0], output_tokens=self._usage[1],
+            )
+        return _FakeStream(msg)
 
 
 class _FakeAnthropic:
-    def __init__(self, md: str, stop_reason: str = "end_turn") -> None:
-        self.messages = _FakeMessages(md, stop_reason)
+    def __init__(self, md: str, stop_reason: str = "end_turn",
+                 usage: tuple[int, int] | None = (2500, 1500)) -> None:
+        self.messages = _FakeMessages(md, stop_reason, usage)
 
 
 def test_ocr_pdf_vision_returns_tables_from_markdown(tmp_path):
@@ -246,6 +261,53 @@ def test_transcription_budget_is_generous_and_truncation_is_loud(tmp_path, caplo
 
     assert client.messages.max_tokens >= 32000        # real headroom
     assert any("truncated" in r.message for r in caplog.records)
+
+
+def test_vision_run_measures_what_it_spent(tmp_path):
+    # A pilot run exists to price a big one. Until this landed, `usage` came
+    # back on every response and was discarded, so the only available answer to
+    # "what will 2,240 pages cost?" was an estimate.
+    pdf = tmp_path / "scan.pdf"
+    _blank_pdf(pdf, pages=3)
+    usage = ocr_mod.VisionUsage()
+    client = _FakeAnthropic("some prose", usage=(2500, 1500))
+    ocr_mod.ocr_pdf_vision(pdf, client=client, model="m", dpi=72, usage=usage)
+
+    assert usage.pages == 3
+    assert usage.input_tokens == 7500 and usage.output_tokens == 4500
+    # 7500 in @ $2/MTok + 4500 out @ $10/MTok = $0.015 + $0.045
+    assert usage.cost_usd(ocr_mod.VISION_RATES_INTRO) == pytest.approx(0.06)
+    assert usage.per_page_usd(ocr_mod.VISION_RATES_INTRO) == pytest.approx(0.02)
+    # and that measured rate is what prices the real run
+    assert usage.project_usd(2240, ocr_mod.VISION_RATES_INTRO) == pytest.approx(44.80)
+
+
+def test_intro_pricing_expires_on_its_own(tmp_path):
+    # The rate is picked by date, so a run in September prices itself right
+    # without anyone remembering to edit a constant.
+    assert ocr_mod.vision_rates(_dt.date(2026, 8, 31)) == ocr_mod.VISION_RATES_INTRO
+    assert ocr_mod.vision_rates(_dt.date(2026, 9, 1)) == ocr_mod.VISION_RATES_STANDARD
+
+
+def test_truncated_pages_are_counted_not_just_logged(tmp_path):
+    # A truncated page is incomplete content that still costs full price —
+    # the spend report has to say so, not just warn into a log nobody reads.
+    pdf = tmp_path / "scan.pdf"
+    _blank_pdf(pdf, pages=2)
+    usage = ocr_mod.VisionUsage()
+    client = _FakeAnthropic("partial…", stop_reason="max_tokens")
+    ocr_mod.ocr_pdf_vision(pdf, client=client, model="m", dpi=72, usage=usage)
+
+    assert usage.truncated_pages == 2
+    from herald.ingest_schools import _vision_cost_note
+    assert "TRUNCATED" in usage.summary()
+    assert "truncated" in _vision_cost_note(usage)
+
+
+def test_an_empty_run_costs_nothing_and_does_not_divide_by_zero():
+    empty = ocr_mod.VisionUsage()
+    assert empty.cost_usd() == 0.0 and empty.per_page_usd() == 0.0
+    assert empty.summary() == "No pages transcribed."
 
 
 def test_ocr_mode_vision_writes_table_chunks(tmp_path):
@@ -491,3 +553,42 @@ def test_without_partial_the_same_document_is_still_skipped(tmp_path):
         ocr_mode=True, ocr_fn=fake_ocr, partial_ocr=False,
     ))
     assert stats.docs_skipped == 1 and stats.docs_partial_ocr == 0
+
+
+def test_dry_run_prices_a_partial_pass_without_spending_anything(tmp_path):
+    # The question "what will this cost?" is answerable for free: the dry run
+    # already runs image_only_pages, so it knows the exact page count a paid
+    # run would transcribe. Counting documents alone could not price it — one
+    # 56-page budget deck costs what fifty one-page policies cost.
+    from PIL import Image
+
+    raw = tmp_path / "data" / "raw"
+    (raw / "ossining" / "budget").mkdir(parents=True)
+    deck = raw / "ossining" / "budget" / "aa_deck.pdf"
+
+    # A "slide deck": page 1 is text, pages 2-4 are full-page chart images.
+    doc = fitz.open()
+    doc.new_page().insert_textbox(
+        fitz.Rect(36, 36, 560, 800), "Directors' Budget Presentation. " * 40)
+    buf = io.BytesIO()
+    Image.effect_noise((600, 800), 64).convert("RGB").save(buf, format="PNG")
+    for _ in range(3):
+        page = doc.new_page()
+        page.insert_image(page.rect, stream=buf.getvalue())
+    doc.save(str(deck))
+    doc.close()
+
+    stats = asyncio.run(ingest_manifests(
+        [(_entry(str(deck), district="ossining", doc_type=DocType.budget),
+          raw / "manifest.jsonl")],
+        ocr_mode=True, ocr_fn=None, partial_ocr=True,   # dry + partial
+    ))
+
+    assert stats.docs_ocr_candidate == 1
+    assert stats.ocr_candidate_pages["ossining"] == 3   # the image pages only
+    assert stats.chunks_written == 0                    # nothing spent, nothing written
+
+    report = render_report(stats, dry_run=True, ocr=True)
+    assert "3 page(s)" in report
+    assert "ossining" in report
+    assert "estimate" in report.lower()   # never passed off as a measurement

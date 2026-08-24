@@ -671,6 +671,83 @@ audits, and the warrant registers we do not yet acquire) or leaving them
 `other` and accepting they cannot be filtered to. That is a schema decision,
 not a classifier one, so it is recorded here rather than guessed at.
 
+**Decided 2026-08-24** — both new types exist:
+`0006_doc_type_presentation_financial.sql`.
+
+---
+
+## `presentation` and `financial` (2026-08-24)
+
+**What forced it.** Chasing an OCR bill, a per-page query surfaced 108
+documents averaging 40–250 characters per page. They are not scans — they are
+**board slide decks**. Ossining's "Directors' Budget Presentation" is 56 pages
+of which `image_only_pages` flags 46 as flat images; its extractable text is
+promotional ("Strengthening Our Digital Infrastructure"), and the classifier
+typed it **`budget`** — the same type as the actual budget books.
+
+That is a live retrieval defect with no OCR involved. A question about a
+spending line can retrieve a slide reading *"An increase in teaching
+salaries"* next to an arrow icon, instead of the budget-book line carrying the
+figure. Topically perfect, structurally incapable of answering — precisely the
+failure `unanswerable-by-document-class` exists to catch.
+
+**And it was nearly made much worse.** The plan under discussion was a ~$45
+vision-OCR pass over exactly these documents. That would have injected 46
+pages *per deck* of fluent budget-vocabulary prose with no figures in it,
+directly competing with the budget books. The pass was cancelled: OCR here
+buys pollution, not recall.
+
+**The exception, recorded for later.** Two slides in that deck are not
+advertising — "Budgetary Changes (Budget Book)" cites the budget book's own
+page numbers and gives the *reason* a line moved ("Shifts in budget codes —
+from Consultants to BOCES"; special-ed placements down, teaching salaries up).
+The budget book gives the number and never the why. Same shape as the vendor
+question: a fact the primary document class structurally cannot hold. Not
+worth OCR at corpus scale; worth knowing it exists.
+
+**Ordering is the whole trick** (`classify_doc_type`):
+
+* `presentation` is tested **before** the meeting keywords, or
+  "OUFSD - BOE Meeting Presentation" matches `boe meeting` and lands in
+  `agenda`; and **before** `budget`, or "Directors' Budget Presentation"
+  lands in `budget`.
+* `financial` is tested **after** `agenda`/`minutes`, so an "Audit Committee
+  Agenda" stays an agenda and "Audit Minutes" stays minutes — and before
+  `budget`, so a Treasurer's Report is not read as a spending plan.
+* `audit` cannot reach "auditorium" (verified: "Auditorium Use Agreement"
+  → `contract`).
+
+Genre, not subject: what makes a document a presentation is that it was built
+to be *shown*, whatever it is about. The corpus previously could not tell
+persuasion from record — which is also why "what is each board highlighting?"
+was unanswerable. It is now a filter.
+
+**To repair the corpus in place**, `reclassify` must be run with
+`--from-type budget` (the workflow now exposes `reclassify_from`); the default
+`other` will not move a deck already typed `budget`.
+
+---
+
+## Migrations are now runnable from a phone (2026-08-24)
+
+`0005_bargaining_unit.sql` sat unapplied for weeks while the code that needed
+it was already merged. Not a decision — applying it needed `psql` on a laptop,
+and the only available device was a phone. A migration that cannot be run is
+not shipped.
+
+`herald-migrate` (+ the `migrate` workflow) applies `db/migrations/*.sql` in
+filename order, one transaction each, recording every file in
+`schema_migrations` in that same transaction. Re-running is safe; a file whose
+text changed after it was applied is **reported and never re-run**, because
+silently re-executing edited DDL is how a schema drifts from what the
+migration files claim.
+
+**Expect the first run to list 0001–0006 as pending** — `schema_migrations`
+starts empty and knows nothing of what was applied by hand. All of 0001–0004
+are written idempotently (`if not exists`, and 0002's constraint sits behind a
+`pg_constraint` guard), so re-running them is a no-op that simply records
+reality. Run the dry run first and read the list.
+
 ---
 
 ## The peer set

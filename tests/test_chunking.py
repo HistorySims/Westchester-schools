@@ -98,10 +98,14 @@ def test_budget_and_transcript_are_classifiable_at_all():
     # doc_type='budget' filter. A type you can store but never derive is a
     # silent hole in every coverage answer.
     assert classify_doc_type("2026-2027 Adopted Budget") == "budget"
-    assert classify_doc_type("Budget Presentation (Spanish)") == "budget"
     assert classify_doc_type("Property Tax Report Card 2026-27") == "budget"
-    assert classify_doc_type("Financial Statement FY25") == "budget"
     assert classify_doc_type("Board Meeting Transcript 3-12-26") == "transcript"
+    # "Budget Presentation" and "Financial Statement" used to land here for
+    # want of anywhere better. They now have their own types — see
+    # test_a_slide_deck_is_a_presentation_not_a_budget and
+    # test_financial_reports_are_not_budgets_and_not_other.
+    assert classify_doc_type("Budget Presentation (Spanish)") == "presentation"
+    assert classify_doc_type("Financial Statement FY25") == "financial"
 
 
 def test_a_policy_about_budgets_is_still_a_policy():
@@ -116,9 +120,12 @@ def test_a_transcript_beats_the_meeting_keywords():
 
 def test_audits_are_not_folded_into_budget():
     # An audit is a financial document but not a spending plan; counting it as
-    # a budget makes "show me the budget" return audit reports.
-    assert classify_doc_type("Independent Auditor Report 2025") == "other"
-    assert classify_doc_type("Claims Audit Report") == "other"
+    # a budget makes "show me the budget" return audit reports. They used to
+    # fall to 'other' for want of anywhere better — the point was always that
+    # they are NOT budgets, and that still holds.
+    for title in ("Independent Auditor Report 2025", "Claims Audit Report"):
+        assert classify_doc_type(title) != "budget"
+        assert classify_doc_type(title) == "financial"
 
 
 def test_a_cba_named_after_a_union_acronym_is_still_a_contract():
@@ -179,3 +186,43 @@ def test_the_abbreviation_cannot_reach_ordinary_words():
                   "Ministry of Education report", "Minority Business Enterprise Report",
                   "Minnesota comparison study"):
         assert classify_doc_type(title) == "other", title
+
+
+def test_a_slide_deck_is_a_presentation_not_a_budget():
+    # Ossining's "Directors' Budget Presentation" is 56 pages of which 46 are
+    # flat images, and its text is promotional. Typed 'budget' it competed
+    # with the actual budget books: a question about a spending line could
+    # retrieve a slide reading "An increase in teaching salaries" instead of
+    # the book line carrying the figure. Genre, not subject.
+    assert classify_doc_type("Directors' Budget Presentation") == "presentation"
+    assert classify_doc_type("Budget Hearing Presentation 5.7.26.pdf") == "presentation"
+    assert classify_doc_type("Educational Plan & Budget Workshop #2 (English)") == "presentation"
+    assert classify_doc_type("TUFSD BOE Spring 23' Data Dive _ 3.23.23.pdf") == "presentation"
+
+    # ...and it is checked BEFORE the meeting keywords, or "BOE Meeting
+    # Presentation" matches "boe meeting" and lands in 'agenda'.
+    assert classify_doc_type("OUFSD - BOE Meeting Presentation_FINAL.pdf") == "presentation"
+
+    # An actual budget is still a budget.
+    assert classify_doc_type("2026-2027 Proposed Budget") == "budget"
+    assert classify_doc_type("Budget Adoption Policy") == "policy"
+
+
+def test_financial_reports_are_not_budgets_and_not_other():
+    # 43 Treasurer's Reports sat in 'other' — the bucket nothing filters on —
+    # because they are financial but are not spending plans, and folding them
+    # into 'budget' would make "show me the budget" return audit reports.
+    assert classify_doc_type("Treasurer's Report - March 2026") == "financial"
+    assert classify_doc_type("Warrant Register 04-2026") == "financial"
+    assert classify_doc_type("Claims Auditor Report") == "financial"
+    assert classify_doc_type("External Audit Report 2024-25") == "financial"
+    assert classify_doc_type("Extraclassroom Activity Funds") == "financial"
+
+
+def test_financial_yields_to_the_document_a_title_actually_names():
+    # Checked after 'agenda' and 'minutes' so the meeting record about the
+    # audit stays a meeting record.
+    assert classify_doc_type("Audit Committee Agenda") == "agenda"
+    assert classify_doc_type("Audit Minutes") == "minutes"
+    # 'audit' must not reach "auditorium"
+    assert classify_doc_type("Auditorium Use Agreement") == "contract"

@@ -21,9 +21,11 @@ came back ``no_text`` are handled by the same path.
 from __future__ import annotations
 
 import base64
+import datetime as _dt
 import io
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import fitz  # PyMuPDF
@@ -58,6 +60,71 @@ _VISION_PROMPT = (
     "salary lane exactly as headed (e.g. BA, BA15, MA30, DR), preserving "
     "any '(Frozen)' or similar column annotation in the header cell."
 )
+
+# ---- what a run costs --------------------------------------------------
+#
+# Vision OCR is the only part of this project that spends money per page, and
+# until now it spent it blind: `usage` came back on every response and was
+# thrown away, so "what will it cost to OCR these 2,240 pages?" could only be
+# answered with an estimate. An estimate is not good enough to authorize a
+# run, and it is not good enough to explain one afterwards.
+#
+# These are Claude Sonnet 5 LIST prices in USD per million tokens. Intro
+# pricing runs through 2026-08-31, so the rate is chosen by DATE rather than
+# baked in — a run in September prices itself correctly with nobody
+# remembering to edit a constant. The authoritative bill is always the
+# Anthropic console; this is what the run itself believes it spent.
+VISION_RATES_INTRO = (2.00, 10.00)
+VISION_RATES_STANDARD = (3.00, 15.00)
+INTRO_PRICING_ENDS = _dt.date(2026, 8, 31)
+
+
+def vision_rates(on: _dt.date | None = None) -> tuple[float, float]:
+    """(input, output) USD per million tokens in effect on a given date."""
+    on = on or _dt.date.today()
+    return VISION_RATES_INTRO if on <= INTRO_PRICING_ENDS else VISION_RATES_STANDARD
+
+
+@dataclass
+class VisionUsage:
+    """Tokens actually spent transcribing pages, and what they cost.
+
+    Output tokens include adaptive thinking, which is most of the cost and all
+    of the variance: a prose page thinks briefly, a dense salary grid thinks
+    for thousands of tokens. Averaging a pilot run over both is the point —
+    the per-page figure is only meaningful across a realistic page mix.
+    """
+
+    pages: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    truncated_pages: int = 0
+
+    def add(self, usage) -> None:
+        self.pages += 1
+        self.input_tokens += getattr(usage, "input_tokens", 0) or 0
+        self.output_tokens += getattr(usage, "output_tokens", 0) or 0
+
+    def cost_usd(self, rates: tuple[float, float] | None = None) -> float:
+        rate_in, rate_out = rates or vision_rates()
+        return (self.input_tokens * rate_in + self.output_tokens * rate_out) / 1_000_000
+
+    def per_page_usd(self, rates: tuple[float, float] | None = None) -> float:
+        return self.cost_usd(rates) / self.pages if self.pages else 0.0
+
+    def project_usd(self, pages: int, rates: tuple[float, float] | None = None) -> float:
+        """What `pages` more pages would cost at this run's measured rate."""
+        return self.per_page_usd(rates) * pages
+
+    def summary(self) -> str:
+        if not self.pages:
+            return "No pages transcribed."
+        trunc = (f", {self.truncated_pages} TRUNCATED" if self.truncated_pages else "")
+        return (
+            f"{self.pages} page(s): {self.input_tokens:,} in / "
+            f"{self.output_tokens:,} out tokens, ${self.cost_usd():.2f} "
+            f"(${self.per_page_usd():.4f}/page){trunc}"
+        )
 
 
 # The API rejects an image above this size; a 300-dpi tabloid page can exceed it.
@@ -188,7 +255,10 @@ def split_markdown_tables(md: str, *, page: int) -> tuple[str, list[TableBlock]]
     return "\n".join(prose).strip(), tables
 
 
-def _transcribe_page(client, model: str, png: bytes, *, page_no: int = 0) -> str:
+def _transcribe_page(
+    client, model: str, png: bytes, *, page_no: int = 0,
+    usage: VisionUsage | None = None,
+) -> str:
     b64 = base64.standard_b64encode(png).decode("ascii")
     messages = [{
         "role": "user",
@@ -203,8 +273,12 @@ def _transcribe_page(client, model: str, png: bytes, *, page_no: int = 0) -> str
     ) as stream:
         msg = stream.get_final_message()
     text = "".join(b.text for b in msg.content if b.type == "text")
+    if usage is not None and getattr(msg, "usage", None) is not None:
+        usage.add(msg.usage)
     if getattr(msg, "stop_reason", None) == "max_tokens":
         # Loud, because the silent version of this cost us the salary grid.
+        if usage is not None:
+            usage.truncated_pages += 1
         logger.warning(
             "page %s hit max_tokens (%s) — transcription truncated, %d chars kept",
             page_no, _VISION_MAX_TOKENS, len(text),
@@ -220,6 +294,7 @@ def ocr_pdf_vision(
     dpi: int = 200,
     max_pages: int | None = None,
     pages: Sequence[int] | None = None,
+    usage: VisionUsage | None = None,
 ) -> ExtractedDoc:
     """Transcribe a scanned PDF to text + table blocks with Claude vision.
 
@@ -228,12 +303,15 @@ def ocr_pdf_vision(
     so ``herald-extract`` can read them into ``salary_schedule``. Prose becomes
     ordinary text. Raises on API/render errors; the ingest loop catches
     per-document.
+
+    Pass a :class:`VisionUsage` as ``usage`` to accumulate what the run spends
+    across documents — that is how a small pilot run prices a large one.
     """
     rendered, page_count = _render_pages(path, dpi=dpi, max_pages=max_pages, only=pages)
     prose_parts: list[str] = []
     tables: list[TableBlock] = []
     for page_no, png in rendered:
-        md = _transcribe_page(client, model, png, page_no=page_no)
+        md = _transcribe_page(client, model, png, page_no=page_no, usage=usage)
         prose, page_tables = split_markdown_tables(md, page=page_no)
         if prose:
             prose_parts.append(prose)

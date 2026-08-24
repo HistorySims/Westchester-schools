@@ -213,6 +213,11 @@ class IngestStats:
     by_district: Counter[str] = field(default_factory=Counter)
     by_doc_type: Counter[str] = field(default_factory=Counter)
     ocr_candidates: Counter[str] = field(default_factory=Counter)  # per district
+    #: Pages a real run would transcribe, per district. Documents are the wrong
+    #: unit for pricing vision OCR — it bills per page, and one 56-page budget
+    #: deck costs what fifty one-page policies cost. Counting pages here is what
+    #: lets the FREE dry run price the paid one.
+    ocr_candidate_pages: Counter[str] = field(default_factory=Counter)
 
 
 def _clean_slug(value: str | None) -> str | None:
@@ -428,9 +433,15 @@ async def ingest_manifests(
                         note = "has-text"
                         continue
                 if ocr_fn is None:
-                    # fast dry pass: count the candidate, don't spend on OCR
+                    # fast dry pass: count the candidate, don't spend on OCR.
+                    # `image_only_pages` has already run, so the exact page
+                    # count a paid run would transcribe is known here — for
+                    # free, with no API key. Record it.
                     stats.docs_ocr_candidate += 1
                     stats.ocr_candidates[entry.district] += 1
+                    stats.ocr_candidate_pages[entry.district] += (
+                        len(scan_pages) or extracted.page_count
+                    )
                     note = (f"ocr-candidate ({len(scan_pages)} scanned page(s))"
                             if scan_pages else "ocr-candidate")
                     continue
@@ -544,15 +555,52 @@ def render_report(
         "",
     ]
     if ocr and dry_run:
+        from herald.ocr import (
+            INTRO_PRICING_ENDS,
+            VISION_RATES_INTRO,
+            VISION_RATES_STANDARD,
+            vision_rates,
+        )
+
+        total_pages = sum(stats.ocr_candidate_pages.values())
+        rate_in, rate_out = vision_rates()
+        # A page costs roughly 2.7k input tokens (the image, after Claude's
+        # 1568px downscale, plus the prompt) and ~1.5k output including
+        # adaptive thinking. This is an ESTIMATE and says so — a real run
+        # reports what it actually spent, which is the number to trust.
+        def _est(pages: int, rates: tuple[float, float]) -> float:
+            return (pages * 2_700 * rates[0] + pages * 1_500 * rates[1]) / 1_000_000
+
         lines += [
-            f"## OCR candidates by district — **{stats.docs_ocr_candidate} total**",
+            f"## OCR candidates — **{stats.docs_ocr_candidate} document(s), "
+            f"{total_pages:,} page(s)**",
             "",
-            "_(no-text documents a real run would OCR)_",
+            "_(what a real run would transcribe)_",
             "",
-            "| district | candidates |",
-            "|---|---|",
+            "| district | documents | pages | est. cost |",
+            "|---|---:|---:|---:|",
         ]
-        lines += [f"| {d} | {n} |" for d, n in stats.ocr_candidates.most_common()]
+        for d, n in stats.ocr_candidates.most_common():
+            p = stats.ocr_candidate_pages[d]
+            lines += [f"| {d} | {n} | {p:,} | ${_est(p, (rate_in, rate_out)):.2f} |"]
+        lines += [
+            f"| **total** | **{stats.docs_ocr_candidate}** | **{total_pages:,}** "
+            f"| **${_est(total_pages, (rate_in, rate_out)):.2f}** |",
+            "",
+            f"Estimated at ${rate_in:.2f}/${rate_out:.2f} per MTok "
+            f"(~2.7k in + ~1.5k out per page, output including adaptive thinking).",
+        ]
+        if (rate_in, rate_out) == VISION_RATES_INTRO:
+            after = _est(total_pages, VISION_RATES_STANDARD)
+            lines += [
+                f"Intro pricing ends {INTRO_PRICING_ENDS.isoformat()}; after that "
+                f"this run is about **${after:.2f}**.",
+            ]
+        lines += [
+            "",
+            "> This is an estimate. A real run reports the tokens it actually "
+            "spent — trust that number over this one.",
+        ]
         return "\n".join(lines) + "\n"
     lines += [
         "## Chunks by district",
@@ -1175,6 +1223,7 @@ def ocr(
     conn = None
     voyage = None
     ocr_fn = None
+    vision_usage = None
     if not dry_run:
         from herald import schools_db
 
@@ -1187,16 +1236,17 @@ def ocr(
         if engine == "vision":
             import anthropic
 
-            from herald.ocr import ocr_pdf_vision
+            from herald.ocr import VisionUsage, ocr_pdf_vision
 
             if not os.environ.get("ANTHROPIC_API_KEY", ""):
                 raise typer.BadParameter("ANTHROPIC_API_KEY is not set.")
             client = anthropic.Anthropic()
+            vision_usage = VisionUsage()
 
             def ocr_fn(path, pages=None):
                 return ocr_pdf_vision(
                     path, client=client, model=model, dpi=dpi,
-                    max_pages=max_pages, pages=pages)
+                    max_pages=max_pages, pages=pages, usage=vision_usage)
         else:
             from herald.ocr import ocr_pdf
 
@@ -1233,12 +1283,14 @@ def ocr(
             conn.close()
 
     if dry_run:
+        total_pages = sum(stats.ocr_candidate_pages.values())
         console.print(
-            f"\n[bold]{stats.docs_ocr_candidate}[/bold] OCR candidate(s) "
+            f"\n[bold]{stats.docs_ocr_candidate}[/bold] OCR candidate(s), "
+            f"[bold]{total_pages:,}[/bold] page(s) "
             f"across {len(stats.ocr_candidates)} district(s):"
         )
         for d, n in stats.ocr_candidates.most_common():
-            console.print(f"  {d}: {n}")
+            console.print(f"  {d}: {n} doc(s), {stats.ocr_candidate_pages[d]:,} page(s)")
     else:
         table = Table(title="OCR")
         for col in ("seen", "recovered", "skipped", "still_empty", "missing",
@@ -1253,11 +1305,59 @@ def ocr(
         for d, n in stats.by_district.most_common():
             console.print(f"  {d}: {n} chunks recovered")
 
+    cost_note = ""
+    if vision_usage is not None and vision_usage.pages:
+        cost_note = _vision_cost_note(vision_usage)
+        console.print(f"\n[bold]spend[/bold] — {vision_usage.summary()}")
+
     if report:
-        Path(report).write_text(
-            render_report(stats, dry_run=dry_run, ocr=True), encoding="utf-8"
-        )
+        body = render_report(stats, dry_run=dry_run, ocr=True)
+        Path(report).write_text(body + cost_note, encoding="utf-8")
         console.print(f"report: {report}")
+
+
+def _vision_cost_note(usage) -> str:
+    """A markdown block saying what the run spent, and what that implies.
+
+    A pilot run over a handful of documents exists to price a large one, so the
+    report does that arithmetic here rather than leaving it to whoever reads
+    the summary later.
+    """
+    from herald.ocr import VISION_RATES_INTRO, VISION_RATES_STANDARD, vision_rates
+
+    rate_in, rate_out = vision_rates()
+    per_page = usage.per_page_usd()
+    other = (VISION_RATES_STANDARD
+             if (rate_in, rate_out) == VISION_RATES_INTRO else VISION_RATES_INTRO)
+    lines = [
+        "",
+        "## Vision OCR spend",
+        "",
+        f"- Pages transcribed: **{usage.pages:,}**",
+        f"- Tokens: {usage.input_tokens:,} in / {usage.output_tokens:,} out "
+        "(output includes adaptive thinking)",
+        f"- Rate applied: ${rate_in:.2f} in / ${rate_out:.2f} out per MTok",
+        f"- **Cost: ${usage.cost_usd():.2f}** (${per_page:.4f}/page)",
+        "",
+        "Projected from this run's measured rate:",
+        "",
+        "| pages | at this rate | at "
+        f"${other[0]:.0f}/${other[1]:.0f} |",
+        "| ---: | ---: | ---: |",
+    ]
+    for n in (100, 1_000, 2_500, 10_000):
+        lines.append(
+            f"| {n:,} | ${usage.project_usd(n):.2f} "
+            f"| ${usage.project_usd(n, other):.2f} |"
+        )
+    if usage.truncated_pages:
+        lines += [
+            "",
+            f"> **{usage.truncated_pages} page(s) hit max_tokens and were "
+            "truncated.** Those pages are incomplete — re-run them before "
+            "trusting their content.",
+        ]
+    return "\n".join(lines) + "\n"
 
 
 @app.command()
