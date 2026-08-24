@@ -23,6 +23,8 @@ class DocType(StrEnum):
     contract = "contract"       # CBAs / negotiated agreements / MOUs
     budget = "budget"
     transcript = "transcript"
+    presentation = "presentation"   # board slide decks: persuasion, not record
+    financial = "financial"         # treasurer's reports, audits, warrant registers
     other = "other"
 
 

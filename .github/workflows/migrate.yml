@@ -1,0 +1,65 @@
+name: migrate
+
+# Apply the SQL migrations in db/migrations to the database.
+#
+#   Actions -> migrate -> Run workflow
+#
+# Migrations used to need `psql` on a laptop, which is why
+# 0005_bargaining_unit.sql sat unapplied while the code needing it was already
+# merged. This is the phone-reachable version.
+#
+# The dry run (default) lists what WOULD be applied and changes nothing — run
+# it first. Each migration then runs in its own transaction and is recorded in
+# schema_migrations, so re-running is safe and a failure never leaves a
+# half-applied schema.
+#
+# Required secret: SUPABASE_DB_URL
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List pending migrations only; apply nothing"
+        type: boolean
+        default: true
+
+concurrency:
+  group: migrate          # never two schema changes at once
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Check secret
+        run: |
+          [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
+          echo "secret present (length only): ${#SUPABASE_DB_URL}"
+      - name: Apply migrations
+        run: |
+          uv run herald-migrate apply \
+            ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }} \
+            2>&1 | tee migrate.log
+      - name: Publish to run summary
+        if: always()
+        run: |
+          {
+            echo '## migrate'
+            echo '```'
+            cat migrate.log || echo '(no output)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
