@@ -337,12 +337,20 @@ async def ingest_manifests(
             stats.by_doc_type[w.doc_type] += len(w.chunks)
         wave.clear()
 
-    def mark(document_id, status: str, error: str | None = None) -> None:
+    def mark(
+        document_id,
+        status: str,
+        error: str | None = None,
+        *,
+        page_count: int | None = None,
+        text_chars: int | None = None,
+    ) -> None:
         if conn is None or document_id is None:
             return
         with conn.transaction():
             schools_db.mark_document(
-                conn.cursor(), document_id=document_id, status=status, error=error
+                conn.cursor(), document_id=document_id, status=status, error=error,
+                page_count=page_count, text_chars=text_chars,
             )
 
     for entry, manifest_path in pairs:
@@ -467,7 +475,13 @@ async def ingest_manifests(
             elif extracted.content_chars < min_chars or not chunks:
                 stats.docs_no_text += 1
                 note = "no_text"      # in OCR mode: OCR recovered nothing usable
-                mark(doc_id, "no_text")
+                # Record what extraction DID learn. A no_text document is
+                # precisely the one we may later pay to OCR, and OCR is priced
+                # per page — so the page count is the one number that says what
+                # that will cost. Dropping it here left the whole OCR backlog
+                # costed at NULL.
+                mark(doc_id, "no_text",
+                     page_count=extracted.page_count, text_chars=extracted.content_chars)
                 continue
 
             wave.append(_DocWork(

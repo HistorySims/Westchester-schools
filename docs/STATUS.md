@@ -574,6 +574,105 @@ negative control.
 
 ---
 
+## What "pay Google last year" revealed (2026-08-23)
+
+A live question — *"How much did each district pay Google last year?"* —
+produced an answer that was **right to refuse**:
+
+> *"This means the corpus as searched does not surface a Google-specific
+> expenditure — it does not mean the districts did not pay Google last year."*
+
+That paragraph is the epistemics this project has been building toward, and it
+is now guarded by an eval case. But the run exposed two real problems.
+
+**"last year" was silently dropped.** `--since` was empty and nothing read the
+question, so a time-scoped question was answered from evidence dated **2013 to
+2026**. `herald.timeframe` now reads the question: resolvable phrases ("in
+2024", "the 2023-24 school year", "since 2022") become a date filter, and
+**vague ones are reported, never guessed**. "Last year" in August could be the
+2025 calendar year or the 2025-26 school year, and district documents run on
+the latter — so the answer now carries a line, directly under the heading,
+saying it was not scoped and what the evidence actually spans. A school year
+is July–June, which is why "2023-24" is not the window "2023".
+
+**The question is unanswerable by document class, not by coverage.** All 32
+retrieved passages were budget books, topically perfect and structurally
+incapable of naming a vendor: budgets appropriate by *function code*
+("CONTRACT SRV NETWORK", "BOCES SERVICES"), never by payee. Vendor payments
+live in the monthly **warrant / check register** the board approves and in
+claims-auditor reports — a document class we do not acquire at all. Those are
+usually BoardDocs agenda attachments, so they are probably reachable.
+
+That distinction is worth keeping straight: a coverage gap is fixed by
+crawling harder, a document-class gap is not fixed at all until someone
+notices the answer can never be in the documents being searched.
+
+---
+
+## The 908 `other` documents (2026-08-23)
+
+A reclassify pass moved only 8 of 908, so we looked at what the 908 actually
+are rather than guessing. Grouped by the first word of the title:
+
+| first word | docs | districts | example |
+|---|---:|---:|---|
+| min | **90** | 1 | `Min 1.11.24.pdf` |
+| boe | 51 | 3 | `BoE Presentation - Cultural Arts` |
+| treasurer's | 43 | 1 | `Treasurer's Report April 2023.pdf` |
+| fixed | 25 | 1 | `Fixed Asset Disposal - 20 Chromebook Carts.pdf` |
+| charters / charter / club | ~33 | 1 | `Club Charters 11-07-24.pdf` |
+
+Two things fall out of that shape.
+
+**Ninety of them are minutes.** BoardDocs names the attachment
+`Min 4.18.23.pdf`, and "min" is not "minute", so the whole Tarrytowns meeting
+record was unfilterable. Fixed with an anchored rule that requires the date
+which follows — a bare `min` prefix would swallow every *minimum*,
+*mini-grant* and *minority* report in the corpus, and there is a test for
+each direction.
+
+**Nearly every group is one district.** This is Tarrytowns' BoardDocs
+attachment sprawl (6,558 chunks — it backs up nearly every consent-agenda
+item as its own file), not a corpus-wide problem. Worth remembering before
+reading `other` as a quality signal.
+
+**And 898 of the 900 come from BoardDocs** — so this was never really a
+classifier problem. Fetching a live agenda showed the label was there all
+along and being discarded: attachments sit in `div.print-files` inside
+`div.container.item.agendaorder`, and the item's own heading says plainly
+what the file is.
+
+| file | agenda item |
+|---|---|
+| `Min Org 7.9.26.pdf` | Minutes Reorganization and Regular Meeting July 9, 2026 |
+| `Draft Policy 8636 - Artificial Intelligence.pdf` | Policy 8636 Artificial Intelligence (AI) |
+| `2026-2027 Mid-Westchester Consortium…` | Special Education **Agreement** |
+
+`FileRef` now carries `item_title`, and it becomes the document's title as
+well as a classification signal. On the sample agenda that retyped 1 of 15
+files — `Min Org 7.9.26.pdf` defeats even the abbreviation rule, since "min"
+is followed by "org" rather than a date — but it improved the **title of all
+15**, which is the bigger win: a citation reading "Minutes Reorganization and
+Regular Meeting July 9, 2026" beats one reading "Min Org 7.9.26.pdf
+(3,798 KB)". Many of the 898 are genuinely miscellaneous (club charters,
+asset disposals) and will stay `other`, correctly.
+
+This only affects **future** BoardDocs crawls — existing documents keep the
+titles they were ingested with. A re-crawl is what would apply it.
+
+### An open taxonomy question
+
+`treasurer's` (43) is a real, recurring document class with nowhere to go.
+A Treasurer's Report is a **financial statement**, not a spending plan, and
+`DocType` has only `budget`. Folding it in would mean "show me the budget"
+returns monthly cash reports — the same reason audits were deliberately
+excluded. The honest options are a new `financial` type (treasurer's reports,
+audits, and the warrant registers we do not yet acquire) or leaving them
+`other` and accepting they cannot be filtered to. That is a schema decision,
+not a classifier one, so it is recorded here rather than guessed at.
+
+---
+
 ## The peer set
 
 Eight districts chosen as demographic/socioeconomic peers of Port Chester

@@ -43,6 +43,12 @@ CONTRACT_WORDS = (
 )
 _CONTRACT_RE = re.compile(CONTRACT_WORDS, re.I)
 
+# BoardDocs names minutes attachments "Min 4.18.23.pdf". Ninety Tarrytowns
+# meeting records sat in 'other' because "min" is not "minute". Anchored and
+# requiring the date that follows, so it cannot reach "minimum", "Mini-grant"
+# or a title that merely starts with those letters.
+_MIN_ABBREV = re.compile(r"^min[s.]?\s+\d")
+
 # The URL gets a NARROWER test than the title. A path segment is structural —
 # a file under /contracts/ is a contract — while prose vocabulary is not: a
 # newsletter at /news/contract-negotiations-update is about a contract, and
@@ -119,7 +125,7 @@ def classify_doc_type(title: str, source_url: str = "") -> str:
     doc_type='contract' filter, with its salary grid sitting in the corpus.
     """
     low = re.sub(r"[-_]+", " ", title.lower())
-    if "minute" in low:
+    if "minute" in low or _MIN_ABBREV.match(low):
         return "minutes"
     # Before the meeting keywords: a "Board Meeting Transcript" is a
     # transcript, not an agenda.

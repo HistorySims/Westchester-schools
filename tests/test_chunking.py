@@ -159,3 +159,23 @@ def test_both_classifiers_share_one_contract_vocabulary():
                   "Federation of Teachers contract", "Memorandum of Agreement"):
         assert classify_doc_type(title) == "contract", title
         assert classify_link("https://x.org/a.pdf", title) is DocType.contract, title
+
+
+def test_the_boarddocs_minutes_abbreviation_is_recognised():
+    # Real titles from the corpus: BoardDocs names minutes attachments
+    # "Min 4.18.23.pdf". Ninety Tarrytowns meeting records sat in 'other'
+    # because "min" is not "minute", so the whole meeting record was
+    # unfilterable.
+    for title in ("Min 1.11.24.pdf (24,619 KB)", "Min 4.18.23.pdf (1,445 KB)",
+                  "Mins 9.5.24.pdf", "Min. 3.2.23.pdf"):
+        assert classify_doc_type(title) == "minutes", title
+
+
+def test_the_abbreviation_cannot_reach_ordinary_words():
+    # It is anchored and requires the date that follows, so a bare "min"
+    # prefix is not enough — otherwise every minimum, mini-grant and minority
+    # report in the corpus becomes a set of meeting minutes.
+    for title in ("minimum attendance requirements", "Mini-Grant Award 2024",
+                  "Ministry of Education report", "Minority Business Enterprise Report",
+                  "Minnesota comparison study"):
+        assert classify_doc_type(title) == "other", title
