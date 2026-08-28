@@ -71,3 +71,48 @@ def test_the_real_migrations_directory_is_ordered_and_unique():
     # every file carries a numeric prefix, which is what makes order meaningful
     assert all(m.name[:4].isdigit() for m in found)
     assert "0006_doc_type_presentation_financial.sql" in names
+
+
+def test_every_migration_guards_its_constraint_and_index_creation():
+    # 0005 died live with "relation salary_schedule_unit_key already exists".
+    # It had been applied by hand before schema_migrations existed, so the
+    # runner had no record and re-ran it. `add constraint` builds an index of
+    # the same name and has no IF NOT EXISTS, so it is not re-runnable on its
+    # own — it needs a pg_constraint guard, as 0002 already used.
+    import re
+
+    # Two ways to make `add constraint` re-runnable, both used here:
+    #   * wrap it in `do $$ ... if not exists (select 1 from pg_constraint) $$`
+    #     (0002, 0005) — keeps an existing constraint untouched;
+    #   * `drop constraint if exists X` first (0006) — recreates it, which is
+    #     what a CHECK constraint whose allowed list grows actually needs, since
+    #     the guard version would skip the update.
+    offenders: list[str] = []
+    for m in discover("db/migrations"):
+        sql = m.sql
+        unguarded = re.sub(r"do \$\$.*?end \$\$;", "", sql, flags=re.S | re.I)
+        dropped = {n.lower() for n in
+                   re.findall(r"drop constraint if exists\s+(\w+)", sql, flags=re.I)}
+        for stmt in re.findall(r"add constraint\s+(\w+)", unguarded, flags=re.I):
+            if stmt.lower() not in dropped:
+                offenders.append(f"{m.name}: add constraint {stmt}")
+        for stmt in re.findall(r"create (?:unique )?index (?!if not exists)(\w+)",
+                               unguarded, flags=re.I):
+            offenders.append(f"{m.name}: create index {stmt}")
+    assert not offenders, (
+        "these statements cannot be re-run, so the migration is not idempotent "
+        f"and a database that already has the change cannot be caught up: {offenders}"
+    )
+
+
+def test_create_table_and_add_column_are_guarded_too():
+    import re
+
+    offenders: list[str] = []
+    for m in discover("db/migrations"):
+        sql = re.sub(r"do \$\$.*?end \$\$;", "", m.sql, flags=re.S | re.I)
+        offenders += [f"{m.name}: create table {t}" for t in
+                      re.findall(r"create table (?!if not exists)(\w+)", sql, flags=re.I)]
+        offenders += [f"{m.name}: add column {c}" for c in
+                      re.findall(r"add column (?!if not exists)(\w+)", sql, flags=re.I)]
+    assert not offenders, offenders
