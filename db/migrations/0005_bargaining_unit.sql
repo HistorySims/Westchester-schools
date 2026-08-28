@@ -22,9 +22,21 @@ alter table salary_schedule
 -- Widen the uniqueness/idempotency key to include the unit.
 alter table salary_schedule
   drop constraint if exists salary_schedule_district_id_school_year_lane_step_key;
-alter table salary_schedule
-  add constraint salary_schedule_unit_key
-  unique (district_id, bargaining_unit, school_year, lane, step);
+-- Guarded like 0002's check constraint. `add constraint ... unique` builds an
+-- index of the same name and has no IF NOT EXISTS, so re-running raised
+-- DuplicateTable — which is exactly what happened: this file was applied by
+-- hand before schema_migrations existed, so the runner had no record of it and
+-- tried again.
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'salary_schedule_unit_key'
+  ) then
+    alter table salary_schedule
+      add constraint salary_schedule_unit_key
+      unique (district_id, bargaining_unit, school_year, lane, step);
+  end if;
+end $$;
 
 drop index if exists salary_schedule_lookup_idx;
 create index if not exists salary_schedule_lookup_idx
@@ -38,6 +50,13 @@ alter table stipend_schedule
 
 alter table stipend_schedule
   drop constraint if exists stipend_schedule_district_id_school_year_position_tier_key;
-alter table stipend_schedule
-  add constraint stipend_schedule_unit_key
-  unique (district_id, bargaining_unit, school_year, position, tier);
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'stipend_schedule_unit_key'
+  ) then
+    alter table stipend_schedule
+      add constraint stipend_schedule_unit_key
+      unique (district_id, bargaining_unit, school_year, position, tier);
+  end if;
+end $$;

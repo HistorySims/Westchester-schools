@@ -1420,7 +1420,7 @@ def reclassify(
         console.print("[red]SUPABASE_DB_URL is not set[/red]")
         raise typer.Exit(1)
 
-    from herald.schools_db import connect_raw
+    from herald.schools_db import allowed_doc_types, connect_raw
 
     where = ["d.ingest_status = 'ingested'", "d.doc_type = %s"]
     params: list[object] = [from_type]
@@ -1446,6 +1446,11 @@ def reclassify(
         cur.execute(sql, params)
         rows = cur.fetchall()
         seen = len(rows)
+
+        # Decide everything before writing anything. Two reasons: the target
+        # types can be checked against the schema up front, and the writes can
+        # then happen in one transaction rather than interleaved with the scan.
+        moves: list[tuple[object, str]] = []
         for doc_id, slug, title, current, source_url in rows:
             new, was_held = reclassify_target(title, source_url or "", current)
             if was_held:
@@ -1456,14 +1461,35 @@ def reclassify(
             changed[new] += 1
             per_district[slug] += 1
             examples.setdefault(new, (slug, title))
-            if dry_run:
-                continue
-            cur.execute("update documents set doc_type = %s where id = %s", (new, doc_id))
-            cur.execute("update chunks set doc_type = %s where document_id = %s", (new, doc_id))
-        if dry_run:
-            conn.rollback()
-        else:
-            conn.commit()
+            moves.append((doc_id, new))
+
+        # A doc_type the database cannot store fails on the FIRST write, after
+        # earlier ones have already gone in — connect_raw is autocommit, so a
+        # mid-run CheckViolation leaves the corpus half-reclassified. Check the
+        # constraint before touching a row: a classifier that has outrun its
+        # migration is an ordering mistake, and it should say so.
+        allowed = allowed_doc_types(cur)
+        wanted = {t for _, t in moves}
+        if allowed and not wanted <= allowed:
+            missing = ", ".join(sorted(wanted - allowed))
+            raise typer.BadParameter(
+                f"The database cannot store doc_type(s): {missing}. "
+                f"db/migrations/0006_doc_type_presentation_financial.sql has not "
+                f"been applied — run the `migrate` workflow with dry_run OFF "
+                f"first. Nothing was written."
+            )
+
+        if not dry_run and moves:
+            # One transaction: 137 documents reclassify together or not at all.
+            # (connect_raw sets autocommit, so without this each update commits
+            # on its own and a failure partway through is unrecoverable.)
+            with conn.transaction():
+                for doc_id, new in moves:
+                    cur.execute(
+                        "update documents set doc_type = %s where id = %s", (new, doc_id))
+                    cur.execute(
+                        "update chunks set doc_type = %s where document_id = %s",
+                        (new, doc_id))
 
     verb = "would reclassify" if dry_run else "reclassified"
     console.print(f"examined {seen} document(s) of type {from_type!r}; "

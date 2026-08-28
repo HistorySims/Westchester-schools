@@ -161,16 +161,87 @@ def apply(
             console.print(f"applying {m.name} …")
             # One transaction per migration: the DDL and the record that it
             # ran commit together or not at all.
-            with conn.transaction():
-                cur = conn.cursor()
-                cur.execute(m.sql)
+            try:
+                with conn.transaction():
+                    cur = conn.cursor()
+                    cur.execute(m.sql)
+                    cur.execute(
+                        "insert into schema_migrations (filename, sha256) values (%s, %s)",
+                        (m.name, m.sha256),
+                    )
+            except Exception as exc:
+                # The likeliest cause is not a broken migration: it is a
+                # migration applied by hand BEFORE this runner existed, so
+                # nothing recorded it and it is being re-run against a schema
+                # that already has the change. 0005 failed exactly this way
+                # ("relation salary_schedule_unit_key already exists").
+                console.print(f"\n[bold red]{m.name} failed:[/bold red] {exc}")
+                console.print(
+                    "\nIf this migration was already applied by hand, the schema "
+                    "is fine and only the record is missing. Two ways forward:\n"
+                    "  * make the migration re-runnable (guard each statement with "
+                    "IF NOT EXISTS, or a `do $$ ... pg_constraint` block as in 0002) "
+                    "— preferred, because it also completes any half-applied file; or\n"
+                    f"  * `herald-migrate baseline {m.name}` to record it as applied "
+                    "WITHOUT running it, if you are certain it is fully in place.\n"
+                    "Nothing after this migration was applied."
+                )
+                raise typer.Exit(1) from exc
+            console.print(f"  [green]applied[/green] {m.name}")
+        if pending:
+            console.print(f"\n{len(pending)} migration(s) applied.")
+    finally:
+        conn.close()
+
+
+_FILENAMES_ARG = typer.Argument(..., help="Migration filenames to record.")
+
+
+@app.command()
+def baseline(
+    filenames: list[str] = _FILENAMES_ARG,
+    directory: str = typer.Option(DEFAULT_DIR, help="Migrations directory."),
+    dry_run: bool = typer.Option(True, help="Show what would be recorded; change nothing."),
+) -> None:
+    """Record migrations as applied WITHOUT running them.
+
+    For a database that predates this runner: the change is already in the
+    schema, only the record is missing. Use it when you are certain the file is
+    fully in place — a half-applied migration baselined here is never completed
+    by anything, which is why making the migration re-runnable is the better
+    fix wherever it is possible.
+    """
+    from herald import schools_db
+
+    by_name = {m.name: m for m in discover(directory)}
+    unknown = [f for f in filenames if f not in by_name]
+    if unknown:
+        raise typer.BadParameter(f"not in {directory}: {', '.join(unknown)}")
+
+    conn = schools_db.connect(_db_url())
+    try:
+        with conn.transaction():
+            applied = _applied(conn.cursor())
+        todo = [by_name[f] for f in filenames if f not in applied]
+        for f in filenames:
+            if f in applied:
+                console.print(f"  {f} — already recorded, skipping")
+        if not todo:
+            console.print("Nothing to record.")
+            return
+        for m in todo:
+            console.print(f"  would record {m.name}" if dry_run else f"  recording {m.name}")
+        if dry_run:
+            console.print("\n[bold]DRY RUN[/bold] — nothing was recorded.")
+            return
+        with conn.transaction():
+            cur = conn.cursor()
+            for m in todo:
                 cur.execute(
                     "insert into schema_migrations (filename, sha256) values (%s, %s)",
                     (m.name, m.sha256),
                 )
-            console.print(f"  [green]applied[/green] {m.name}")
-        if pending:
-            console.print(f"\n{len(pending)} migration(s) applied.")
+        console.print(f"{len(todo)} migration(s) recorded as applied (not run).")
     finally:
         conn.close()
 

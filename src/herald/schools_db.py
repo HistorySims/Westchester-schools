@@ -10,6 +10,7 @@ corpus's write path.
 from __future__ import annotations
 
 import datetime as _dt
+import re
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -28,6 +29,33 @@ def connect_raw(url: str) -> psycopg.Connection:
     adapter, so schema application uses this instead.
     """
     return psycopg.connect(url, autocommit=True, prepare_threshold=None)
+
+
+#: The doc_type CHECK constraint on `documents`, as named in 0001/0006.
+DOC_TYPE_CONSTRAINT = "documents_doc_type_chk"
+
+_QUOTED = re.compile(r"'([a-z_]+)'")
+
+
+def allowed_doc_types(cur: psycopg.Cursor) -> set[str]:
+    """The doc_type values this database will actually accept.
+
+    Read from the live CHECK constraint rather than assumed from the enum,
+    because the two drift: the code gained 'presentation' and 'financial' in
+    one commit and the migration adding them to the constraint is applied
+    separately, by hand, later. A caller that writes a type the schema has not
+    learned yet fails on the first row — and under autocommit, after earlier
+    rows have already been written.
+
+    Returns an empty set when the constraint cannot be found, which callers
+    must read as "unknown, do not block" rather than "nothing is allowed".
+    """
+    cur.execute(
+        "select pg_get_constraintdef(oid) from pg_constraint where conname = %s",
+        (DOC_TYPE_CONSTRAINT,),
+    )
+    row = cur.fetchone()
+    return set(_QUOTED.findall(row[0])) if row and row[0] else set()
 
 
 @dataclass(frozen=True)

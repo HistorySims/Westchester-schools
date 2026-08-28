@@ -1,0 +1,100 @@
+{
+  "_comment": "Documents every New York public school district is REQUIRED to produce. This file exists to break a circularity: data/eval/schools_cases.json can only test retrieval of things we already hold, because every expected string in it was read out of a document in the corpus. By construction it cannot detect a missing document. This list comes from statute instead of from the corpus, so an absence here is evidence rather than a shrug — if the law says a district must produce it and we hold nothing, that is a real gap. A zero is still a LEAD, not a verdict: districts file the Code of Conduct as policy 5300 with no matching title, and title matching cannot see that. Confirm by reading before recording an absence.",
+  "_verified": "2026-08-28, against nysenate.gov and p12.nysed.gov; see docs/STATUS.md",
+  "requirements": [
+    {
+      "id": "code-of-conduct",
+      "name": "Code of Conduct on School Property",
+      "authority": "NY Education Law § 2801",
+      "cadence": "Reviewed and updated annually; adopted only after at least one public hearing.",
+      "expect_doc_type": "policy",
+      "title_patterns": ["%code of conduct%", "%conduct on school property%"],
+      "also_filed_as": "Often policy 5300 in the manual, and separately as a standalone PDF.",
+      "why_it_matters": "The single most-cited student-facing document, and the one the 18-day credit question turns on. Annual review means there is a dated version per year — so 'do we have the current one?' is answerable, not just 'do we have one?'."
+    },
+    {
+      "id": "school-safety-plan",
+      "name": "District-Wide School Safety Plan",
+      "authority": "NY Education Law § 2801-a",
+      "cadence": "Public comment at least 30 days before adoption; at least one public hearing; filed with the Commissioner within 30 days of adoption.",
+      "expect_doc_type": "policy",
+      "title_patterns": ["%safety plan%", "%project save%"],
+      "why_it_matters": "A statutory 30-day public-comment window means the draft is necessarily public. If we hold no version for a district, that is acquisition failure, not confidentiality — building-level emergency response plans ARE confidential, but the district-wide plan is not."
+    },
+    {
+      "id": "property-tax-report-card",
+      "name": "Property Tax Report Card",
+      "authority": "NY Education Law § 1608 / § 1716",
+      "cadence": "Annual, before the budget vote; appended to the proposed budget and available at the annual meeting.",
+      "expect_doc_type": "budget",
+      "title_patterns": ["%tax report card%"],
+      "why_it_matters": "A fixed-format document with the same fields every year for every district — the cleanest cross-district comparison in the whole corpus, and the one place levy and spending growth are stated in a directly comparable way."
+    },
+    {
+      "id": "proposed-budget",
+      "name": "Proposed Budget / Budget Notice",
+      "authority": "NY Education Law § 1716; § 2022",
+      "cadence": "Annual; budget notice mailed to voters before the May vote.",
+      "expect_doc_type": "budget",
+      "title_patterns": ["%proposed budget%", "%adopted budget%", "%budget notice%"],
+      "why_it_matters": "Already believed complete (20-85 budget docs per district), so this is the control: if the probe says a district is missing its budget, the probe is wrong, not the corpus. Calibrates every other row."
+    },
+    {
+      "id": "external-audit",
+      "name": "Annual External Audit + management letter",
+      "authority": "NY Education Law § 2116-a; Commissioner's Reg. § 170.3",
+      "cadence": "Annual; independent CPA; presented to the board.",
+      "expect_doc_type": "financial",
+      "title_patterns": ["%external audit%", "%independent audit%", "%financial statements%"],
+      "why_it_matters": "States actual spending against the budgeted plan. The corpus is heavy on plans and light on outcomes; this is the document class that closes that gap."
+    },
+    {
+      "id": "claims-auditor-warrants",
+      "name": "Warrant / check registers and claims-auditor reports",
+      "authority": "NY Education Law § 1724; Commissioner's Reg. § 170.12",
+      "cadence": "Every board meeting / monthly.",
+      "expect_doc_type": "financial",
+      "title_patterns": ["%warrant%", "%claims audit%", "%check register%"],
+      "known_gap": true,
+      "why_it_matters": "KNOWN ABSENT. This is the document class that names vendors and amounts — the only class that could answer 'how much did each district pay Google', which the corpus currently and correctly refuses. Budgets appropriate by function code and never by payee. If this is acquirable, it is the highest-value missing class we have identified."
+    },
+    {
+      "id": "appr-plan",
+      "name": "Annual Professional Performance Review (APPR) plan",
+      "authority": "NY Education Law § 3012-d; Commissioner's Reg. § 30-3",
+      "cadence": "Annual; submitted to and approved by NYSED.",
+      "expect_doc_type": "policy",
+      "title_patterns": ["%annual professional performance%", "%appr%"],
+      "why_it_matters": "Every district must have one on file with the state, so absence is unambiguous. Also the bridge between the contract corpus and the policy corpus — APPR terms are collectively bargained."
+    },
+    {
+      "id": "dasa",
+      "name": "Dignity for All Students Act policy + coordinator designation",
+      "authority": "NY Education Law art. 2 (§§ 10-18)",
+      "cadence": "Standing policy; a named coordinator per building.",
+      "expect_doc_type": "policy",
+      "title_patterns": ["%dignity for all%", "%dasa%", "%harassment%bullying%"],
+      "why_it_matters": "Already partly validated — Mount Vernon's 0115 is an attachment-only policy that reached the corpus as a title with nothing behind it, and is now an eval case. The COORDINATOR designation is the untested half: a name and a building, which no policy PDF may carry."
+    },
+    {
+      "id": "board-minutes-coverage",
+      "name": "Board meeting minutes, for every meeting",
+      "authority": "NY Public Officers Law § 106 (Open Meetings Law)",
+      "cadence": "Available within two weeks of the meeting; one week for executive session.",
+      "expect_doc_type": "minutes",
+      "title_patterns": ["%minute%"],
+      "probe": "agenda_without_minutes",
+      "why_it_matters": "The strongest automatable absence test in this file, and the only one that needs no external list. Every meeting that produced an agenda must also produce minutes within two weeks. A meeting date with an agenda and no minutes is a specific, dated, provable hole — and Port Chester's meetings are scanned, so this is where its coverage should look worst."
+    },
+    {
+      "id": "student-handbook",
+      "name": "Student / parent handbook, per school",
+      "authority": "Not statutory — district practice",
+      "cadence": "Annual, per building.",
+      "expect_doc_type": "handbook",
+      "title_patterns": ["%handbook%"],
+      "known_gap": true,
+      "why_it_matters": "KNOWN ABSENT and deliberately included as the counter-example: this is NOT required by statute, so absence proves nothing about the district. It is here because it is where the 18-day credit rule actually lives in practice — the gap between what a policy says and what a school enforces. Handbooks are school-level and uncrawled."
+    }
+  ]
+}

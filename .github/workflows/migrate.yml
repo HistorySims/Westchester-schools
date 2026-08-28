@@ -49,7 +49,7 @@ jobs:
         run: |
           [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
           echo "secret present (length only): ${#SUPABASE_DB_URL}"
-      - name: Apply migrations
+      - name: ${{ inputs.dry_run && 'DRY RUN — list pending only (applies NOTHING)' || 'APPLY migrations' }}
         run: |
           uv run herald-migrate apply \
             ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }} \
@@ -57,8 +57,19 @@ jobs:
       - name: Publish to run summary
         if: always()
         run: |
+          # A dry run that finds pending migrations succeeds and changes
+          # nothing. That green check was once read as "migrate done", and the
+          # next workflow died on a constraint the migration would have added.
+          # Say so at the top, where the result is actually looked at.
           {
-            echo '## migrate'
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo '# ⚠️ DRY RUN — NOTHING WAS APPLIED'
+              echo ''
+              echo 'Re-run with **dry_run unchecked** to apply the migrations listed below.'
+            else
+              echo '# ✅ Migrations applied'
+            fi
+            echo ''
             echo '```'
             cat migrate.log || echo '(no output)'
             echo '```'

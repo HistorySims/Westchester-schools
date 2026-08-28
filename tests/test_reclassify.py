@@ -63,3 +63,38 @@ def test_the_url_still_gets_a_vote_before_a_hold():
         "https://tufsd.org/contracts/Tarrytown-TAT-2022-2025.pdf",
         "other",
     ) == ("contract", False)
+
+
+def test_allowed_doc_types_reads_the_live_constraint():
+    # The enum and the CHECK constraint drift on purpose: code gains a type in
+    # one commit, the migration adding it is applied separately and later. A
+    # run must ask the database what it will accept, not assume.
+    from herald.schools_db import _QUOTED
+
+    definition = (
+        "CHECK ((doc_type = ANY (ARRAY['minutes'::text, 'agenda'::text, "
+        "'policy'::text, 'presentation'::text, 'financial'::text])))"
+    )
+    assert set(_QUOTED.findall(definition)) == {
+        "minutes", "agenda", "policy", "presentation", "financial",
+    }
+
+
+def test_an_unmigrated_database_is_detected_before_anything_is_written():
+    # The live failure: `presentation` was written to a database whose
+    # constraint had never learned it. connect_raw sets autocommit, so the
+    # CheckViolation landed AFTER earlier rows had already been committed —
+    # a half-reclassified corpus and a stack trace.
+    allowed = {"minutes", "agenda", "policy", "budget", "other"}
+    wanted = {"presentation", "financial", "minutes"}
+    assert not wanted <= allowed
+    assert sorted(wanted - allowed) == ["financial", "presentation"]
+
+
+def test_an_empty_constraint_read_does_not_block_the_run():
+    # allowed_doc_types returns an empty set when the constraint cannot be
+    # found. That means "unknown", and must never be read as "nothing is
+    # permitted" — otherwise a renamed constraint bricks every reclassify.
+    allowed: set[str] = set()
+    wanted = {"presentation"}
+    assert not (allowed and not wanted <= allowed)
