@@ -1360,6 +1360,36 @@ def _vision_cost_note(usage) -> str:
     return "\n".join(lines) + "\n"
 
 
+def reclassify_target(
+    title: str, source_url: str, current: str
+) -> tuple[str | None, bool]:
+    """Should this document's ``doc_type`` change? Returns ``(new_type, held)``.
+
+    ``new_type`` is ``None`` when nothing should change. ``held`` is True when
+    a change was *declined* to avoid losing information — reported, never
+    silent, because a hold is a decision.
+
+    **Refine, never un-know.** ``other`` means "we could not tell". A document
+    already typed something else was typed by a scraper that knew where the
+    file was published — evidence the title does not carry. Elmsford's
+    "2020 - 2021 Line-By-Line (Revised For Pandemic Adjustments)" is the most
+    detailed budget a district produces and contains no classifiable word;
+    recomputing from its title alone yields ``other`` and would drop it out of
+    every budget filter.
+
+    This guarantee was implicit while ``--from-type`` was always ``other``
+    (nothing could be demoted from ``other`` to ``other``). Exposing the flag
+    so slide decks could be pulled out of ``budget`` broke it, and a dry run
+    caught four real budgets queued for demotion.
+    """
+    new = classify_doc_type(title, source_url)
+    if new == current:
+        return None, False
+    if new == "other":
+        return None, True          # declined: the title knows less
+    return new, False
+
+
 @app.command()
 def reclassify(
     district: str | None = typer.Option(
@@ -1408,6 +1438,8 @@ def reclassify(
     changed: Counter[str] = Counter()
     per_district: Counter[str] = Counter()
     examples: dict[str, tuple[str, str]] = {}
+    held: Counter[str] = Counter()          # kept: the title knew less
+    held_examples: dict[str, tuple[str, str]] = {}
     seen = 0
 
     with connect_raw(url) as conn, conn.cursor() as cur:
@@ -1415,8 +1447,11 @@ def reclassify(
         rows = cur.fetchall()
         seen = len(rows)
         for doc_id, slug, title, current, source_url in rows:
-            new = classify_doc_type(title, source_url or "")
-            if new == current:
+            new, was_held = reclassify_target(title, source_url or "", current)
+            if was_held:
+                held[current] += 1
+                held_examples.setdefault(current, (slug, title))
+            if new is None:
                 continue
             changed[new] += 1
             per_district[slug] += 1
@@ -1440,6 +1475,25 @@ def reclassify(
         slug, title = examples[t]
         console.print(f"  -> {t}: {n}   e.g. {slug} {title[:60]!r}")
         lines.append(f"| {t} | {n} | {slug} — {title[:60]} |")
+    if held:
+        total_held = sum(held.values())
+        console.print(
+            f"  held {total_held} document(s): the title classified as 'other', "
+            f"which would lose the type they already have"
+        )
+        lines += [
+            "",
+            f"### Held — {total_held} document(s) kept as they are",
+            "",
+            "_The title classifies as `other`, but these already carry a type "
+            "(usually assigned by the scraper from where the file was "
+            "published — evidence the title lacks). Refine, never un-know._",
+            "",
+            "| kept as | documents | example |", "|---|---:|---|",
+        ]
+        for t, n in held.most_common():
+            slug, title = held_examples[t]
+            lines.append(f"| {t} | {n} | {slug} — {title[:60]} |")
     if per_district:
         lines += ["", "| district | reclassified |", "|---|---:|"]
         lines += [f"| {s} | {n} |" for s, n in per_district.most_common()]
