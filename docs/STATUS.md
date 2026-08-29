@@ -676,6 +676,74 @@ not a classifier one, so it is recorded here rather than guessed at.
 
 ---
 
+## The board-minutes hole (2026-08-28)
+
+Measured against NY Public Officers Law § 106, which requires minutes within
+two weeks of a meeting — so every meeting that produced an agenda must have
+produced minutes. This is the first **statutory** absence test in the project:
+unlike `data/eval/schools_cases.json`, whose every expectation was read out of
+a document we already hold, it can detect a document that is missing.
+
+Coverage of `doc_type in ('agenda','minutes')`, by district:
+
+| district | agendas | minutes | minutes span |
+|---|---:|---:|---|
+| port-chester-rye | 37 | 149 | 2011-07-05 → **2020-06-15** |
+| tarrytowns | 188 | 78 | 2022-12-15 → 2026-06-30 |
+| ossining | 16 | 90 | 2023-07-03 → 2026-05-19 |
+| elmsford | 7 | 88 | 2023-01-11 → 2026-06-29 |
+| white-plains | 22 | 27 | 2022-12-05 → 2026-06-01 |
+| greenburgh-central | 0 | 4 | 2026-06-02 → 2026-06-26 |
+| peekskill | 12 | 0 | — |
+| mount-vernon | 0 | 0 | — |
+
+Three findings, in order of how much they cost us:
+
+**1. A corpus-wide hole from 2020-06-15 to 2022-12-05.** Port Chester's
+minutes stop in June 2020; every other district's begin in December 2022 or
+later. For those thirty months **no district in the corpus has a single set of
+board minutes** — which is exactly the period covering school closure,
+reopening, masking and remote learning. The most consequential board decisions
+these districts have made in a generation are the ones we cannot see.
+
+**2. Three districts have no usable meeting record at all.** Mount Vernon has
+418 ingested documents and not one agenda or minute. Peekskill has twelve
+agendas, all from 2026, and no minutes. Greenburgh has four minutes, all from
+June 2026. Any question of the form "what did the board decide" is
+unanswerable for three of eight districts, and nothing in the system knows to
+say so — it returns nothing, indistinguishable from a district where nothing
+happened.
+
+**3. Port Chester is inverted.** The anchor district's agendas (2018-2025) and
+minutes (2011-2020) barely overlap. Its 32 "agenda without minutes" dates are
+not scattered holes but one clean cutoff: nothing after June 2020.
+
+### What this cost, methodologically
+
+The probe that found this — "meetings with an agenda and no minutes" — could
+only see districts that *have* agendas, so the three districts in the worst
+shape were invisible to it by construction. The same blind spot as the eval
+suite, one level up: a test that measures the quality of what we hold rather
+than the extent of what we do not. The fix was a second query that counted
+both classes per district and asked nothing about matching.
+
+### Scope statement
+
+What this corpus can be trusted to answer, as of 2026-08-28:
+
+* **Policies and regulations** — all eight districts, good coverage.
+* **Contracts** — all eight, good coverage.
+* **Budgets** — all eight; materially cleaner since 226 slide decks moved to
+  `presentation` and stopped competing with the budget books.
+* **Board decisions** — four districts, and only from ~December 2022. Nothing
+  anywhere for mid-2020 to late 2022. Absent entirely for Mount Vernon,
+  Peekskill and Greenburgh.
+
+Acquiring the missing minutes is now the highest-value work available — ahead
+of warrant registers and ahead of any further OCR.
+
+---
+
 ## `presentation` and `financial` (2026-08-24)
 
 **What forced it.** Chasing an OCR bill, a per-page query surfaced 108
