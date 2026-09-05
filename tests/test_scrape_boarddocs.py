@@ -194,10 +194,11 @@ def test_iter_documents_end_to_end(httpx_mock):
                 limit=1,  # walk only the newest meeting -> one agenda
             )
         )
-    # one meeting * three attachments
-    assert len(docs) == 3
+    # one meeting: its own agenda, plus three attachments
+    assert len(docs) == 4
     by_type = {d.doc_type for d in docs}
-    assert by_type == {DocType.minutes, DocType.policy, DocType.handbook}
+    assert by_type == {DocType.agenda, DocType.minutes, DocType.policy, DocType.handbook}
+    assert sum(d.doc_type is DocType.agenda for d in docs) == 1
     assert all(d.committee == "Board of Education" for d in docs)
     assert all(d.meeting_id == "MEET20240115" for d in docs)
     assert all(d.date == date(2024, 1, 15) for d in docs)
@@ -237,6 +238,14 @@ def _mock_full_crawl(httpx_mock) -> None:
     httpx_mock.add_response(
         url=f"{BASE}/PRINT-AgendaDetailed?open", text=_load("agenda.html"), is_reusable=True
     )
+    # the agenda itself is downloaded by GET now, not only its attachments
+    httpx_mock.add_response(
+        url=f"{BASE}/PRINT-AgendaDetailed?open&id=MEET20240115"
+            f"&current_committee_id=AAAA1111",
+        text=_load("agenda.html"),
+        headers={"Content-Type": "text/html"},
+        is_reusable=True,
+    )
     files = {
         "ABC123": "Minutes-January-2024.pdf",
         "DEF456": "Policy-5030-Wellness.pdf",
@@ -260,14 +269,20 @@ def test_download_docs_writes_manifest_and_files(httpx_mock, tmp_path):
         docs = iter_documents(client, district="scarsdale", committee="AAAA1111", limit=1)
         stats = download_docs(docs, fetcher=f, store=store, manifest=manifest)
 
-    assert stats.downloaded == 3
+    assert stats.downloaded == 4      # 3 attachments + the meeting's own agenda
     entries = manifest.entries()
-    assert len(entries) == 3
-    # files really landed on disk under district/doc_type/
-    for e in entries:
-        assert Path(e.local_path).read_bytes().startswith(b"%PDF")
+    assert len(entries) == 4
     types = {e.doc_type for e in entries}
-    assert types == {DocType.minutes, DocType.policy, DocType.handbook}
+    assert types == {DocType.agenda, DocType.minutes, DocType.policy, DocType.handbook}
+
+    # files really landed on disk under district/doc_type/
+    agenda = next(e for e in entries if e.doc_type is DocType.agenda)
+    for e in entries:
+        body = Path(e.local_path).read_bytes()
+        assert body.startswith(b"%PDF") or e is agenda
+    # the agenda is saved as HTML so ingest reads it with extract_html, not
+    # PyMuPDF — which would open it as nothing and file it as no_text
+    assert Path(agenda.local_path).suffix == ".html"
 
 
 def test_download_docs_is_idempotent(httpx_mock, tmp_path):
@@ -281,7 +296,7 @@ def test_download_docs_is_idempotent(httpx_mock, tmp_path):
             iter_documents(client, district="scarsdale", committee="AAAA1111", limit=1),
             fetcher=f, store=store, manifest=Manifest(mpath),
         )
-    assert first.downloaded == 3
+    assert first.downloaded == 4      # 3 attachments + the agenda itself
 
     # Second run with a fresh Manifest that reloads the prior state.
     with _fast_fetcher() as f:
@@ -291,8 +306,8 @@ def test_download_docs_is_idempotent(httpx_mock, tmp_path):
             fetcher=f, store=store, manifest=Manifest(mpath),
         )
     assert second.downloaded == 0
-    assert second.skipped_seen == 3
-    assert len(Manifest(mpath).entries()) == 3  # no duplicate rows
+    assert second.skipped_seen == 4   # the agenda dedupes like any artifact
+    assert len(Manifest(mpath).entries()) == 4  # no duplicate rows
 
 
 # Trimmed from a live tufsd agenda (PRINT-AgendaDetailed). The shape that
@@ -395,11 +410,16 @@ def _minutes_collection_docs(meeting_name: str):
     refs = parse_agenda_files(MINUTES_COLLECTION_AGENDA, base_url=PCSD_BASE)
 
     class _Client:
+        base_url = PCSD_BASE
+
         def list_meetings(self, committee):
             return [meeting]
 
         def get_agenda_files(self, m, committee):
             return refs
+
+        def agenda_url(self, m, committee):
+            return BoardDocsClient.agenda_url(self, m, committee)
 
     return list(iter_documents(_Client(), district="peekskill", committee="C1"))
 
@@ -431,3 +451,52 @@ def test_an_ordinary_meeting_does_not_relabel_its_attachments():
     by_title = {d.title: d.doc_type for d in docs}
     business = next(t for t in by_title if "Business Meeting" in t)
     assert by_title[business] is DocType.other
+
+
+def _agenda_docs(meeting_name: str, unique: str = "MEET1"):
+    from herald.scrape.boarddocs import Meeting, parse_agenda_files
+
+    meeting = Meeting(unique=unique, name=meeting_name, date=date(2026, 5, 28))
+    refs = parse_agenda_files(MINUTES_COLLECTION_AGENDA, base_url=PCSD_BASE)
+
+    class _Client:
+        base_url = PCSD_BASE
+
+        def list_meetings(self, committee):
+            return [meeting]
+
+        def get_agenda_files(self, m, committee):
+            return refs
+
+        def agenda_url(self, m, committee):
+            return BoardDocsClient.agenda_url(self, m, committee)
+
+    return list(iter_documents(_Client(), district="peekskill", committee="C1"))
+
+
+def test_the_agenda_itself_is_captured_not_only_its_attachments():
+    # The crawler fetched each agenda, scraped the attachment links out of it,
+    # and discarded ~19,500 characters of itemised meeting content. Mount
+    # Vernon and Greenburgh had zero agendas across hundreds of meetings
+    # because no agenda was ever saved as a document.
+    docs = _agenda_docs("Board of Education Meeting - 6:00 p.m.")
+    agendas = [d for d in docs if d.doc_type is DocType.agenda
+               and d.title.endswith("Agenda (2026-05-28)")]
+    assert len(agendas) == 1, "the meeting's own agenda must be a document"
+
+    a = agendas[0]
+    # Downloadable by plain GET: the crawl reaches it by POST, which the
+    # runner cannot repeat.
+    assert a.source_url.startswith(f"{PCSD_BASE}/PRINT-AgendaDetailed?open&id=MEET1")
+    assert "current_committee_id=C1" in a.source_url
+    # .html so ingest dispatches to extract_html instead of PyMuPDF
+    assert a.suggested_filename.endswith(".html")
+    assert a.date == date(2026, 5, 28) and a.meeting_id == "MEET1"
+
+
+def test_a_minutes_collection_contributes_no_phantom_agenda():
+    # Peekskill's "2026 Minutes" is a container, not a meeting. Its rendered
+    # agenda is just an index of the attachments, and saving it would invent a
+    # board meeting on 2026-05-28 that never happened.
+    docs = _agenda_docs("2026 Minutes")
+    assert not [d for d in docs if d.title.endswith("Agenda (2026-05-28)")]

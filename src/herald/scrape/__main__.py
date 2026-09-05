@@ -1038,3 +1038,106 @@ def policy_import(
 
 if __name__ == "__main__":
     app()
+
+@app.command("panopto-probe")
+def panopto_probe(
+    host: str = typer.Option(..., help="Panopto host, e.g. portchester.hosted.panopto.com."),
+    folder: str | None = typer.Option(None, help="Folder id to list (blank = whole site)."),
+    session: str | None = typer.Option(None, help="Session id to pull captions for."),
+    out: str = typer.Option("data/probe", help="Where to dump captured bodies."),
+    report: str | None = typer.Option(None, help="Write a markdown summary here."),
+    min_interval: float = typer.Option(2.0, help="Min seconds between requests."),
+) -> None:
+    """Find out what a Panopto host serves WITHOUT a login.
+
+    Port Chester publishes no minutes anywhere we can reach, and its agendas
+    carry no outcomes, so meeting captions are the only record of what its
+    board actually decided. Whether those are reachable depends on per-folder
+    permissions, which cannot be reasoned out — and the egress proxy in the
+    dev container denies the host, so this runs on a networked runner, the
+    same reason ``probe`` exists for BoardDocs.
+
+    Writes every response body under --out so the adapter can be built from
+    evidence rather than from guesses about the API.
+    """
+    from herald.scrape.panopto import (
+        EP_PODCAST,
+        EP_SESSIONS,
+        PROBE_PAGES,
+        ProbeResult,
+        caption_url,
+        looks_like_srt,
+        parse_sessions,
+        sessions_query,
+        srt_to_text,
+    )
+
+    out_dir = Path(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    res = ProbeResult(host=host)
+
+    def save(name: str, body: str) -> None:
+        (out_dir / name).write_text(body, encoding="utf-8", errors="replace")
+
+    with _fetcher(BROWSER_USER_AGENT, min_interval, respect_robots=False,
+                  browser=True) as f:
+        for page in PROBE_PAGES:
+            url = f"https://{host}{page}"
+            try:
+                r = f.get(url)
+                save(f"panopto{page.replace('/', '_')}.html", r.text)
+                signed_in = "sign in" in r.text.lower() or "login" in r.url.path.lower()
+                res.record(f"GET {page}",
+                           f"{r.status_code}, {len(r.text):,} bytes"
+                           + (" — looks like a login wall" if signed_in else ""))
+            except Exception as exc:
+                res.record(f"GET {page}", f"ERROR {type(exc).__name__}: {str(exc)[:80]}")
+
+        # The listing the web UI itself uses.
+        sessions = []
+        try:
+            r = f.post(f"https://{host}{EP_SESSIONS}", json=sessions_query(folder))
+            save("panopto_sessions.json", r.text)
+            sessions = parse_sessions(r.text)
+            res.record("POST GetSessions",
+                       f"{r.status_code}, {len(r.text):,} bytes, {len(sessions)} session(s)")
+            for s in sessions[:10]:
+                res.record("  session", f"`{s.id}` {s.date or '?'} — {s.name[:60]}")
+        except Exception as exc:
+            res.record("POST GetSessions", f"ERROR {type(exc).__name__}: {str(exc)[:80]}")
+
+        if folder:
+            try:
+                r = f.get(f"https://{host}{EP_PODCAST}?courseid={folder}&type=mp4")
+                save("panopto_podcast.xml", r.text)
+                res.record("GET Podcast.ashx (public RSS)",
+                           f"{r.status_code}, {len(r.text):,} bytes")
+            except Exception as exc:
+                res.record("GET Podcast.ashx", f"ERROR {type(exc).__name__}: {str(exc)[:80]}")
+
+        # The one that decides everything: are captions readable without a login?
+        target = session or (sessions[0].id if sessions else None)
+        if target:
+            try:
+                r = f.get(caption_url(host, target))
+                save("panopto_captions.srt", r.text)
+                if looks_like_srt(r.text):
+                    text = srt_to_text(r.text)
+                    save("panopto_captions.txt", text)
+                    res.record(f"GET captions for `{target}`",
+                               f"**{r.status_code}, real SRT** — {len(text):,} chars of text")
+                    res.record("  first 200 chars", f"`{text[:200]}`")
+                else:
+                    res.record(f"GET captions for `{target}`",
+                               f"{r.status_code}, {len(r.text):,} bytes but NOT SRT "
+                               "— an empty 200 here means the folder is not public")
+            except Exception as exc:
+                res.record("GET captions", f"ERROR {type(exc).__name__}: {str(exc)[:80]}")
+        else:
+            res.record("GET captions", "skipped — no session id found or supplied")
+
+    md = res.as_markdown()
+    console.print(md)
+    if report:
+        Path(report).write_text(md, encoding="utf-8")
+        console.print(f"report: {report}")

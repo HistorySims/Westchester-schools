@@ -662,6 +662,18 @@ class BoardDocsClient:
         body = self._post(EP_AGENDA, {"id": meeting.unique, **_committee_params(committee)})
         return parse_agenda_files(body, base_url=self.base_url)
 
+    def agenda_url(self, meeting: Meeting, committee: str) -> str:
+        """A plain GET URL for the rendered agenda.
+
+        The crawl reaches the agenda by POST, which the runner cannot repeat —
+        it downloads by GET. BoardDocs serves the same document either way
+        (verified against pcru: 322,136 bytes, byte-identical text), so the
+        agenda can be downloaded, hashed, deduped and resumed like any other
+        artifact instead of needing a special path.
+        """
+        return (f"{self.base_url}/{EP_AGENDA}?open&id={meeting.unique}"
+                f"&current_committee_id={committee}")
+
 
 # ---- adapter: discover ScrapedDocs ------------------------------------
 
@@ -697,6 +709,36 @@ def iter_documents(
         # itself a policy or an agenda is taken at its word, so a stray
         # "Personnel Agenda" inside the collection stays an agenda.
         minutes_meeting = bool(_MINUTES_MEETING.search(meeting.name or ""))
+
+        # The agenda ITSELF, not only the files hanging off it. This was
+        # fetched and thrown away: the body was parsed for attachment links
+        # and the ~19,500 characters of itemised meeting content discarded.
+        # That is why Mount Vernon and Greenburgh show zero agendas despite
+        # hundreds of meetings — the crawler never saved one.
+        #
+        # It matters most where minutes are unreachable. Port Chester
+        # publishes no minutes on BoardDocs at all, so the agenda is the only
+        # record of what its board took up. Caveat for whatever reads these:
+        # an agenda says what was PROPOSED. It carries no outcome — pcru's
+        # agendas contain zero occurrences of motion/carried/ayes/vote — so
+        # "the board approved X" cannot be sourced from one.
+        #
+        # Skipped for a minutes collection, whose "agenda" is just an index
+        # of the attachments and would add a phantom meeting.
+        if not minutes_meeting:
+            when = f" ({meeting.date.isoformat()})" if meeting.date else ""
+            yield ScrapedDoc(
+                district=district,
+                doc_type=DocType.agenda,
+                title=f"{meeting.name} — Agenda{when}",
+                source_url=client.agenda_url(meeting, committee),
+                date=meeting.date,
+                meeting_id=meeting.unique,
+                committee=committee_name or committee,
+                # .html so ingest dispatches to extract_html rather than PyMuPDF
+                suggested_filename=f"agenda-{meeting.unique}.html",
+            )
+
         for ref in files:
             fname = filename_of(ref.url)
             # The agenda item leads: it says "Minutes Reorganization and
