@@ -33,6 +33,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read   # read the previous run's manifest artifact
 
 jobs:
   crawl:
@@ -51,6 +52,11 @@ jobs:
         run: uv python install
       - name: Sync deps
         run: uv sync --frozen
+      - name: Resume from the last crawl's manifest
+        uses: ./.github/actions/seed-manifest
+        with:
+          slug: ${{ matrix.slug }}
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Crawl ${{ matrix.slug }}
         run: |
           uv run herald-scrape crawl \
