@@ -500,3 +500,32 @@ def test_a_minutes_collection_contributes_no_phantom_agenda():
     # board meeting on 2026-05-28 that never happened.
     docs = _agenda_docs("2026 Minutes")
     assert not [d for d in docs if d.title.endswith("Agenda (2026-05-28)")]
+
+
+def test_a_403_listing_attachments_does_not_also_lose_the_agenda():
+    # Live on 2026-09-05: six Port Chester meetings 403'd on the attachment
+    # listing, the loop moved on, and the agenda went with them — even though
+    # discovering an agenda needs no network call at all. Its URL is built
+    # from the meeting id; only the attachment listing needs the POST that
+    # BoardDocs blocks once the runner's IP is rate-limited.
+    from herald.scrape.boarddocs import Meeting
+
+    meeting = Meeting(unique="M403", name="Board of Education Meeting",
+                      date=date(2026, 5, 28))
+
+    class _BlockedClient:
+        base_url = PCSD_BASE
+
+        def list_meetings(self, committee):
+            return [meeting]
+
+        def get_agenda_files(self, m, committee):
+            raise RuntimeError("Client error '403 Forbidden'")
+
+        def agenda_url(self, m, committee):
+            return BoardDocsClient.agenda_url(self, m, committee)
+
+    docs = list(iter_documents(_BlockedClient(), district="pcru", committee="C1"))
+    assert len(docs) == 1, "the agenda survives a failed attachment listing"
+    assert docs[0].doc_type is DocType.agenda
+    assert docs[0].meeting_id == "M403"

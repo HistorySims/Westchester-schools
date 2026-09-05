@@ -699,11 +699,6 @@ def iter_documents(
         meetings = meetings[:limit]
 
     for meeting in meetings:
-        try:
-            files = client.get_agenda_files(meeting, committee)
-        except Exception as exc:  # one bad agenda shouldn't kill the crawl
-            logger.warning("agenda fetch failed for %s (%s): %s", meeting.name, meeting.unique, exc)
-            continue
         # A minutes-collection meeting makes its attachments minutes, whatever
         # their own titles claim. Only `other` is upgraded: a file that names
         # itself a policy or an agenda is taken at its word, so a stray
@@ -725,6 +720,14 @@ def iter_documents(
         #
         # Skipped for a minutes collection, whose "agenda" is just an index
         # of the attachments and would add a phantom meeting.
+        #
+        # Yielded BEFORE the attachment listing on purpose. Discovering the
+        # agenda needs no network call at all — its URL is built from the
+        # meeting id — while listing attachments needs a POST that BoardDocs
+        # 403s once the runner's IP is rate-limited. Live on 2026-09-05, six
+        # Port Chester meetings lost their agenda that way: the listing
+        # failed, the loop moved on, and the one document that did not depend
+        # on that call went with it.
         if not minutes_meeting:
             when = f" ({meeting.date.isoformat()})" if meeting.date else ""
             yield ScrapedDoc(
@@ -738,6 +741,12 @@ def iter_documents(
                 # .html so ingest dispatches to extract_html rather than PyMuPDF
                 suggested_filename=f"agenda-{meeting.unique}.html",
             )
+
+        try:
+            files = client.get_agenda_files(meeting, committee)
+        except Exception as exc:  # one bad agenda shouldn't kill the crawl
+            logger.warning("agenda fetch failed for %s (%s): %s", meeting.name, meeting.unique, exc)
+            continue
 
         for ref in files:
             fname = filename_of(ref.url)
