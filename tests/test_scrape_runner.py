@@ -41,7 +41,13 @@ def test_load_targets_from_repo_file():
 # ---- crawl_target end to end (mocked) -------------------------------------
 
 
-def _mock_district(httpx_mock, *, committee_id: str = "COMM123") -> None:
+def _mock_district(
+    httpx_mock, *, committee_id: str = "COMM123", crawl_committee: str | None = None
+) -> None:
+    # `crawl_committee` differs from `committee_id` when the target names an
+    # explicit committee and discovery is skipped — the agenda GET carries
+    # whichever committee the crawl actually walks.
+    crawl_committee = crawl_committee or committee_id
     # /Public lists committees in the board menu; crawl_target discovers them.
     httpx_mock.add_response(
         url=f"{BASE}/Public",
@@ -57,6 +63,15 @@ def _mock_district(httpx_mock, *, committee_id: str = "COMM123") -> None:
     )
     httpx_mock.add_response(
         url=f"{BASE}/PRINT-AgendaDetailed?open", text=_load("agenda.html"), is_reusable=True
+    )
+    # The agenda is now downloaded as a document in its own right (by GET),
+    # not merely parsed for the attachments hanging off it.
+    httpx_mock.add_response(
+        url=f"{BASE}/PRINT-AgendaDetailed?open&id=MEET20240115"
+            f"&current_committee_id={crawl_committee}",
+        text=_load("agenda.html"),
+        headers={"Content-Type": "text/html"},
+        is_reusable=True,
     )
     files = {
         "ABC123": "Minutes-January-2024.pdf",
@@ -104,14 +119,14 @@ def test_crawl_target_discovers_committee_and_downloads(httpx_mock, tmp_path):
 
     # committee auto-discovered from /Public (keyed by name); one meeting * three files
     assert set(per_committee) == {"Board of Education"}
-    assert per_committee["Board of Education"].downloaded == 3
-    assert len(manifest.entries()) == 3
+    assert per_committee["Board of Education"].downloaded == 4  # + the agenda itself
+    assert len(manifest.entries()) == 4
 
 
 def test_crawl_target_uses_explicit_committee_ids(httpx_mock, tmp_path):
     from herald.scrape.runner import Target
 
-    _mock_district(httpx_mock)
+    _mock_district(httpx_mock, crawl_committee="EXPLICIT9")
     manifest = Manifest(tmp_path / "manifest.jsonl")
     store = RawStore(tmp_path / "raw")
     # explicit committee id in the target skips discovery
