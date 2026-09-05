@@ -1,0 +1,66 @@
+name: Seed the crawl manifest
+description: >
+  Restore the most recent scrape-<slug> artifact's manifest.jsonl so a crawl
+  resumes instead of restarting.
+
+inputs:
+  slug:
+    description: BoardDocs slug, matching the scrape-<slug> artifact name.
+    required: true
+  token:
+    description: GITHUB_TOKEN with actions:read.
+    required: true
+  out:
+    description: Crawl output directory (where manifest.jsonl lives).
+    required: false
+    default: data/raw
+
+runs:
+  using: composite
+  steps:
+    - name: Restore manifest for ${{ inputs.slug }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        SLUG: ${{ inputs.slug }}
+        OUT: ${{ inputs.out }}
+      run: |
+        set -uo pipefail
+        # BoardDocs blocks a datacenter IP after a few dozen file downloads —
+        # verified 2026-09-05: a file that 403s on a runner serves fine, with
+        # identical headers, from another IP. So the block is per-IP, and
+        # neither pacing nor header tuning moves it.
+        #
+        # The crawler already dedupes against its manifest ("crawls are
+        # resumable and cheap to repeat"), but a runner checks out a clean tree
+        # with no manifest — so every run re-downloaded the same first files,
+        # hit the wall in the same place, and never advanced. Restoring the
+        # last manifest is what turns "re-run it" into progress: each run gets
+        # a fresh IP and takes the next slice.
+        #
+        # Best-effort by design: no previous artifact just means a full crawl.
+        api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts"
+        url=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
+                   -H "Accept: application/vnd.github+json" \
+                   "${api}?name=scrape-${SLUG}&per_page=1" \
+              | jq -r '.artifacts[0].archive_download_url // ""') || url=""
+        if [ -z "$url" ]; then
+          echo "no previous scrape-${SLUG} artifact — full crawl"
+          exit 0
+        fi
+        mkdir -p "$OUT" _seed
+        if ! curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -o _seed/a.zip "$url"; then
+          echo "previous artifact could not be downloaded (expired?) — full crawl"
+          exit 0
+        fi
+        # Only the manifest: the files it names are already in the database,
+        # and re-downloading gigabytes to re-skip them would defeat the point.
+        unzip -o -j _seed/a.zip 'manifest.jsonl' -d "$OUT" >/dev/null 2>&1 \
+          || unzip -o -j _seed/a.zip '*/manifest.jsonl' -d "$OUT" >/dev/null 2>&1 \
+          || true
+        rm -rf _seed
+        if [ -s "$OUT/manifest.jsonl" ]; then
+          echo "resuming: $(wc -l < "$OUT/manifest.jsonl") document(s) already recorded"
+        else
+          echo "previous artifact had no manifest — full crawl"
+        fi

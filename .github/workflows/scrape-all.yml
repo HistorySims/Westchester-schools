@@ -26,11 +26,14 @@ on:
         default: "3"
 
 concurrency:
-  group: scrape-all-${{ github.ref }}
+  # Shared with `refresh`, deliberately: two crawls of the same district from
+  # two runners at once is exactly what gets an IP rate-limited by BoardDocs.
+  group: crawl
   cancel-in-progress: false
 
 permissions:
   contents: read
+  actions: read   # read the previous run's manifest artifact
 
 jobs:
   crawl:
@@ -49,6 +52,11 @@ jobs:
         run: uv python install
       - name: Sync deps
         run: uv sync --frozen
+      - name: Resume from the last crawl's manifest
+        uses: ./.github/actions/seed-manifest
+        with:
+          slug: ${{ matrix.slug }}
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Crawl ${{ matrix.slug }}
         run: |
           uv run herald-scrape crawl \

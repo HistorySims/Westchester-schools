@@ -1,0 +1,194 @@
+name: refresh
+
+# The recurring crawl that keeps the corpus current: crawl every district,
+# then ingest what came back — in ONE run, so nothing has to be dispatched and
+# nothing has to resolve another workflow's run id.
+#
+# Why this exists: every other workflow here is workflow_dispatch only, so the
+# corpus was only ever as fresh as the last time someone tapped a button. On
+# 2026-09-05 the newest board document in the corpus was dated July 1st —
+# two months stale, in every district, including the healthy ones. A monthly
+# newsletter cannot be built on that.
+#
+# ⚠️  SCHEDULED RUNS ONLY FIRE FROM THE DEFAULT BRANCH (main). This file does
+#     nothing on a feature branch no matter what the cron says. It must be
+#     merged to take effect.
+#
+# ⚠️  GitHub disables scheduled workflows in a repository with no commits for
+#     60 days, and emails the owner when it does. If the corpus quietly stops
+#     updating, check that first.
+#
+# The scheduled run uses a rolling window (LOOKBACK_DAYS) rather than
+# re-crawling from 2023 every week: the manifest already dedupes by URL hash
+# and ingest skips documents it has, so a wide window is safe but slow. The
+# window is deliberately generous because minutes are approved and posted at
+# the NEXT meeting — a document for a meeting three months ago can appear for
+# the first time today.
+#
+# For a full backfill, dispatch it manually with an explicit `since`.
+#
+# Required secrets (ingest job): SUPABASE_DB_URL, VOYAGE_API_KEY
+
+on:
+  schedule:
+    # Mondays 07:17 UTC (~3am ET). Off the hour on purpose: GitHub's scheduler
+    # is busiest at :00 and delays runs queued there.
+    - cron: "17 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Only meetings on/after this date (YYYY-MM-DD). Blank = rolling window."
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "Crawl, but report the ingest instead of writing it"
+        type: boolean
+        default: false
+
+env:
+  LOOKBACK_DAYS: 120
+
+concurrency:
+  # Never overlap with itself or with a manual scrape-all: two crawls of the
+  # same district from two runners is exactly what gets an IP rate-limited.
+  group: crawl
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read   # read the previous run's manifest artifact
+
+jobs:
+  crawl:
+    strategy:
+      fail-fast: false      # one district's 403 must not cancel the other seven
+      max-parallel: 8
+      matrix:
+        slug: [pcru, oufsd, pcsd, tufsd, elmsford, mvcsd, greenb, wpcsd]
+    runs-on: ubuntu-latest   # one runner (one IP) per district: BoardDocs rate-limits per IP
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Resolve the crawl window
+        id: window
+        run: |
+          SINCE="${{ inputs.since }}"
+          if [ -z "$SINCE" ]; then
+            SINCE=$(date -u -d "${LOOKBACK_DAYS} days ago" +%F)
+            echo "rolling window: last ${LOOKBACK_DAYS} days"
+          else
+            echo "explicit window from input"
+          fi
+          echo "since=$SINCE" >> "$GITHUB_OUTPUT"
+          echo "crawling meetings on/after $SINCE"
+      - name: Resume from the last crawl's manifest
+        uses: ./.github/actions/seed-manifest
+        with:
+          slug: ${{ matrix.slug }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Crawl ${{ matrix.slug }}
+        run: |
+          uv run herald-scrape crawl \
+            --targets data/targets/port_chester_peers.json \
+            --only "${{ matrix.slug }}" \
+            --since "${{ steps.window.outputs.since }}" \
+            --min-interval 3 \
+            --browser --ignore-robots \
+            --out data/raw \
+            --report "crawl-${{ matrix.slug }}.md"
+      - name: Publish crawl report
+        if: always()
+        run: |
+          {
+            echo "## crawl ${{ matrix.slug }} — ${{ job.status }}"
+            cat "crawl-${{ matrix.slug }}.md" 2>/dev/null || echo '(no report — the crawl did not finish)'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()          # a partial crawl is still worth ingesting
+        with:
+          name: scrape-${{ matrix.slug }}
+          path: data/raw
+          if-no-files-found: ignore
+          retention-days: 14
+
+  ingest:
+    needs: crawl
+    # `always()` on purpose: with fail-fast disabled a single district's 403
+    # fails the crawl job, and without this the other seven districts' fresh
+    # documents would be collected and then thrown away.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Check secrets
+        if: ${{ !inputs.dry_run }}
+        run: |
+          [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
+          [ -n "$VOYAGE_API_KEY" ]  || { echo "VOYAGE_API_KEY secret is missing"; exit 1; }
+      # No run-id needed: these are this run's own artifacts, which is the
+      # whole reason crawl and ingest live in one workflow.
+      - uses: actions/download-artifact@v4
+        with:
+          path: data/artifacts
+          merge-multiple: false
+      - name: Ingest
+        run: |
+          uv run herald-ingest run \
+            --root data/artifacts \
+            --report ingest-report.md \
+            ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}
+      - name: Publish ingest report
+        if: always()
+        run: |
+          {
+            echo '## ingest'
+            cat ingest-report.md 2>/dev/null || echo '(no report)'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # A run where some districts failed still ends green on the ingest job, and
+  # this project has been bitten repeatedly by a green check over work that
+  # did not happen. This job fails the RUN if any district's crawl failed, so
+  # the failure notification actually arrives.
+  report:
+    needs: [crawl, ingest]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail the run if any district's crawl failed
+        run: |
+          echo "crawl: ${{ needs.crawl.result }}"
+          echo "ingest: ${{ needs.ingest.result }}"
+          {
+            echo '## refresh result'
+            echo ''
+            echo "* crawl: **${{ needs.crawl.result }}**"
+            echo "* ingest: **${{ needs.ingest.result }}**"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ needs.crawl.result }}" != "success" ]; then
+            echo ''
+            echo "At least one district's crawl failed — open the run and check"
+            echo "each matrix job. A BoardDocs 403 partway through looks like a"
+            echo "small successful crawl, so read the per-district document counts"
+            echo "in the summary, not just the job status."
+            exit 1
+          fi
+          [ "${{ needs.ingest.result }}" = "success" ] || exit 1
