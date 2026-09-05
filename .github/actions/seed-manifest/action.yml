@@ -64,9 +64,20 @@ runs:
                               | "\(.workflow_run.id) \(.archive_download_url)"' \
                      | tr ' ' '|'); do
           run_id=${row%%|*}; dl=${row##*|}
-          concl=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
-                       -H "Accept: application/vnd.github+json" \
-                       "${api}/runs/${run_id}" | jq -r '.conclusion // ""') || concl=""
+          run_json=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
+                          -H "Accept: application/vnd.github+json" \
+                          "${api}/runs/${run_id}") || run_json=""
+          concl=$(printf '%s' "$run_json" | jq -r '.conclusion // ""')
+          wf=$(printf '%s' "$run_json" | jq -r '.path // ""')
+          # Only THIS workflow's runs. `scrape-all` uploads artifacts under the
+          # same scrape-<slug> name but has no ingest job, so it can conclude
+          # `success` having stored nothing — adopting its manifest would skip
+          # documents that were never ingested, which is the orphan bug over
+          # again from a different direction.
+          if [ "$wf" != ".github/workflows/refresh.yml" ]; then
+            echo "  skipping run ${run_id} (${wf:-unknown}) — not a crawl+ingest run"
+            continue
+          fi
           if [ "$concl" = "success" ]; then
             echo "seeding from run ${run_id} (ingest succeeded)"
             url="$dl"; break
