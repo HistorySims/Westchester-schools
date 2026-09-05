@@ -394,9 +394,18 @@ async def ingest_manifests(
 
             path = resolve_local_path(entry, manifest_path)
             if path is None:
+                # A file that is not in THIS run's artifacts is not a broken
+                # document — it belongs to a different run. The resumable
+                # crawl restores the previous manifest but not the files it
+                # names, so every manifest lists more than the run that
+                # carries it, and refresh run #9 reported 261 of these.
+                #
+                # Marking them 'error' was actively harmful: it recorded a
+                # permanent failure for documents whose only problem is being
+                # somewhere else. Leave the status alone so a run that does
+                # have the file still ingests them.
                 stats.docs_missing += 1
                 note = "missing"
-                mark(doc_id, "error", error=f"file not found: {entry.local_path}")
                 continue
 
             try:
