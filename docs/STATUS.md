@@ -697,6 +697,9 @@ Coverage of `doc_type in ('agenda','minutes')`, by district:
 | peekskill | 12 | 0 | — |
 | mount-vernon | 0 | 0 | — |
 
+*A snapshot, kept because it is what prompted the diagnosis. The counts moved
+the same week — see the two sections below, which supersede it.*
+
 Three findings, in order of how much they cost us:
 
 **1. A corpus-wide hole from 2020-06-15 to 2022-12-05.** Port Chester's
@@ -771,20 +774,105 @@ them, and Public Officers Law § 106 says they should exist. Confirming it
 means asking the district or filing a FOIL request, which is a human errand
 and the next step for this district specifically.
 
+### The fix: the agenda is the board record (2026-09-05)
+
+Asking *"could we just use the agendas?"* found a larger bug than it was
+aimed at. The crawler fetched every agenda, scraped the attachment links out
+of it, and **discarded the body** — roughly 19,500 characters of itemised
+meeting content per meeting. That, not the 403 wall and not classification,
+is why Mount Vernon and Greenburgh showed zero agendas across hundreds of
+meetings: no agenda was ever saved as a document.
+
+`iter_documents` now yields the agenda itself. BoardDocs serves the rendered
+agenda over GET as well as the POST the crawl uses (verified against pcru:
+322,136 bytes, byte-identical text), so it downloads, hashes, dedupes and
+resumes like any other artifact. Saved as `.html` so ingest dispatches to
+`extract_html` rather than PyMuPDF, which would read it as nothing and file
+it `no_text`. Minutes-collection meetings are skipped — their "agenda" is an
+index of attachments, and saving it would invent a meeting that never
+happened.
+
+**What an agenda can and cannot support.** It says what was *proposed*. It
+carries no outcome: Port Chester's agendas contain zero occurrences of
+motion, carried, ayes, nays, vote, unanimous or tabled. So "the board took up
+X" is sourceable from an agenda and **"the board approved X" is not**. That
+distinction has to survive into whatever writes the newsletter.
+
+**Deferred: meeting video.** Port Chester hosts recordings on Panopto, and a
+caption track would be the only artifact we have found that records what was
+actually decided. `herald-scrape panopto-probe` and the `panopto-probe`
+workflow exist to find out whether captions are readable without a login (a
+restricted folder answers 200 with an *empty* body, so status alone proves
+nothing). Deliberately not pursued for now — agendas are enough for the
+current goals, and a transcript is not minutes: speech recognition mangles
+proper nouns, resolution numbers and dollar amounts, and a three-hour meeting
+is ~30,000 words of largely procedural talk.
+
 ### Scope statement
 
-What this corpus can be trusted to answer, as of 2026-08-28:
+What this corpus can be trusted to answer, as of 2026-09-05:
 
-* **Policies and regulations** — all eight districts, good coverage.
-* **Contracts** — all eight, good coverage.
+* **Policies and regulations** — all eight districts, good coverage, and
+  current by construction (scraped from the live published manuals).
+* **Contracts** — all eight present. **Currency unverified**: the CBA used as
+  this project's test case, `Tarrytown-TAT-2022-2025`, expired over a year
+  ago. "Compare current contracts" may be comparing superseded agreements
+  while sounding authoritative. Unresolved.
 * **Budgets** — all eight; materially cleaner since 226 slide decks moved to
   `presentation` and stopped competing with the budget books.
-* **Board decisions** — four districts, and only from ~December 2022. Nothing
-  anywhere for mid-2020 to late 2022. Absent entirely for Mount Vernon,
-  Peekskill and Greenburgh.
+* **What boards took up** — all eight, once the agenda-capture crawl has run
+  its passes. This is the newsletter's raw material, not the newsletter: it
+  still has to go through the quality gate, the topic map and drift before it
+  says anything. See Next steps.
+* **What boards decided** — four districts (Elmsford, Ossining, Tarrytowns,
+  White Plains), from ~December 2022. Peekskill's archive is recoverable and
+  mislabeled rather than missing. Port Chester's is not published anywhere we
+  can reach; Mount Vernon's and Greenburgh's depend on the crawl advancing.
+* **Vendor payments** — no. Budgets appropriate by function code, never by
+  payee; warrant registers are still unacquired. The corpus correctly
+  refuses, and `unanswerable-by-document-class` guards that.
 
-Acquiring the missing minutes is now the highest-value work available — ahead
-of warrant registers and ahead of any further OCR.
+### How to run the acquisition loop (2026-09-05)
+
+**BoardDocs blocks by IP, not by request shape.** Verified: a file that 403s
+on a runner returns 200 and a 109 KB PDF from another address, with identical
+headers, and a full navigation header set (`Sec-Fetch-Dest: document`,
+`Referer`) behaves the same as the current one. Pacing does not move it and
+header tuning will not either. One runner per district (`scrape-all`,
+`refresh`) is the mitigation: each district gets its own IP.
+
+**The 403 was never the real problem — non-resumption was.** `Manifest`
+already skips what it holds, but a runner checks out a clean tree with no
+manifest, so every run re-downloaded the same first files, hit the wall in
+the same place, and never advanced. `.github/actions/seed-manifest` restores
+the newest `scrape-<slug>` artifact's manifest first, which is what makes
+repeated runs additive.
+
+Three rules follow, and getting them wrong wastes passes:
+
+1. **Use `refresh`, not `scrape-all`, for repeated passes.** The seed
+   restores the *manifest*, not the files. Run 3's artifact lists everything
+   from runs 1-3 but holds only run 3's files on disk, so ingesting once at
+   the end loses the earlier runs' documents — they resolve to no local path
+   and are marked `error`. `refresh` crawls and ingests in one run, on that
+   run's own artifacts, so each pass is banked before the next starts. Pass
+   `since` explicitly for a backfill; blank uses the rolling window.
+2. **Serial, never concurrent.** Both workflows share the `crawl` concurrency
+   group, so a second dispatch queues. That is not only politeness:
+   concurrent runs seed from the same completed artifact, so they would go
+   after the *same* next slice and duplicate each other rather than divide
+   the work.
+3. **Watch `resuming: N document(s) already recorded` in each district's
+   job.** N must climb every pass. If it is flat, the seeding is broken and
+   more passes are pointless.
+
+**Staying current is a separate problem from backfilling.** Every workflow
+was `workflow_dispatch` only, so the corpus was only ever as fresh as the
+last time someone tapped a button — on 2026-09-05 its newest board document
+was dated July 1st, two months stale in every district including the healthy
+ones. `refresh` runs weekly on a cron. Two things silently disarm it:
+scheduled triggers **only fire from the default branch**, and GitHub disables
+scheduled workflows in a repository with no commits for 60 days.
 
 ---
 
@@ -1062,30 +1150,72 @@ crawler                                             │
 
 ## Next steps
 
-1. **Vision-OCR the scanned CBAs** (in progress) — proving on tarrytowns'
-   `Tarrytown-TAT-2022-2025.pdf` first (cheapest end-to-end validation of the
-   vision→table→extract chain), then white-plains + mount-vernon. Apply
-   migration `0005` (bargaining_unit) before extract writes salary rows.
-2. **`herald-extract` on the OCR-recovered tables** — land real per-unit
+Ordered against the two stated goals: **(A)** search and compare *current*
+policies and contracts, **(B)** a monthly newsletter of what the boards are
+doing.
+
+**Goal B is a pipeline, and every stage of it already exists.** Acquisition
+is only the first stage — it is a prerequisite for the newsletter, not the
+newsletter. The stages, in dependency order:
+
+> **acquire** (`refresh`) → **quality-gate** (`score`) → **topic map**
+> (`cluster`) → **what changed** (`cluster-drift`) → **the brief**
+
+`cluster` discovers topics rather than imposing them (UMAP → HDBSCAN → model
+labels), which is what lets a newsletter say "these four districts are all
+arguing about the same thing" without anyone having defined that thing in
+advance. `cluster-drift` bins each cluster's chunks by ISO week and measures
+centroid movement — that is the lead-finder: a topic whose centroid jumps
+this month is the thing worth writing about. Neither is optional to goal B.
+
+1. **Run the `refresh` backfill passes** — `since: 2023-01-01`, serially, one
+   at a time, watching `resuming: N` climb. See "How to run the acquisition
+   loop" above; using `scrape-all` instead, or running passes concurrently,
+   both waste them. Six of eight districts need this before the rest of the
+   pipeline has anything to work on.
+2. **Re-run `score` once the agendas land** — this matters *more* now, not
+   less. Agenda capture is about to add thousands of documents that are
+   largely procedural ("Approval of Conference(s)" eight times in one
+   meeting), and the quality gate exists to quarantine exactly that. Both the
+   topic map and Ask filter `status='active'`, so scoring cleans both at
+   once, and it is reversible.
+3. **Re-cluster, then re-run `cluster-drift`** — the corpus is about to
+   change shape substantially. Both need to run on the new corpus before any
+   drift number means anything; drift measured across an acquisition jump
+   reports the crawl, not the boards.
+4. **Check contract currency** — goal A's one unverified assumption.
+   `Tarrytown-TAT-2022-2025` expired over a year ago. If every district's
+   CBAs predate 2025, "compare current contracts" is comparing superseded
+   agreements while sounding authoritative, which is worse than answering
+   nothing. Query in the scope statement above.
+5. **Arm the schedule** — `refresh`'s cron is inert until the workflow is on
+   the default branch. Without it the corpus goes stale between manual
+   dispatches, which is fatal for a *monthly* product.
+6. **The brief cycle** ([`ROADMAP.md`](ROADMAP.md)) — freeze-and-assign new
+   packets to stable topics, seasonal (YoY) drift, the brief itself. This is
+   the newsletter, and items 1-3 are what feed it.
+7. **The validation exercise** — questions supplied by the operator (not by
+   the model, which biases toward what it knows works), graded against the
+   statute-derived list in `data/targets/required_documents.json`. The only
+   test that can detect a *missing* document; `data/eval/schools_cases.json`
+   cannot, by construction.
+8. **Wire the analytical path into `/api/ask`** (web) — it's CLI-only today.
+   Then the topic map and the salary/stipend query surface are both
+   phone-usable, which the newsletter cycle needs.
+9. **`herald-extract` on the OCR-recovered tables** — land real per-unit
    `salary_schedule` rows; read the `--dry-run` audit flags first (a flood =
    garbled grid → tune `lane_crosswalk.csv`; a handful = real dips to confirm).
-3. **Fix the two remaining acquisition gaps:** ossining still returns 0
-   contracts (both seeds dead — needs a different source), and a Greenburgh
-   download saved as `.bin` PyMuPDF can't open (content-type sniffing at store
-   time).
-4. **The monthly refresh pipeline** ([`REFRESH.md`](REFRESH.md)) — one
-   scheduled, update-only crawl→ingest→OCR→extract workflow, change-detected by
-   extracted-text hash so BoardDocs byte-drift doesn't re-ingest duplicates;
-   also retires the manual run-id hand-carrying between stages.
-5. **Wire the analytical path into `/api/ask`** (web) — it's CLI-only today.
-   Then the topic map and the salary/stipend query surface are both phone-usable.
-6. **`years_service` over `step`** (STRUCTURED.md decision #6) — prefer
-   `years_service` where a contract states it, per-district fallback.
-7. **The brief cycle** ([`ROADMAP.md`](ROADMAP.md)) — freeze-and-assign new
-   packets to stable topics, seasonal (YoY) drift, the brief (distinct from the
-   corpus refresh above: this is the *analysis* cadence, that is *acquisition*).
-8. **Budgets (phase 2b)** and re-cluster once table handling has settled; adapt
-   Yonkers (non-BoardDocs); investigate thin Greenburgh coverage.
+10. **Fix the remaining acquisition gaps:** ossining still returns 0 contracts
+    (both seeds dead — needs a different source), and a Greenburgh download
+    saved as `.bin` PyMuPDF can't open (content-type sniffing at store time).
+11. **`years_service` over `step`** (STRUCTURED.md decision #6) — prefer
+    `years_service` where a contract states it, per-district fallback.
+12. **Deferred by decision, not oversight:** meeting-video captions (Panopto,
+    and Ossining's YouTube archive) — the only source that records what was
+    actually decided; probe built, not run. Warrant registers — the only
+    source that names vendors. Both answer questions the corpus currently and
+    correctly refuses.
+13. **Budgets (phase 2b)**; adapt Yonkers (non-BoardDocs).
 
 ---
 
