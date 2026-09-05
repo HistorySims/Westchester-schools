@@ -38,14 +38,43 @@ runs:
         # last manifest is what turns "re-run it" into progress: each run gets
         # a fresh IP and takes the next slice.
         #
-        # Best-effort by design: no previous artifact just means a full crawl.
-        api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts"
-        url=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
-                   -H "Accept: application/vnd.github+json" \
-                   "${api}?name=scrape-${SLUG}&per_page=1" \
-              | jq -r '.artifacts[0].archive_download_url // ""') || url=""
+        # Seed only from a run whose INGEST SUCCEEDED.
+        #
+        # The manifest is a proxy for "already in the database", and that
+        # proxy holds only while every crawl is followed by a successful
+        # ingest. refresh run #5's ingest was killed: its documents were
+        # crawled, recorded in the manifest, and never ingested. The next
+        # crawl seeded from that manifest, skipped them as already-seen, and
+        # their files — which lived only in that run's artifact — became
+        # unreachable. Run #9 reported 261 such documents.
+        #
+        # The `report` job fails the whole run when the ingest fails, so a run
+        # conclusion of `success` is exactly the condition that makes the
+        # proxy true. Walk back to the newest artifact that satisfies it.
+        #
+        # Best-effort by design: no usable artifact just means a full crawl,
+        # which is correct — re-downloading is safe, skipping wrongly is not.
+        api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions"
+        arts=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
+                    -H "Accept: application/vnd.github+json" \
+                    "${api}/artifacts?name=scrape-${SLUG}&per_page=20") || arts=""
+        url=""
+        for row in $(printf '%s' "$arts" \
+                     | jq -r '.artifacts[] | select(.expired|not)
+                              | "\(.workflow_run.id) \(.archive_download_url)"' \
+                     | tr ' ' '|'); do
+          run_id=${row%%|*}; dl=${row##*|}
+          concl=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
+                       -H "Accept: application/vnd.github+json" \
+                       "${api}/runs/${run_id}" | jq -r '.conclusion // ""') || concl=""
+          if [ "$concl" = "success" ]; then
+            echo "seeding from run ${run_id} (ingest succeeded)"
+            url="$dl"; break
+          fi
+          echo "  skipping run ${run_id} (conclusion: ${concl:-unknown}) — its documents may never have been ingested"
+        done
         if [ -z "$url" ]; then
-          echo "no previous scrape-${SLUG} artifact — full crawl"
+          echo "no scrape-${SLUG} artifact from a successful run — full crawl"
           exit 0
         fi
         mkdir -p "$OUT" _seed
