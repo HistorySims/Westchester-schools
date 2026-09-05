@@ -507,6 +507,21 @@ def analyze_public_html(html: str, *, status: int = 200) -> PublicPageInfo:
     )
 
 
+#: A meeting that is really a container for a year's minutes.
+#
+# Peekskill files its whole archive this way: a pseudo-meeting named
+# "2026 Minutes", dated 2026-12-31, holding eighteen attachments called
+# "Subject B. Business Meeting July 28, 2026". Read alone, each of those says
+# "business meeting" and nothing about minutes — so the file classifier types
+# it `other` and the ingest classifier then upgrades it to `agenda`, because
+# "business meeting" is an agenda keyword. Peekskill ended up with 16 agendas
+# and zero minutes while its complete minutes archive sat right there.
+#
+# The only thing that says "minutes" is the PARENT meeting's name, which the
+# file never sees. This is that context.
+_MINUTES_MEETING = re.compile(r"\bminutes\b", re.I)
+
+
 def classify_filename(name: str) -> DocType:
     low = name.lower()
     if "minute" in low:
@@ -677,6 +692,11 @@ def iter_documents(
         except Exception as exc:  # one bad agenda shouldn't kill the crawl
             logger.warning("agenda fetch failed for %s (%s): %s", meeting.name, meeting.unique, exc)
             continue
+        # A minutes-collection meeting makes its attachments minutes, whatever
+        # their own titles claim. Only `other` is upgraded: a file that names
+        # itself a policy or an agenda is taken at its word, so a stray
+        # "Personnel Agenda" inside the collection stays an agenda.
+        minutes_meeting = bool(_MINUTES_MEETING.search(meeting.name or ""))
         for ref in files:
             fname = filename_of(ref.url)
             # The agenda item leads: it says "Minutes Reorganization and
@@ -684,9 +704,12 @@ def iter_documents(
             # "Min Org 7.9.26.pdf". Better for the classifier and far better
             # as the label a citation shows. The filename still rides along
             # for classification, and still names the file on disk.
+            doc_type = classify_filename(f"{ref.item_title} {ref.title} {fname}")
+            if minutes_meeting and doc_type is DocType.other:
+                doc_type = DocType.minutes
             yield ScrapedDoc(
                 district=district,
-                doc_type=classify_filename(f"{ref.item_title} {ref.title} {fname}"),
+                doc_type=doc_type,
                 title=ref.best_title,
                 source_url=ref.url,
                 date=meeting.date,

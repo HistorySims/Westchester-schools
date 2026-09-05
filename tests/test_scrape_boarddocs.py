@@ -363,3 +363,71 @@ def test_an_attachment_outside_an_agenda_item_still_parses():
     refs = parse_agenda_files(loose, base_url=TUFSD_BASE)
     assert len(refs) == 1 and refs[0].item_title == ""
     assert refs[0].best_title == "loose.pdf"
+
+
+# Peekskill's real structure, trimmed: a pseudo-meeting named "2026 Minutes"
+# dated 2026-12-31, holding one attachment per meeting of the year. Each
+# attachment's own title names the MEETING it minutes, never "minutes".
+PCSD_BASE = "https://go.boarddocs.com/ny/pcsd/Board.nsf"
+MINUTES_COLLECTION_AGENDA = """
+<div tabindex="0" class="container item agendaorder">
+  <div style="font-weight: bold;">Subject B. Business Meeting July 28, 2026</div>
+  <div class="print-files">
+    <div class="public-file"><a
+       href="/ny/pcsd/Board.nsf/files/DZZ1/$file/BM%207-28-26.pdf">BM 7-28-26.pdf</a></div>
+  </div>
+</div>
+<div tabindex="0" class="container item agendaorder">
+  <div style="font-weight: bold;">Subject A. Personnel Agenda</div>
+  <div class="print-files">
+    <div class="public-file"><a
+       href="/ny/pcsd/Board.nsf/files/DZZ2/$file/Pers.pdf">Personnel Agenda.pdf</a></div>
+  </div>
+</div>
+"""
+
+
+def _minutes_collection_docs(meeting_name: str):
+    """Run iter_documents over one meeting with the fixture above."""
+    from herald.scrape.boarddocs import Meeting, parse_agenda_files
+
+    meeting = Meeting(unique="M2026MIN", name=meeting_name, date=date(2026, 12, 31))
+    refs = parse_agenda_files(MINUTES_COLLECTION_AGENDA, base_url=PCSD_BASE)
+
+    class _Client:
+        def list_meetings(self, committee):
+            return [meeting]
+
+        def get_agenda_files(self, m, committee):
+            return refs
+
+    return list(iter_documents(_Client(), district="peekskill", committee="C1"))
+
+
+def test_a_years_minutes_filed_under_one_meeting_are_typed_minutes():
+    # The live failure: Peekskill showed 16 agendas and ZERO minutes while its
+    # whole archive sat in a meeting called "2026 Minutes". Each attachment
+    # reads "Business Meeting July 28, 2026" — no "minute" anywhere — so the
+    # file classifier said 'other' and the ingest classifier then made it an
+    # 'agenda', because "business meeting" is an agenda keyword.
+    docs = _minutes_collection_docs("2026 Minutes")
+    by_title = {d.title: d.doc_type for d in docs}
+
+    business = next(t for t in by_title if "Business Meeting" in t)
+    assert by_title[business] is DocType.minutes, (
+        "the parent meeting is the only thing that says 'minutes'"
+    )
+
+    # ...but a file that names itself is taken at its word: only 'other' is
+    # upgraded, so a Personnel Agenda inside the collection stays an agenda.
+    personnel = next(t for t in by_title if "Personnel Agenda" in t)
+    assert by_title[personnel] is DocType.agenda
+
+
+def test_an_ordinary_meeting_does_not_relabel_its_attachments():
+    # The upgrade must be driven by the meeting NAME, not by being in a
+    # meeting at all — otherwise every attachment everywhere becomes minutes.
+    docs = _minutes_collection_docs("BUSINESS MEETING/WORK SESSION")
+    by_title = {d.title: d.doc_type for d in docs}
+    business = next(t for t in by_title if "Business Meeting" in t)
+    assert by_title[business] is DocType.other
