@@ -130,6 +130,11 @@ jobs:
     env:
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+      # Stream progress instead of buffering it. Run #5's ingest ran 48
+      # minutes, was killed with its step still open, and left NO retrievable
+      # log at all — so there was nothing to diagnose from. Unbuffered output
+      # at least reaches the live log before a process dies.
+      PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -150,12 +155,34 @@ jobs:
         with:
           path: data/artifacts
           merge-multiple: false
+      - name: Resources before ingest
+        run: |
+          # Run #5's ingest died at 48 minutes with no logs, which is what an
+          # OOM-killed or disk-starved runner looks like. Its artifacts were
+          # only 25 MB total, so neither was obviously the cause — but nothing
+          # was recorded either way. Record it.
+          echo "### disk"; df -h / | tail -1
+          echo "### memory"; free -m
+          echo "### downloaded artifacts"
+          du -sh data/artifacts 2>/dev/null || true
+          find data/artifacts -name manifest.jsonl -exec sh -c \
+            'echo "  $(wc -l < "$1") entries in $1"' _ {} \;
       - name: Ingest
+        # A wave is embedded and written as a unit, and a document is only
+        # marked ingested once its chunks commit — so a smaller wave banks
+        # progress more often and loses less when a run is killed. 512 was
+        # chosen for throughput, before anything had been killed.
         run: |
           uv run herald-ingest run \
             --root data/artifacts \
+            --wave-size 128 \
             --report ingest-report.md \
             ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}
+      - name: Resources after ingest
+        if: always()
+        run: |
+          echo "### disk"; df -h / | tail -1
+          echo "### memory"; free -m
       - name: Publish ingest report
         if: always()
         run: |
