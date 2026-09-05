@@ -727,6 +727,50 @@ suite, one level up: a test that measures the quality of what we hold rather
 than the extent of what we do not. The fix was a second query that counted
 both classes per district and asked nothing about matching.
 
+### Why each district is missing what it is missing (2026-09-05)
+
+Diagnosed by reading the districts' live BoardDocs rather than inferring from
+the corpus. Three different causes, and only one of them is a crawl problem:
+
+**Peekskill — mislabeled, not missing.** Its whole archive is a pseudo-meeting
+named `2026 Minutes`, dated 2026-12-31, holding one attachment per meeting of
+the year: `Subject B. Business Meeting July 28, 2026`. Each attachment says
+"business meeting" and never "minutes", so `classify_filename` returned
+`other` and the ingest classifier upgraded it to `agenda`. 16 agendas, zero
+minutes, with the minutes sitting right there. Fixed in `iter_documents`
+(the parent meeting's name now types its attachments); applies to future
+crawls, and Peekskill has 487 meetings, so earlier years should follow.
+
+**Mount Vernon — purely the 403 wall.** 377 meetings; its 2026-08-25 Business
+Meeting alone carries 46 attachments. We hold 19 documents for the district.
+Nothing structural, just barely started. Repeated resumable passes are the
+whole fix.
+
+**Port Chester — not published where we can reach it.** The anchor district,
+and the worst answer of the three. Checked directly:
+
+* BoardDocs holds **139 meetings, 2021-10-28 → 2026-08-27**. Nothing earlier.
+* **No meeting is named "minutes"** — no collection scheme like Peekskill's.
+* Its meeting record offers three buttons: *View the Agenda*, *Download
+  Agenda as PDF*, *Print the Agenda*. **There is no minutes view.**
+* The newest meeting's 32 attachments are all agenda support — donations,
+  affiliation agreements, conference approvals. None are minutes.
+* Its agenda HTML contains **zero occurrences of the word "minutes"** in
+  133,751 bytes — not even an "Approval of Minutes" item.
+* There is only one committee, so that is all of its BoardDocs.
+* The district's own archive page says materials from 2021-22 onward are "on
+  BoardDocs", which is where they are not.
+
+Our 149 Port Chester minutes (2011-07-05 → 2020-06-15) came from the website
+archive, and BoardDocs begins in October 2021. So minutes from roughly
+mid-2020 onward are not published in any of the three places the district
+itself points to.
+
+That is an evidenced absence, not a proven one — it says we could not find
+them, and Public Officers Law § 106 says they should exist. Confirming it
+means asking the district or filing a FOIL request, which is a human errand
+and the next step for this district specifically.
+
 ### Scope statement
 
 What this corpus can be trusted to answer, as of 2026-08-28:
