@@ -1,0 +1,84 @@
+name: panopto-probe
+
+# One-off diagnostic: find out what a Panopto host serves WITHOUT a login.
+#
+#   Actions -> panopto-probe -> Run workflow
+#
+# Port Chester publishes no minutes anywhere we can reach — not as a BoardDocs
+# attachment, not as a minutes view, and its agendas carry no outcomes (zero
+# occurrences of motion / carried / ayes / vote in 133,751 bytes). It does host
+# meeting video at portchester.hosted.panopto.com, and a caption track is the
+# only artifact found so far that records what the board actually decided.
+#
+# Whether captions are readable without a login depends on per-folder
+# permissions, which cannot be reasoned out — and the dev container's egress
+# proxy denies the host, so this runs on a networked runner. Same reason the
+# `probe` workflow exists for BoardDocs.
+#
+# The decisive line in the report is the captions one. A restricted folder
+# answers 200 with an EMPTY body, so "200" alone proves nothing — the probe
+# checks for real SRT timecodes and says which it got.
+#
+# Public records; no secrets required.
+
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        description: "Panopto host"
+        type: string
+        default: "portchester.hosted.panopto.com"
+      folder:
+        description: "Folder id to list (blank = whole site)"
+        required: false
+        type: string
+        default: ""
+      session:
+        description: "Session id for captions (blank = first one found)"
+        required: false
+        type: string
+        default: ""
+      min_interval:
+        description: "Minimum seconds between requests (politeness)"
+        type: string
+        default: "2"
+
+concurrency:
+  group: panopto-probe
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Probe ${{ inputs.host }}
+        run: |
+          uv run herald-scrape panopto-probe \
+            --host "${{ inputs.host }}" \
+            ${{ inputs.folder && format('--folder "{0}"', inputs.folder) || '' }} \
+            ${{ inputs.session && format('--session "{0}"', inputs.session) || '' }} \
+            --min-interval "${{ inputs.min_interval }}" \
+            --out data/probe \
+            --report panopto-probe.md
+      - name: Publish report
+        if: always()
+        run: cat panopto-probe.md >> "$GITHUB_STEP_SUMMARY" || echo "(no report)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panopto-probe
+          path: data/probe
+          if-no-files-found: ignore
+          retention-days: 14
