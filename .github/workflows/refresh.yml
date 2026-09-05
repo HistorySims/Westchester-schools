@@ -45,6 +45,10 @@ on:
         description: "Crawl, but report the ingest instead of writing it"
         type: boolean
         default: false
+      full_crawl:
+        description: "Ignore the previous manifest (rebuilds it; use to clear orphaned entries)"
+        type: boolean
+        default: false
 
 env:
   LOOKBACK_DAYS: 120
@@ -89,11 +93,31 @@ jobs:
           fi
           echo "since=$SINCE" >> "$GITHUB_OUTPUT"
           echo "crawling meetings on/after $SINCE"
+      # Skipping the seed rebuilds the manifest from scratch, which is the only
+      # way to clear entries that name files no longer in any artifact.
+      #
+      # Those arise when a crawl is followed by a failed ingest: the documents
+      # are recorded as seen but never ingested, and their files live only in
+      # that run's artifact. The manifest is append-only and cumulative, so
+      # once such entries exist every later manifest inherits them, including
+      # manifests from runs that succeeded — refresh #9 and #10 reported 261
+      # then 267 of them, climbing. Seeding only from successful runs stops
+      # NEW orphans; it cannot remove ones already propagated.
+      #
+      # A full crawl re-downloads everything, which is wasteful but safe: the
+      # database skips documents it already holds, and the run ends with a
+      # manifest that names only files that actually exist.
       - name: Resume from the last crawl's manifest
+        if: ${{ !inputs.full_crawl }}
         uses: ./.github/actions/seed-manifest
         with:
           slug: ${{ matrix.slug }}
           token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Full crawl — manifest not seeded
+        if: ${{ inputs.full_crawl }}
+        run: |
+          echo "full_crawl requested — starting from an empty manifest and"
+          echo "rebuilding it from whatever this run actually downloads."
       - name: Crawl ${{ matrix.slug }}
         run: |
           uv run herald-scrape crawl \
