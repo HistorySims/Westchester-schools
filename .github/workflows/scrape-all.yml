@@ -26,7 +26,9 @@ on:
         default: "3"
 
 concurrency:
-  group: scrape-all-${{ github.ref }}
+  # Shared with `refresh`, deliberately: two crawls of the same district from
+  # two runners at once is exactly what gets an IP rate-limited by BoardDocs.
+  group: crawl
   cancel-in-progress: false
 
 permissions:
