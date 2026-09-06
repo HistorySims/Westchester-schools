@@ -747,6 +747,11 @@ def iter_documents(
     revisited. For a backfill that is plainly worth it, and the recurring
     crawl's rolling window re-walks recent meetings anyway — which is where
     late-arriving attachments actually happen.
+
+    For that marker to be trustworthy the agenda is yielded **last**, after
+    every attachment. Downloads follow yield order, so an agenda in the
+    manifest means the whole meeting got through; an agenda yielded first
+    would be marked complete by a 403 that struck mid-meeting.
     """
     meetings = client.list_meetings(committee)
     if since is not None:
@@ -762,57 +767,25 @@ def iter_documents(
         # "Personnel Agenda" inside the collection stays an agenda.
         minutes_meeting = bool(_MINUTES_MEETING.search(meeting.name or ""))
 
-        # The agenda ITSELF, not only the files hanging off it. This was
-        # fetched and thrown away: the body was parsed for attachment links
-        # and the ~19,500 characters of itemised meeting content discarded.
-        # That is why Mount Vernon and Greenburgh show zero agendas despite
-        # hundreds of meetings — the crawler never saved one.
+        # An already-held agenda means this meeting completed on an earlier
+        # pass, so it can be skipped whole — at zero requests, which is the
+        # resource actually in short supply. See the docstring.
         #
-        # It matters most where minutes are unreachable. Port Chester
-        # publishes no minutes on BoardDocs at all, so the agenda is the only
-        # record of what its board took up. Caveat for whatever reads these:
-        # an agenda says what was PROPOSED. It carries no outcome — pcru's
-        # agendas contain zero occurrences of motion/carried/ayes/vote — so
-        # "the board approved X" cannot be sourced from one.
-        #
-        # Skipped for a minutes collection, whose "agenda" is just an index
-        # of the attachments and would add a phantom meeting.
-        #
-        # Yielded BEFORE the attachment listing on purpose. Discovering the
-        # agenda needs no network call at all — its URL is built from the
-        # meeting id — while listing attachments needs a POST that BoardDocs
-        # 403s once the runner's IP is rate-limited. Live on 2026-09-05, six
-        # Port Chester meetings lost their agenda that way: the listing
-        # failed, the loop moved on, and the one document that did not depend
-        # on that call went with it.
-        if not minutes_meeting:
-            agenda_url = client.agenda_url(meeting, committee)
-            # Already holding this meeting's agenda means the meeting has been
-            # walked before, so its attachment listing — and the request it
-            # costs — can be skipped. See the docstring: that request is the
-            # scarce resource, not bandwidth.
-            #
-            # A minutes-collection meeting yields no agenda and so cannot be
-            # marked done this way; those are always re-walked, and there are
-            # only a handful of them.
-            if have_agenda is not None and have_agenda(agenda_url):
-                walked_before += 1
-                continue
-            yield ScrapedDoc(
-                district=district,
-                doc_type=DocType.agenda,
-                title=agenda_title(meeting),
-                source_url=agenda_url,
-                date=meeting.date,
-                meeting_id=meeting.unique,
-                committee=committee_name or committee,
-                # .html so ingest dispatches to extract_html rather than PyMuPDF
-                suggested_filename=f"agenda-{meeting.unique}.html",
-            )
+        # A minutes-collection meeting yields no agenda and cannot be marked
+        # this way; those are always re-walked, which is right because their
+        # contents grow through the year.
+        agenda_url = None if minutes_meeting else client.agenda_url(meeting, committee)
+        if agenda_url is not None and have_agenda is not None and have_agenda(agenda_url):
+            walked_before += 1
+            continue
 
         try:
             files = client.get_agenda_files(meeting, committee)
         except Exception as exc:  # one bad agenda shouldn't kill the crawl
+            # Skip the whole meeting, agenda included, so the next pass retries
+            # it. Yielding the agenda here instead would download it, mark the
+            # meeting walked, and strand every attachment we never got to
+            # enumerate — optimising one pass at the cost of ever converging.
             logger.warning("agenda fetch failed for %s (%s): %s", meeting.name, meeting.unique, exc)
             continue
 
@@ -835,6 +808,37 @@ def iter_documents(
                 meeting_id=meeting.unique,
                 committee=committee_name or committee,
                 suggested_filename=fname,
+            )
+
+        # The agenda ITSELF, not only the files hanging off it — ~19,500
+        # characters of itemised meeting content that used to be parsed for
+        # links and discarded. It is why Mount Vernon and Greenburgh showed
+        # zero agendas across hundreds of meetings, and it matters most where
+        # minutes are unreachable: Port Chester's board record is little else.
+        #
+        # Caveat for whatever reads these: an agenda says what was PROPOSED
+        # and carries no outcome — pcru's contain zero occurrences of
+        # motion/carried/ayes/vote — so "the board approved X" cannot be
+        # sourced from one.
+        #
+        # Yielded LAST, and that ordering is the whole point. Downloads happen
+        # in yield order, so the agenda only reaches the manifest once every
+        # attachment ahead of it did — which is exactly what makes it a
+        # trustworthy "this meeting is done" marker for have_agenda. Yielded
+        # first (as it was on 2026-09-06) it landed before a mid-meeting 403,
+        # marking the meeting complete while most of its files were stranded
+        # and could never be retried: that pass ingested 7 documents.
+        if agenda_url is not None:
+            yield ScrapedDoc(
+                district=district,
+                doc_type=DocType.agenda,
+                title=agenda_title(meeting),
+                source_url=agenda_url,
+                date=meeting.date,
+                meeting_id=meeting.unique,
+                committee=committee_name or committee,
+                # .html so ingest dispatches to extract_html rather than PyMuPDF
+                suggested_filename=f"agenda-{meeting.unique}.html",
             )
 
     if walked_before:
