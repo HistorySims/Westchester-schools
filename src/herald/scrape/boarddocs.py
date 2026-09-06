@@ -521,6 +521,44 @@ def analyze_public_html(html: str, *, status: int = 200) -> PublicPageInfo:
 # file never sees. This is that context.
 _MINUTES_MEETING = re.compile(r"\bminutes\b", re.I)
 
+#: How much of a meeting's name to keep in an agenda's title.
+_LABEL_MAX = 70
+
+
+def _meeting_label(name: str) -> str:
+    """A meeting's name, short enough to read and to stay out of the way.
+
+    Port Chester writes announcements into the name field, not names::
+
+        Board of Education Meeting - Please note the Board of Education will
+        hold a Work Session on Tuesday, July 21, 2026 at 5:00 p.m. in the
+        Middle School Auditorium. The next regular Board of Education Meeting
+        will be held on Thursday, July 30, 2026 ...
+
+    Embedded verbatim in a title, that notice donates its dates to
+    ``parse_meeting_date``, which takes the FIRST date it sees. Three separate
+    meetings were filed under 2026-07-21 that way — including the 2026-07-17
+    agenda, whose own title said so.
+    """
+    label = re.sub(r"\s+", " ", name or "").strip()
+    if len(label) <= _LABEL_MAX:
+        return label
+    return label[:_LABEL_MAX].rsplit(" ", 1)[0].rstrip(" ,;:-") + "…"
+
+
+def agenda_title(meeting: Meeting) -> str:
+    """The title for a meeting's own agenda document.
+
+    The meeting date leads, spelled the way ``parse_meeting_date`` reads it,
+    so the authoritative date is the first one found and any date left in the
+    label cannot outrank it.
+    """
+    label = _meeting_label(meeting.name)
+    if meeting.date is None:
+        return f"{label} — Agenda"
+    when = f"{meeting.date:%B} {meeting.date.day}, {meeting.date.year}"
+    return f"{when} — {label} — Agenda"
+
 
 def classify_filename(name: str) -> DocType:
     low = name.lower()
@@ -760,11 +798,10 @@ def iter_documents(
             if have_agenda is not None and have_agenda(agenda_url):
                 walked_before += 1
                 continue
-            when = f" ({meeting.date.isoformat()})" if meeting.date else ""
             yield ScrapedDoc(
                 district=district,
                 doc_type=DocType.agenda,
-                title=f"{meeting.name} — Agenda{when}",
+                title=agenda_title(meeting),
                 source_url=agenda_url,
                 date=meeting.date,
                 meeting_id=meeting.unique,

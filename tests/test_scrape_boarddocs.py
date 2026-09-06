@@ -481,7 +481,7 @@ def test_the_agenda_itself_is_captured_not_only_its_attachments():
     # because no agenda was ever saved as a document.
     docs = _agenda_docs("Board of Education Meeting - 6:00 p.m.")
     agendas = [d for d in docs if d.doc_type is DocType.agenda
-               and d.title.endswith("Agenda (2026-05-28)")]
+               and d.title.startswith("May 28, 2026 —")]
     assert len(agendas) == 1, "the meeting's own agenda must be a document"
 
     a = agendas[0]
@@ -499,7 +499,7 @@ def test_a_minutes_collection_contributes_no_phantom_agenda():
     # agenda is just an index of the attachments, and saving it would invent a
     # board meeting on 2026-05-28 that never happened.
     docs = _agenda_docs("2026 Minutes")
-    assert not [d for d in docs if d.title.endswith("Agenda (2026-05-28)")]
+    assert not [d for d in docs if d.title.startswith("May 28, 2026 —")]
 
 
 def test_a_403_listing_attachments_does_not_also_lose_the_agenda():
@@ -596,3 +596,54 @@ def test_a_minutes_collection_is_always_rewalked():
     meetings = [Meeting(unique="MIN", name="2026 Minutes", date=date(2026, 12, 31))]
     _, listed = _walk(meetings, have_agenda=lambda _url: True)
     assert listed == ["MIN"]
+
+
+PCRU_NOTICE = (
+    "Board of Education Meeting - Please note the Board of Education will hold a "
+    "Work Session on Tuesday, July 21, 2026 at 5:00 p.m. in the Middle School "
+    "Auditorium. The next regular Board of Education Meeting will be held on "
+    "Thursday, July 30, 2026 at 6:00 p.m."
+)
+
+
+def test_the_meeting_date_leads_the_agenda_title():
+    # Port Chester writes announcements into the meeting NAME. Embedded in a
+    # title verbatim, that notice donated its dates to parse_meeting_date,
+    # which takes the FIRST date it finds — so three separate meetings were
+    # filed under 2026-07-21, including the 2026-07-17 agenda whose own title
+    # said 07-17.
+    from herald.chunking import parse_meeting_date
+    from herald.scrape.boarddocs import Meeting, agenda_title
+
+    title = agenda_title(Meeting(unique="M", name=PCRU_NOTICE, date=date(2026, 7, 17)))
+
+    assert parse_meeting_date(title) == date(2026, 7, 17)
+    assert title.startswith("July 17, 2026 —")
+    assert title.endswith("— Agenda")
+    # the notice is trimmed, so its stray dates are gone entirely
+    assert "July 21" not in title and "July 30" not in title
+
+
+def test_a_short_meeting_name_is_left_alone():
+    from herald.scrape.boarddocs import Meeting, agenda_title
+
+    t = agenda_title(Meeting(unique="M", name="Work Session - 5:00 p.m.",
+                             date=date(2026, 5, 28)))
+    assert t == "May 28, 2026 — Work Session - 5:00 p.m. — Agenda"
+
+
+def test_an_undated_meeting_still_gets_a_title():
+    from herald.scrape.boarddocs import Meeting, agenda_title
+
+    assert agenda_title(Meeting(unique="M", name="Special Meeting", date=None)) == (
+        "Special Meeting — Agenda"
+    )
+
+
+def test_a_long_name_is_truncated_on_a_word_boundary():
+    from herald.scrape.boarddocs import _LABEL_MAX, _meeting_label
+
+    label = _meeting_label(PCRU_NOTICE)
+    assert len(label) <= _LABEL_MAX + 1        # +1 for the ellipsis
+    assert label.endswith("…")
+    assert "  " not in label                    # wrapped whitespace collapsed
