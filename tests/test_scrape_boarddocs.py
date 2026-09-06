@@ -529,3 +529,70 @@ def test_a_403_listing_attachments_does_not_also_lose_the_agenda():
     assert len(docs) == 1, "the agenda survives a failed attachment listing"
     assert docs[0].doc_type is DocType.agenda
     assert docs[0].meeting_id == "M403"
+
+
+def _walk(meetings, *, have_agenda=None, listings=None):
+    """Run iter_documents over given meetings, recording which were listed."""
+    from herald.scrape.boarddocs import parse_agenda_files
+
+    refs = parse_agenda_files(MINUTES_COLLECTION_AGENDA, base_url=PCSD_BASE)
+    listed = listings if listings is not None else []
+
+    class _Client:
+        base_url = PCSD_BASE
+
+        def list_meetings(self, committee):
+            return meetings
+
+        def get_agenda_files(self, m, committee):
+            listed.append(m.unique)          # one POST against the per-IP limit
+            return refs
+
+        def agenda_url(self, m, committee):
+            return BoardDocsClient.agenda_url(self, m, committee)
+
+    docs = list(iter_documents(_Client(), district="pcru", committee="C1",
+                               have_agenda=have_agenda))
+    return docs, listed
+
+
+def test_a_meeting_already_walked_costs_no_request():
+    # The bottleneck that kept backfills stuck: listing a meeting's
+    # attachments costs a POST against BoardDocs' per-IP limit, and it was
+    # spent on every meeting every pass — including ones already fully
+    # downloaded. Port Chester held 48 agendas covering 4 months of 24, out of
+    # 139 available meetings, because the budget never reached the older ones.
+    from herald.scrape.boarddocs import Meeting
+
+    meetings = [
+        Meeting(unique="OLD", name="Board of Education Meeting", date=date(2026, 5, 1)),
+        Meeting(unique="NEW", name="Board of Education Meeting", date=date(2026, 6, 1)),
+    ]
+    held = {BoardDocsClient.agenda_url(
+        type("C", (), {"base_url": PCSD_BASE})(), meetings[0], "C1")}
+
+    docs, listed = _walk(meetings, have_agenda=held.__contains__)
+
+    assert listed == ["NEW"], "only the unwalked meeting should cost a request"
+    assert not any(d.meeting_id == "OLD" for d in docs)
+    assert any(d.meeting_id == "NEW" for d in docs)
+
+
+def test_without_the_predicate_every_meeting_is_still_walked():
+    # have_agenda is optional; omitting it must not change behaviour.
+    from herald.scrape.boarddocs import Meeting
+
+    meetings = [Meeting(unique=u, name="Board of Education Meeting",
+                        date=date(2026, 5, 1)) for u in ("A", "B")]
+    _, listed = _walk(meetings)
+    assert listed == ["A", "B"]
+
+
+def test_a_minutes_collection_is_always_rewalked():
+    # It yields no agenda, so nothing can mark it walked — and its contents
+    # grow through the year as each meeting's minutes are added.
+    from herald.scrape.boarddocs import Meeting
+
+    meetings = [Meeting(unique="MIN", name="2026 Minutes", date=date(2026, 12, 31))]
+    _, listed = _walk(meetings, have_agenda=lambda _url: True)
+    assert listed == ["MIN"]

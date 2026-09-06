@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date
 from urllib.parse import quote, unquote
@@ -686,11 +686,29 @@ def iter_documents(
     committee_name: str | None = None,
     since: date | None = None,
     limit: int | None = None,
+    have_agenda: Callable[[str], bool] | None = None,
 ) -> Iterator[ScrapedDoc]:
     """Yield a ``ScrapedDoc`` for every attachment in a committee's meetings.
 
     Newest meetings first (BoardDocs returns them that way); ``since`` drops
     older meetings, ``limit`` caps how many meetings are walked.
+
+    ``have_agenda(url) -> bool`` reports whether a meeting's agenda has already
+    been downloaded, and lets the walk skip that meeting entirely.
+
+    That skip is what makes a backfill converge. Listing a meeting's
+    attachments costs a POST, which BoardDocs counts toward the per-IP limit
+    that 403s a runner after a few dozen requests — and it was being spent on
+    every meeting on every pass, including the hundreds already fully
+    downloaded. The file downloads were free (the manifest skipped them) but
+    the listing never was, so each pass re-walked the same recent meetings and
+    never reached older ones. Live on 2026-09-06: Port Chester held 48 agendas
+    covering just 4 months of 24, out of 139 available meetings.
+
+    The trade is that a meeting which gains an attachment later is not
+    revisited. For a backfill that is plainly worth it, and the recurring
+    crawl's rolling window re-walks recent meetings anyway — which is where
+    late-arriving attachments actually happen.
     """
     meetings = client.list_meetings(committee)
     if since is not None:
@@ -698,6 +716,7 @@ def iter_documents(
     if limit is not None:
         meetings = meetings[:limit]
 
+    walked_before = 0
     for meeting in meetings:
         # A minutes-collection meeting makes its attachments minutes, whatever
         # their own titles claim. Only `other` is upgraded: a file that names
@@ -729,12 +748,24 @@ def iter_documents(
         # failed, the loop moved on, and the one document that did not depend
         # on that call went with it.
         if not minutes_meeting:
+            agenda_url = client.agenda_url(meeting, committee)
+            # Already holding this meeting's agenda means the meeting has been
+            # walked before, so its attachment listing — and the request it
+            # costs — can be skipped. See the docstring: that request is the
+            # scarce resource, not bandwidth.
+            #
+            # A minutes-collection meeting yields no agenda and so cannot be
+            # marked done this way; those are always re-walked, and there are
+            # only a handful of them.
+            if have_agenda is not None and have_agenda(agenda_url):
+                walked_before += 1
+                continue
             when = f" ({meeting.date.isoformat()})" if meeting.date else ""
             yield ScrapedDoc(
                 district=district,
                 doc_type=DocType.agenda,
                 title=f"{meeting.name} — Agenda{when}",
-                source_url=client.agenda_url(meeting, committee),
+                source_url=agenda_url,
                 date=meeting.date,
                 meeting_id=meeting.unique,
                 committee=committee_name or committee,
@@ -768,3 +799,10 @@ def iter_documents(
                 committee=committee_name or committee,
                 suggested_filename=fname,
             )
+
+    if walked_before:
+        logger.info(
+            "%s/%s: skipped %d meeting(s) already walked — their attachment "
+            "listings would each cost a request against the per-IP limit",
+            district, committee_name or committee, walked_before,
+        )
