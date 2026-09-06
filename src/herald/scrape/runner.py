@@ -191,6 +191,12 @@ def crawl_target(
             committee_name=c.name,
             since=since,
             limit=limit,
+            # Holding a meeting's agenda means it has been walked before, so
+            # its attachment listing can be skipped. That listing costs a
+            # request against BoardDocs' per-IP limit, and spending it on
+            # already-downloaded meetings is what kept backfills stuck on the
+            # most recent few weeks.
+            have_agenda=manifest.has_url,
         )
         out[c.name] = download_docs(
             docs, fetcher=client.fetcher, store=store, manifest=manifest, dry_run=dry_run
