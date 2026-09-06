@@ -502,12 +502,17 @@ def test_a_minutes_collection_contributes_no_phantom_agenda():
     assert not [d for d in docs if d.title.startswith("May 28, 2026 —")]
 
 
-def test_a_403_listing_attachments_does_not_also_lose_the_agenda():
-    # Live on 2026-09-05: six Port Chester meetings 403'd on the attachment
-    # listing, the loop moved on, and the agenda went with them — even though
-    # discovering an agenda needs no network call at all. Its URL is built
-    # from the meeting id; only the attachment listing needs the POST that
-    # BoardDocs blocks once the runner's IP is rate-limited.
+def test_a_403_listing_attachments_retries_the_whole_meeting():
+    # Deliberately the opposite of what this asserted on 2026-09-06, when the
+    # agenda was yielded FIRST so a failed listing would not lose it.
+    #
+    # That optimised a single pass at the cost of ever converging: the agenda
+    # downloaded, have_agenda then read the meeting as complete, and every
+    # attachment behind the 403 was stranded with no way to be retried. The
+    # next pass ingested 7 documents out of 732 seen.
+    #
+    # Skipping the meeting whole costs one agenda now and recovers the entire
+    # meeting on the next pass.
     from herald.scrape.boarddocs import Meeting
 
     meeting = Meeting(unique="M403", name="Board of Education Meeting",
@@ -526,9 +531,7 @@ def test_a_403_listing_attachments_does_not_also_lose_the_agenda():
             return BoardDocsClient.agenda_url(self, m, committee)
 
     docs = list(iter_documents(_BlockedClient(), district="pcru", committee="C1"))
-    assert len(docs) == 1, "the agenda survives a failed attachment listing"
-    assert docs[0].doc_type is DocType.agenda
-    assert docs[0].meeting_id == "M403"
+    assert docs == [], "nothing is claimed for a meeting we could not enumerate"
 
 
 def _walk(meetings, *, have_agenda=None, listings=None):
