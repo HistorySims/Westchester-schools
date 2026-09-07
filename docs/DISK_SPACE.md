@@ -87,31 +87,34 @@ create index chunks_hnsw_idx on chunks
   where status = 'active';
 ```
 
-### 2. Convert the embedding column to halfvec
+### 2. Convert the embedding column to halfvec — DONE
+
+Applied 2026-09-07, by accident of persistence: the statement was pasted into
+the Supabase SQL editor, the editor timed out with `Error: Load failed
+(api.supabase.com)`, and the backend went right on running it and committed.
+`pg_attribute` now reports `halfvec` for `chunks.embedding`.
+
+**The lesson worth keeping: a dashboard timeout does not abort the
+statement.** The HTTP connection between the browser and Supabase's API drops;
+the connection between the API and Postgres does not. Retrying a "failed"
+statement can therefore mean running a second copy of one still in flight.
+Check state before re-issuing anything long.
+
+Migration 0007 is still worth running — its `alter` is guarded and will skip,
+but it records itself in `schema_migrations` so the migration history matches
+the database. Left unrun, it stays pending forever and `migrate status`
+reports something false.
+
+Run it through **Actions → migrate → Run workflow**, never the SQL editor.
+The migration sets `statement_timeout = 0` in case the role carries a default,
+and the migrate job's cap went from 15 to 60 minutes so a long rewrite is not
+cancelled halfway.
+
+#### What the change was
 
 `halfvec(1024)` stores fp16 instead of fp32: 2,050 bytes per vector instead
-of 4,100. Both the column and any future index halve.
-
-Confirmed available — Supabase is on pgvector **0.8.2**, and halfvec landed in
-0.7.0.
-
-Shipped as `db/migrations/0007_embedding_halfvec.sql`. Run it through
-**Actions → migrate → Run workflow**, not the Supabase SQL editor.
-
-Pasting the `alter` into the dashboard fails: it rewrites every row plus
-~195 MB of TOAST, which takes minutes, and the SQL editor's HTTP layer gives
-up first with `Error: Load failed (api.supabase.com)`. That is a browser
-timeout, not a database error — and the bad part is that it leaves no way to
-tell whether the statement rolled back or is still running behind an
-`ACCESS EXCLUSIVE` lock. A runner on a direct connection has no such
-timeout, and the migration sets `statement_timeout = 0` in case the role
-carries a non-zero default.
-
-The migrate job's cap was raised from 15 to 60 minutes for the same reason: a
-job cancelled mid-rewrite is the one outcome with no clear signal.
-
-The rewrite needs temporary room for a second copy of the heap and TOAST,
-which is why it comes after step 1.
+of 4,100. Both the column and any future index halve. Available since
+pgvector 0.7.0; Supabase is on **0.8.2**.
 
 Expected recall cost is small. Voyage's vectors are normalized and fp16 has
 ample precision for cosine distance at this dimension; published comparisons
@@ -282,6 +285,13 @@ corpus being quarantined garbage, which no query had been run to establish.
 
 - pgvector is **0.8.2** — halfvec available, the plan is unblocked.
 - **`quarantined = 0`**, all 47,510 chunks active. Scoring has never run.
+- **Step 1 done** — `chunks_hnsw_idx` dropped.
+- **Step 2 done** — `chunks.embedding` is `halfvec`, confirmed via
+  `pg_attribute`. Applied from the dashboard despite its timeout.
+
+Which leaves semantic search broken until the `::halfvec` cast in
+`schools_retrieval.py` merges — there is no `halfvec <=> vector` operator.
+Ingest is unaffected; it inserts through pgvector's assignment cast.
 
 ## Correction to the earlier estimate
 
