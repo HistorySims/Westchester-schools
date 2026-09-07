@@ -1036,8 +1036,6 @@ def policy_import(
         Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
         console.print(f"report: {report}")
 
-if __name__ == "__main__":
-    app()
 
 @app.command("panopto-probe")
 def panopto_probe(
@@ -1141,3 +1139,180 @@ def panopto_probe(
     if report:
         Path(report).write_text(md, encoding="utf-8")
         console.print(f"report: {report}")
+
+
+@app.command("agenda-snapshot")
+def agenda_snapshot(
+    targets: str = typer.Option("data/targets/port_chester_peers.json", help="Targets JSON."),
+    only: str = typer.Option(..., help="District slug(s) to snapshot, comma-separated."),
+    since: str = typer.Option(..., help="Only meetings on/after this date (YYYY-MM-DD)."),
+    out: str = typer.Option("data/snapshots/boarddocs-agendas.jsonl.gz",
+                            help="Gzipped JSONL: one meeting agenda per line."),
+    min_interval: float = typer.Option(2.0, help="Min seconds between requests."),
+    report: str | None = typer.Option(None, help="Write a markdown summary here."),
+) -> None:
+    """Collect meeting agendas from an UNBLOCKED connection into a snapshot.
+
+    BoardDocs blocks by IP range, not by request count. Measured 2026-09-06:
+    40 consecutive agenda fetches from an ordinary connection completed in 147
+    seconds with zero refusals, while GitHub's runners answer 403 after a
+    handful of the identical requests — same code, same headers (both the
+    XHR-shaped set and a full navigation set were tried). No amount of pacing,
+    retrying or extra passes moves it, which is why the backfill stalled at
+    3-9 months of coverage for four districts.
+
+    This is the same escape hatch ``policy-snapshot`` uses, and for the same
+    reason: collect where the network works, commit the result, and expand it
+    on the runner with no network at all.
+
+    An agenda is expensive — Mount Vernon's average 1.25 MB of HTML, 40 KB
+    gzipped, and **27.5 chunks** once ingested. At roughly 11 KB per chunk in
+    Postgres (embedding, content, FTS, HNSW index) a district's full history
+    would not fit a 500 MB tier, so ``--since`` is required rather than
+    optional: take the window the newsletter needs, not everything reachable.
+    """
+    import gzip
+
+    from herald.scrape.boarddocs import agenda_title
+
+    wanted = {s.strip() for s in only.split(",") if s.strip()}
+    start = date.fromisoformat(since)
+    out_path = Path(out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    written: Counter[str] = Counter()
+    failed: Counter[str] = Counter()
+    total_bytes = 0
+
+    with gzip.open(out_path, "wt", encoding="utf-8") as fh:
+        for t in load_targets(targets):
+            if t.slug not in wanted:
+                continue
+            with _fetcher(BROWSER_USER_AGENT, min_interval, respect_robots=False,
+                          browser=True) as f:
+                client = BoardDocsClient(state=t.state, slug=t.slug, fetcher=f)
+                try:
+                    committees = client.discover_committees()
+                except Exception as exc:
+                    console.print(f"[red]{t.slug}: {exc}[/red]")
+                    continue
+                for c in committees:
+                    meetings = [m for m in client.list_meetings(c.unique)
+                                if m.date is None or m.date >= start]
+                    console.rule(f"{t.name} / {c.name}: {len(meetings)} meeting(s)")
+                    for m in meetings:
+                        url = client.agenda_url(m, c.unique)
+                        try:
+                            html = f.get(url).text
+                        except Exception as exc:
+                            failed[t.district] += 1
+                            console.print(f"  [red]{m.date} {str(exc)[:60]}[/red]")
+                            continue
+                        fh.write(json.dumps({
+                            "district": t.district,
+                            "title": agenda_title(m),
+                            "source_url": url,
+                            "date": m.date.isoformat() if m.date else None,
+                            "meeting_id": m.unique,
+                            "committee": c.name,
+                            "html": html,
+                        }) + "\n")
+                        written[t.district] += 1
+                        total_bytes += len(html)
+                        if written[t.district] % 10 == 0:
+                            console.print(f"  {written[t.district]} agendas…")
+
+    size = out_path.stat().st_size
+    lines = ["## Agenda snapshot", "",
+             f"`{out_path}` — {size/1e6:.1f} MB gzipped, "
+             f"{total_bytes/1e6:.0f} MB raw", "",
+             "| district | agendas | failed |", "|---|---:|---:|"]
+    for slug in sorted(set(written) | set(failed)):
+        lines.append(f"| {slug} | {written[slug]} | {failed[slug]} |")
+        console.print(f"  {slug}: {written[slug]} written, {failed[slug]} failed")
+    console.print(f"\n[bold]{sum(written.values())} agendas[/bold] -> {out_path} "
+                  f"({size/1e6:.1f} MB)")
+    if report:
+        Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@app.command("agenda-snapshot-import")
+def agenda_snapshot_import(
+    snapshot: str = typer.Option("data/snapshots/boarddocs-agendas.jsonl.gz",
+                                 help="Gzipped JSONL snapshot from `agenda-snapshot`."),
+    only: str | None = typer.Option(None, help="Only these district slug(s), comma-separated."),
+    out: str = typer.Option("data/raw", help="Root dir for the raw store."),
+    report: str | None = typer.Option(None, help="Write a markdown summary here."),
+    dry_run: bool = typer.Option(False, help="Read + count only; write nothing."),
+) -> None:
+    """Expand the committed agenda snapshot into the raw store — no network.
+
+    Mirrors ``policy-snapshot-import``: same raw store, same manifest, same
+    ``source_url`` permalinks, so ingest cannot tell a snapshot apart from a
+    live crawl. Refreshing means regenerating the snapshot from an unblocked
+    connection, not changing anything here.
+    """
+    import gzip
+
+    from herald.scrape.core import make_manifest_entry, sha256_bytes
+    from herald.scrape.models import DocType, ScrapedDoc
+
+    path = Path(snapshot)
+    if not path.is_file():
+        console.print(f"[red]no snapshot at {path}[/red]")
+        raise typer.Exit(1)
+    wanted = {s.strip() for s in (only or "").split(",") if s.strip()} or None
+    out_dir = Path(out)
+    manifest = Manifest(out_dir / "manifest.jsonl")
+    store = RawStore(out_dir)
+    stored: Counter[str] = Counter()
+    skipped: Counter[str] = Counter()
+
+    with gzip.open(path, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            slug = rec["district"]
+            if wanted and slug not in wanted:
+                continue
+            body = rec["html"].encode("utf-8")
+            sha = sha256_bytes(body)
+            if manifest.has_url_hash(rec["source_url"], sha):
+                skipped[slug] += 1
+                continue
+            stored[slug] += 1
+            if dry_run:
+                continue
+            doc = ScrapedDoc(
+                district=slug,
+                doc_type=DocType.agenda,
+                title=rec["title"],
+                source_url=rec["source_url"],
+                date=date.fromisoformat(rec["date"]) if rec.get("date") else None,
+                meeting_id=rec.get("meeting_id"),
+                committee=rec.get("committee"),
+                # .html so ingest dispatches to extract_html, not PyMuPDF
+                suggested_filename=f"agenda-{rec.get('meeting_id', 'x')}.html",
+            )
+            local = store.write(doc, body, default_ext=".html")
+            manifest.append(make_manifest_entry(
+                doc, local_path=local, sha256=sha, size_bytes=len(body),
+                content_type="text/html",
+            ))
+
+    verb = "would import" if dry_run else "imported"
+    lines = ["## Agenda snapshot import", "",
+             "| district | " + verb + " | skipped (already held) |", "|---|---:|---:|"]
+    for slug in sorted(set(stored) | set(skipped)):
+        console.print(f"  {slug}: {verb} {stored[slug]}, skipped {skipped[slug]}")
+        lines.append(f"| {slug} | {stored[slug]} | {skipped[slug]} |")
+    console.print(f"\n[bold]{verb} {sum(stored.values())}[/bold], "
+                  f"skipped {sum(skipped.values())}")
+    if report:
+        Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+if __name__ == "__main__":
+    app()
