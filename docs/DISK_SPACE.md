@@ -87,9 +87,80 @@ create index chunks_hnsw_idx on chunks
   where status = 'active';
 ```
 
-### 2. Trim
+### 2. Convert the embedding column to halfvec — DONE
 
-Cheapest real savings, and the only step that removes data. Run first:
+Applied 2026-09-07, by accident of persistence: the statement was pasted into
+the Supabase SQL editor, the editor timed out with `Error: Load failed
+(api.supabase.com)`, and the backend went right on running it and committed.
+`pg_attribute` now reports `halfvec` for `chunks.embedding`.
+
+**The lesson worth keeping: a dashboard timeout does not abort the
+statement.** The HTTP connection between the browser and Supabase's API drops;
+the connection between the API and Postgres does not. Retrying a "failed"
+statement can therefore mean running a second copy of one still in flight.
+Check state before re-issuing anything long.
+
+Migration 0007 is still worth running — its `alter` is guarded and will skip,
+but it records itself in `schema_migrations` so the migration history matches
+the database. Left unrun, it stays pending forever and `migrate status`
+reports something false.
+
+Run it through **Actions → migrate → Run workflow**, never the SQL editor.
+The migration sets `statement_timeout = 0` in case the role carries a default,
+and the migrate job's cap went from 15 to 60 minutes so a long rewrite is not
+cancelled halfway.
+
+#### What the change was
+
+`halfvec(1024)` stores fp16 instead of fp32: 2,050 bytes per vector instead
+of 4,100. Both the column and any future index halve. Available since
+pgvector 0.7.0; Supabase is on **0.8.2**.
+
+Expected recall cost is small. Voyage's vectors are normalized and fp16 has
+ample precision for cosine distance at this dimension; published comparisons
+put the loss well under a point. This is an estimate, not a measurement —
+worth re-running the eval set afterward to confirm.
+
+### 3. Code changes for halfvec
+
+Not optional — `halfvec <=> vector` has no operator, so retrieval breaks the
+moment the column type changes. These ship together with the migration:
+
+- `src/herald/schools_retrieval.py:103,106` — **done.** `%(qvec)s::vector` is
+  now `%(qvec)s::halfvec(1024)`. This was the only distance query on the
+  schools schema. `herald/db.py:253,259` also casts `::vector` but is the
+  newspaper engine against a different database — deliberately untouched.
+- `src/herald/schools_db.py:221` — the insert passes `list[float]`, which
+  psycopg dumps as `double precision[]`, relying on pgvector's assignment
+  cast to the column type. pgvector defines that cast for halfvec exactly as
+  it does for vector, so this should keep working unchanged. Left alone
+  rather than churned, since there is no database here to test it against —
+  **the first real ingest is the check.**
+- `src/herald/cluster.py:127,242` — `register_vector(conn)` registers halfvec
+  too as of pgvector-python 0.3.0, and the pin is **0.4.2**. Embeddings load
+  as fp16 arrays and are immediately widened by
+  `np.array(..., dtype=np.float32)`, so no change needed.
+
+### 4. Import the agendas
+
+Before rebuilding any index, not after. Inserting 7,645 chunks into an
+existing HNSW grows it messily; building once over the final corpus is
+smaller and faster. With no index present the import is also quicker.
+
+### 5. Score, then trim
+
+`status` is only ever written by the scoring pass in `quality.py`, and
+**it has never run on this corpus** — all 47,510 chunks are `active`, none
+quarantined. That is not evidence the chunks are clean; it is the absence of
+evidence either way.
+
+Scoring is local — dictionary ratios against `wordlist.txt`, no API calls —
+so it is cheap to run and worth doing on its own merits. Whatever it
+quarantines is then safe to delete: quarantined chunks are excluded from
+every index by the `where status = 'active'` predicate, so they earn nothing
+while carrying a full embedding each.
+
+Other trim candidates, once there is data to look at:
 
 ```sql
 select doc_type, status, count(*) as chunks,
@@ -100,37 +171,41 @@ group by doc_type, status
 order by count(*) desc;
 ```
 
-Candidates, in order of how obviously they should go:
-
-- **`status = 'quarantined'`.** Already excluded from every index by the
-  `where status = 'active'` predicate, so they earn nothing, and each still
-  carries a full 4 KB embedding.
 - **`doc_type = 'other'`.** Everything the classifier could not place.
 - Documents with `ingest_status = 'no_text'` that have chunks anyway.
 
 Deleting a document cascades to its chunks (`on delete cascade`), so trimming
 at the document level is safe and self-consistent.
 
-### 3. Convert the embedding column to halfvec
+Note that `delete` does **not** return space to the operating system — it
+marks tuples dead, and `pg_database_size`, which is what the tier limit
+measures, does not move. The space becomes reusable by later inserts, which
+is worth something, but a reported reduction needs `vacuum full chunks`, and
+that needs room for a second copy of the table.
 
-`halfvec(1024)` stores fp16 instead of fp32: 2,050 bytes per vector instead
-of 4,100. Both the column and the rebuilt index halve.
+### 6. Decide the index question
 
-```sql
-alter table chunks
-  alter column embedding type halfvec(1024)
-  using embedding::halfvec(1024);
-```
+Everything above is settled. This step decides whether the result is
+comfortable or tight.
 
-This rewrites the whole table, so it needs temporary room for a second copy
-of the heap and TOAST — which is why it comes after steps 1 and 2.
+| option | index | total | cost |
+|---|---:|---:|---|
+| HNSW on halfvec | ~138 MB | ~504 MB | none beyond step 3 |
+| **no vector index** | 0 | **~366 MB** | queries take seconds, not ms |
+| HNSW on binary-quantized vectors, rescored | ~20 MB | ~387 MB | two-stage query |
 
-Expected recall cost is small. Voyage's vectors are normalized and fp16 has
-ample precision for cosine distance at this dimension; published comparisons
-put the loss well under a point. This is an estimate, not a measurement —
-worth re-running the eval set afterward to confirm.
+Recommended: **take no index for now and measure.** Brute-force cosine over
+55,000 halfvec rows scans ~113 MB, on the order of a second or two. For a
+research corpus queried interactively a handful of times a day that may be
+entirely acceptable, and it is the only option that leaves real headroom.
 
-### 4. Rebuild the index on halfvec
+If it proves too slow, the third row is pgvector's documented pattern for
+this exact problem: index `binary_quantize(embedding)::bit(1024)` under
+Hamming distance to get candidates fast, then rescore the top few hundred
+against the real halfvec. 128 bytes per vector in the index instead of 2,050.
+Worth writing against a proven need rather than a predicted one.
+
+For reference, HNSW on halfvec would be:
 
 ```sql
 create index chunks_hnsw_idx on chunks
@@ -138,37 +213,37 @@ create index chunks_hnsw_idx on chunks
   where status = 'active';
 ```
 
-Estimated ~110 MB, against 366 MB today.
-
-### 5. Code changes for halfvec
-
-Not optional — `halfvec <=> vector` has no operator, so retrieval breaks the
-moment the column type changes. All three of these ship together with the
-migration:
-
-- `src/herald/schools_retrieval.py:103,106` — `%(qvec)s::vector` becomes
-  `%(qvec)s::halfvec(1024)`.
-- `src/herald/schools_db.py:221` — the insert passes `list[float]`; confirm
-  psycopg adapts it to a halfvec column, and add an explicit cast if not.
-- `src/herald/cluster.py:127,242` — `register_vector(conn)` must register the
-  halfvec type too. Requires pgvector-python ≥ 0.3.0; check the pin.
-
 ## Expected end state
 
 Estimates, not measurements:
 
 | | now | after |
 |---|---:|---:|
-| `chunks_hnsw_idx` | 366 MB | ~110 MB |
+| `chunks_hnsw_idx` | 366 MB | 0, or ~20 MB quantized |
 | chunks TOAST (embeddings) | ~195 MB | ~98 MB |
-| everything else | ~230 MB | ~230 MB, less whatever trimming removes |
-| **total** | **791 MB** | **~440 MB, before trimming** |
+| everything else | ~230 MB | ~230 MB, less trimming |
+| the 278 agendas | — | ~38 MB |
+| **total** | **791 MB** | **~366 MB with no index** |
 
-The 278 agendas then cost roughly 65 MB rather than 127 MB, because the
-per-chunk price drops with the vector size.
+## Rejected alternative
 
-That still lands close to the line, which is why step 2 is not optional. How
-close depends on the trim query, which has not been run yet.
+A suggested shortcut was: drop the index, `delete from chunks where status =
+'quarantined'`, then recreate the index as-is. Recorded because the reasoning
+is instructive.
+
+It fails on three counts:
+
+1. The index is **partial** (`where status = 'active'`), so quarantined rows
+   were never in it. Deleting them cannot make the rebuild smaller, though
+   the sequence reads as though it does.
+2. `delete` does not shrink `pg_database_size` without `vacuum full`.
+3. Recreating the index as float32 gives back ~219 MB of the ~366 MB that
+   dropping it saved.
+
+With the measured `quarantined = 0`, step 2 of that sequence is a no-op and
+the end state is **~644 MB** — still over the limit, with the work spent.
+The estimate accompanying it (~300 MB) required roughly two-thirds of the
+corpus being quarantined garbage, which no query had been run to establish.
 
 ## Still unknown
 
@@ -195,11 +270,28 @@ close depends on the trim query, which has not been run yet.
   an observation. `documents` holds no full text, so it should be small; if
   it is not, something else is going on.
 
-- How much the trim actually recovers.
+  In particular the `fts` column is `generated always as stored`, so there is
+  a tsvector in every row that nothing has measured. A tsvector runs 30–40% of
+  its source text, which puts it around 25–35 MB here — worth seeing, but not
+  a major lever. (An earlier guess of 50–90 MB in conversation was too high.)
+
+- How much scoring and trimming actually recover.
 - Whether the project is genuinely on the free plan. It is writing happily at
   791 MB, which free-tier enforcement (read-only mode) would not allow, so
   either enforcement has not fired yet or the plan is not what we assume.
   Settings → Usage in the Supabase dashboard settles it.
+
+## Settled since this file was opened
+
+- pgvector is **0.8.2** — halfvec available, the plan is unblocked.
+- **`quarantined = 0`**, all 47,510 chunks active. Scoring has never run.
+- **Step 1 done** — `chunks_hnsw_idx` dropped.
+- **Step 2 done** — `chunks.embedding` is `halfvec`, confirmed via
+  `pg_attribute`. Applied from the dashboard despite its timeout.
+
+Which leaves semantic search broken until the `::halfvec` cast in
+`schools_retrieval.py` merges — there is no `halfvec <=> vector` operator.
+Ingest is unaffected; it inserts through pgvector's assignment cast.
 
 ## Correction to the earlier estimate
 
