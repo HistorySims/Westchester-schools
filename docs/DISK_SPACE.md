@@ -185,19 +185,26 @@ that needs room for a second copy of the table.
 
 ### 6. Decide the index question
 
-Everything above is settled. This step decides whether the result is
-comfortable or tight.
+Everything above is settled. This is the last open question, and unlike the
+earlier ones it is not answerable from a catalog query — it needs a real
+search against the finished corpus.
+
+Totals below use the measured 296 MB plus the projected import:
 
 | option | index | total | cost |
 |---|---:|---:|---|
-| HNSW on halfvec | ~138 MB | ~504 MB | none beyond step 3 |
-| **no vector index** | 0 | **~366 MB** | queries take seconds, not ms |
-| HNSW on binary-quantized vectors, rescored | ~20 MB | ~387 MB | two-stage query |
+| HNSW on halfvec | ~138 MB | ~480 MB | none beyond step 3 |
+| **no vector index** | 0 | **~342 MB** | queries take seconds, not ms |
+| HNSW on binary-quantized vectors, rescored | ~20 MB | ~362 MB | two-stage query |
+
+All three now fit, which they did not when this file was opened. So the
+decision is about latency, not space.
 
 Recommended: **take no index for now and measure.** Brute-force cosine over
 55,000 halfvec rows scans ~113 MB, on the order of a second or two. For a
 research corpus queried interactively a handful of times a day that may be
-entirely acceptable, and it is the only option that leaves real headroom.
+entirely acceptable, and it costs nothing to find out — the index can be
+added later without re-embedding anything.
 
 If it proves too slow, the third row is pgvector's documented pattern for
 this exact problem: index `binary_quantize(embedding)::bit(1024)` under
@@ -213,17 +220,43 @@ create index chunks_hnsw_idx on chunks
   where status = 'active';
 ```
 
-## Expected end state
+## Measured after steps 1 and 2
 
-Estimates, not measurements:
+**791 MB → 296 MB.** Measured 2026-09-07, not projected.
 
-| | now | after |
-|---|---:|---:|
-| `chunks_hnsw_idx` | 366 MB | 0, or ~20 MB quantized |
-| chunks TOAST (embeddings) | ~195 MB | ~98 MB |
-| everything else | ~230 MB | ~230 MB, less trimming |
-| the 278 agendas | — | ~38 MB |
-| **total** | **791 MB** | **~366 MB with no index** |
+| table | total | heap | indexes | toast |
+|---|---:|---:|---:|---:|
+| `chunks` | 280 MB | 60 MB | 25 MB | 195 MB |
+| `documents` | 4,456 kB | 2,904 kB | 1,512 kB | 8 kB |
+| everything else | < 1.2 MB | | | |
+
+`chunks` is 95% of the database. **The "everything else ≈ 230 MB" row in
+earlier versions of this file was wrong** — it came from subtracting the HNSW
+index from the total and attributing the remainder to other tables. There are
+no other tables of consequence; that 230 MB was chunks' own heap and TOAST.
+
+The 195 MB TOAST figure looks unchanged from before the conversion but is not
+the same 195 MB. Embeddings in it went 195 MB → ~97 MB; what sits alongside
+them is `content` plus the stored `fts` tsvector, ~98 MB. So content and fts
+are now the largest thing in the database after the embeddings — the earlier
+question about whether the generated tsvector was worth measuring is answered
+yes.
+
+Per chunk, all-in: 280 MB / 47,510 = **6.05 KB**, against 16.6 KB before.
+
+## Where that leaves the tier
+
+| | |
+|---|---:|
+| now | 296 MB |
+| + 278 agendas (7,645 chunks × 6.05 KB) | ~342 MB |
+| ...with no vector index | **~342 MB** |
+| ...with a binary-quantized index | ~362 MB |
+| ...with HNSW on halfvec | ~480 MB |
+
+All three fit under 500 MB. **Trimming is therefore optional, not required.**
+Scoring is still worth running — garbage OCR chunks pollute retrieval whether
+or not they cost space — but it is no longer load-bearing for the limit.
 
 ## Rejected alternative
 
@@ -247,39 +280,25 @@ corpus being quarantined garbage, which no query had been run to establish.
 
 ## Still unknown
 
-- The per-table breakdown. This query errored on the first attempt
-  (`relname` is ambiguous — it exists in both `pg_class` and
-  `pg_stat_user_tables`); the corrected form is:
+- Whether semantic search is fast enough with no index. This is the only
+  question left that changes what gets built, and it cannot be answered
+  before the import — see step 6.
 
-  ```sql
-  select c.relname,
-         pg_size_pretty(pg_total_relation_size(c.oid))                       as total,
-         pg_size_pretty(pg_relation_size(c.oid))                             as heap,
-         pg_size_pretty(pg_indexes_size(c.oid))                              as indexes,
-         pg_size_pretty(coalesce(pg_total_relation_size(c.reltoastrelid),0)) as toast,
-         s.n_live_tup, s.n_dead_tup
-  from pg_class c
-  join pg_namespace n on n.oid = c.relnamespace
-  left join pg_stat_user_tables s on s.relid = c.oid
-  where n.nspname = 'public' and c.relkind = 'r'
-  order by pg_total_relation_size(c.oid) desc
-  limit 15;
-  ```
+- How much scoring and trimming would recover. No longer urgent: at 296 MB
+  every index option fits.
 
-  Without it, the ~230 MB "everything else" row above is a subtraction, not
-  an observation. `documents` holds no full text, so it should be small; if
-  it is not, something else is going on.
+- Whether `salary_schedule`, `stipend_schedule` and `cluster_maps` hold
+  anything. All three report `n_live_tup 0`, but `cluster_maps` shows 280 kB
+  of TOAST, so it plainly has rows — `n_live_tup` is an ANALYZE estimate and
+  reads 0 for a table never analyzed. A `count(*)` would settle it. Unrelated
+  to space; noted because a genuinely empty `salary_schedule` would mean the
+  structured extraction never landed, which matters for goal A.
 
-  In particular the `fts` column is `generated always as stored`, so there is
-  a tsvector in every row that nothing has measured. A tsvector runs 30–40% of
-  its source text, which puts it around 25–35 MB here — worth seeing, but not
-  a major lever. (An earlier guess of 50–90 MB in conversation was too high.)
-
-- How much scoring and trimming actually recover.
-- Whether the project is genuinely on the free plan. It is writing happily at
-  791 MB, which free-tier enforcement (read-only mode) would not allow, so
-  either enforcement has not fired yet or the plan is not what we assume.
-  Settings → Usage in the Supabase dashboard settles it.
+- Whether the project is genuinely on the free plan. It was writing happily
+  at 791 MB, which free-tier enforcement (read-only mode) would not allow, so
+  either enforcement had not fired yet or the plan is not what we assume.
+  Settings → Usage in the Supabase dashboard settles it. Moot for now, but
+  worth knowing before the next growth spurt.
 
 ## Settled since this file was opened
 
@@ -288,6 +307,10 @@ corpus being quarantined garbage, which no query had been run to establish.
 - **Step 1 done** — `chunks_hnsw_idx` dropped.
 - **Step 2 done** — `chunks.embedding` is `halfvec`, confirmed via
   `pg_attribute`. Applied from the dashboard despite its timeout.
+- **791 MB → 296 MB**, measured. Under the tier with 200 MB to spare, and
+  every remaining option fits.
+- The per-table breakdown is in, and it retired the "everything else"
+  guesswork: `chunks` is 95% of the database.
 
 Which leaves semantic search broken until the `::halfvec` cast in
 `schools_retrieval.py` merges — there is no `halfvec <=> vector` operator.
