@@ -33,7 +33,11 @@ permissions:
 jobs:
   migrate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Most migrations are seconds of DDL. 0007 is not: it rewrites every row
+    # of chunks plus ~195 MB of TOAST, on free-tier IOPS. A cancelled job
+    # mid-rewrite is the one outcome worth avoiding, since it leaves no clear
+    # signal about whether the change landed.
+    timeout-minutes: 60
     env:
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
     steps:

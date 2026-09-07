@@ -93,17 +93,28 @@ def panel_semantic(
     date_from: _dt.date | None = None,
     date_to: _dt.date | None = None,
 ) -> list[EvidenceChunk]:
-    """Top-N chunks per district by cosine distance (ascending)."""
+    """Top-N chunks per district by cosine distance (ascending).
+
+    The query vector is cast to ``halfvec(1024)`` because that is what the
+    column became in migration 0007 — there is no ``halfvec <=> vector``
+    operator, so the cast is required, not cosmetic. ``herald.db`` still uses
+    ``::vector``; that is the newspaper engine's own schema in a separate
+    database and is unaffected.
+
+    There is no HNSW index behind this any more (see docs/DISK_SPACE.md), so
+    it is a sequential scan over the active chunks. Correct, and on the order
+    of a second at this corpus size.
+    """
     cur.execute(
         f"""
         select {_ROW_COLS}, t.distance
         from (
             select c.id, d.slug, c.meeting_date, c.doc_type, doc.title,
                    c.section_path, c.heading, c.content, doc.source_url,
-                   c.embedding <=> %(qvec)s::vector as distance,
+                   c.embedding <=> %(qvec)s::halfvec(1024) as distance,
                    row_number() over (
                        partition by c.district_id
-                       order by c.embedding <=> %(qvec)s::vector
+                       order by c.embedding <=> %(qvec)s::halfvec(1024)
                    ) as rn
             from chunks c
             join districts d   on d.id = c.district_id

@@ -95,14 +95,23 @@ of 4,100. Both the column and any future index halve.
 Confirmed available — Supabase is on pgvector **0.8.2**, and halfvec landed in
 0.7.0.
 
-```sql
-alter table chunks
-  alter column embedding type halfvec(1024)
-  using embedding::halfvec(1024);
-```
+Shipped as `db/migrations/0007_embedding_halfvec.sql`. Run it through
+**Actions → migrate → Run workflow**, not the Supabase SQL editor.
 
-This rewrites the whole table, so it needs temporary room for a second copy
-of the heap and TOAST — which is why it comes after step 1.
+Pasting the `alter` into the dashboard fails: it rewrites every row plus
+~195 MB of TOAST, which takes minutes, and the SQL editor's HTTP layer gives
+up first with `Error: Load failed (api.supabase.com)`. That is a browser
+timeout, not a database error — and the bad part is that it leaves no way to
+tell whether the statement rolled back or is still running behind an
+`ACCESS EXCLUSIVE` lock. A runner on a direct connection has no such
+timeout, and the migration sets `statement_timeout = 0` in case the role
+carries a non-zero default.
+
+The migrate job's cap was raised from 15 to 60 minutes for the same reason: a
+job cancelled mid-rewrite is the one outcome with no clear signal.
+
+The rewrite needs temporary room for a second copy of the heap and TOAST,
+which is why it comes after step 1.
 
 Expected recall cost is small. Voyage's vectors are normalized and fp16 has
 ample precision for cosine distance at this dimension; published comparisons
@@ -114,13 +123,20 @@ worth re-running the eval set afterward to confirm.
 Not optional — `halfvec <=> vector` has no operator, so retrieval breaks the
 moment the column type changes. These ship together with the migration:
 
-- `src/herald/schools_retrieval.py:103,106` — `%(qvec)s::vector` becomes
-  `%(qvec)s::halfvec(1024)`.
-- `src/herald/schools_db.py:221` — the insert passes `list[float]`; confirm
-  psycopg adapts it to a halfvec column, and add an explicit cast if not.
-- `src/herald/cluster.py:127,242` — `register_vector(conn)` must register the
-  halfvec type too. The pin is pgvector-python **0.4.2**, which has handled
-  halfvec since 0.3.0, so no dependency change is needed.
+- `src/herald/schools_retrieval.py:103,106` — **done.** `%(qvec)s::vector` is
+  now `%(qvec)s::halfvec(1024)`. This was the only distance query on the
+  schools schema. `herald/db.py:253,259` also casts `::vector` but is the
+  newspaper engine against a different database — deliberately untouched.
+- `src/herald/schools_db.py:221` — the insert passes `list[float]`, which
+  psycopg dumps as `double precision[]`, relying on pgvector's assignment
+  cast to the column type. pgvector defines that cast for halfvec exactly as
+  it does for vector, so this should keep working unchanged. Left alone
+  rather than churned, since there is no database here to test it against —
+  **the first real ingest is the check.**
+- `src/herald/cluster.py:127,242` — `register_vector(conn)` registers halfvec
+  too as of pgvector-python 0.3.0, and the pin is **0.4.2**. Embeddings load
+  as fp16 arrays and are immediately widened by
+  `np.array(..., dtype=np.float32)`, so no change needed.
 
 ### 4. Import the agendas
 
