@@ -1,0 +1,121 @@
+name: agendas
+
+# Import the committed agenda snapshot and ingest it. No network beyond the
+# database and the embedder.
+#
+#   Actions -> agendas -> Run workflow
+#
+# BoardDocs blocks by IP RANGE, not by request count. Measured 2026-09-06: 40
+# consecutive agenda fetches from an ordinary connection completed in 147
+# seconds with zero refusals, while GitHub's runners answer 403 after a
+# handful of the identical requests — same code, same headers (both the
+# XHR-shaped set and a full navigation set were tried). Pacing, retries and
+# extra passes all fail to move it, which is why four districts stalled at
+# 3-9 months of coverage.
+#
+# So the agendas were collected where the network works and committed, the
+# same escape hatch `policy-boarddocs` uses for the 1,071-policy snapshot.
+# This expands that file into the same raw store, manifest and source_url
+# permalinks a live crawl would have left, then ingests it — nothing
+# downstream can tell the difference.
+#
+# Refreshing means regenerating the snapshot from an unblocked connection:
+#   herald-scrape agenda-snapshot --only mvcsd,greenb,pcsd,pcru --since <date>
+#
+# Required secrets: SUPABASE_DB_URL, VOYAGE_API_KEY
+
+on:
+  workflow_dispatch:
+    inputs:
+      district:
+        description: "District to import (all = every district in the snapshot)"
+        type: choice
+        options:
+          - all
+          - mount-vernon
+          - greenburgh-central
+          - peekskill
+          - port-chester-rye
+        default: all
+      dry_run:
+        description: "Report what would be imported and ingested; write nothing"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ingest          # never write the corpus from two runs at once
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  agendas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Check secrets (real run only)
+        if: ${{ !inputs.dry_run }}
+        run: |
+          [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
+          [ -n "$VOYAGE_API_KEY" ]  || { echo "VOYAGE_API_KEY secret is missing"; exit 1; }
+      - name: Expand the snapshot into the raw store
+        run: |
+          uv run herald-scrape agenda-snapshot-import \
+            --snapshot data/snapshots/boarddocs-agendas.jsonl.gz \
+            ${{ inputs.district != 'all' && format('--only "{0}"', inputs.district) || '' }} \
+            --out data/raw \
+            --report agenda-import.md \
+            --no-dry-run
+      # An agenda averages 27.5 chunks, and a chunk costs roughly 11 KB in
+      # Postgres once its embedding, content, FTS vector and HNSW entry are
+      # counted. Report the size before and after so the 500 MB free tier
+      # stops being something we find out about by hitting it.
+      - name: Corpus size before
+        if: ${{ !inputs.dry_run }}
+        run: |
+          uv run python -c "
+          import os, psycopg
+          with psycopg.connect(os.environ['SUPABASE_DB_URL']) as c:
+              q = c.execute('select pg_size_pretty(pg_database_size(current_database())),'
+                            ' (select count(*) from chunks)').fetchone()
+              print(f'database {q[0]}, {q[1]:,} chunks')
+          "
+      - name: Ingest
+        run: |
+          uv run herald-ingest run \
+            --root data/raw \
+            --wave-size 128 \
+            --report ingest-report.md \
+            ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}
+      - name: Corpus size after
+        if: ${{ always() && !inputs.dry_run }}
+        run: |
+          uv run python -c "
+          import os, psycopg
+          with psycopg.connect(os.environ['SUPABASE_DB_URL']) as c:
+              q = c.execute('select pg_size_pretty(pg_database_size(current_database())),'
+                            ' (select count(*) from chunks)').fetchone()
+              print(f'database {q[0]}, {q[1]:,} chunks')
+              print('Free tier is 500 MB. Past ~350 MB, plan embedding quantization.')
+          "
+      - name: Publish reports
+        if: always()
+        run: |
+          {
+            cat agenda-import.md 2>/dev/null || echo '(no import report)'
+            echo ''
+            cat ingest-report.md 2>/dev/null || echo '(no ingest report)'
+          } >> "$GITHUB_STEP_SUMMARY"

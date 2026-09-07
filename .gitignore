@@ -55,3 +55,11 @@ Thumbs.db
 # One-off diagnostic outputs from scripts/
 scripts/bertopic_output_*.md
 scripts/cluster_labels_*.md
+
+# Run reports the CLIs write next to wherever they were invoked. These go to
+# the workflow step summary, which is where they are read; a copy in the tree
+# is just the last run's noise.
+/agenda-snapshot.md
+/agenda-import.md
+/ingest-report.md
+/crawl-report.md
