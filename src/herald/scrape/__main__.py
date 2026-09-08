@@ -1184,6 +1184,14 @@ def agenda_snapshot(
     failed: Counter[str] = Counter()
     total_bytes = 0
 
+    # A district can list the same meeting twice — Mount Vernon's 2021-10-25
+    # special meeting appears under one committee under two entries, byte-identical
+    # both times. Downstream dedupes on source_url and sha256 so a repeat is
+    # harmless, but fetching it twice spends a request against a host that
+    # rate-limits by IP, which is the one budget this whole command exists to
+    # conserve.
+    seen: set[str] = set()
+
     with gzip.open(out_path, "wt", encoding="utf-8") as fh:
         for t in load_targets(targets):
             if t.slug not in wanted:
@@ -1202,6 +1210,9 @@ def agenda_snapshot(
                     console.rule(f"{t.name} / {c.name}: {len(meetings)} meeting(s)")
                     for m in meetings:
                         url = client.agenda_url(m, c.unique)
+                        if url in seen:
+                            continue
+                        seen.add(url)
                         try:
                             html = f.get(url).text
                         except Exception as exc:
