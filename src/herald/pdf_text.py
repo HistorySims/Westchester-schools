@@ -44,10 +44,19 @@ class ExtractedText:
 
 @dataclass(frozen=True)
 class TableBlock:
-    """One detected table, kept whole. ``page`` is 1-based."""
+    """One detected table, kept whole. ``page`` is 1-based.
+
+    ``label`` is what the surrounding document calls this table — for a
+    BoardDocs agenda, the item it sits under ("9.4 Conference(s)"). Without
+    it a table chunk embeds as an anonymous grid of names and dollar amounts
+    with nothing saying what the grid is *for*, which is why conference and
+    personnel tables were nearly unretrievable. Empty when the extractor
+    cannot find one; PDF extraction does not set it.
+    """
 
     page: int
     markdown: str
+    label: str = ""
 
 
 @dataclass(frozen=True)

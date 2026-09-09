@@ -143,7 +143,15 @@ def _table_chunks(
     Kept intact — no MIN_CHUNK_CHARS floor, no window-splitting — so retrieval
     finds the whole grid and structured extraction (docs/STRUCTURED.md) reads a
     header-bearing table. ``order_index`` continues past the prose chunks so it
-    stays unique per document (the chunks PK is (document_id, chunk_index))."""
+    stays unique per document (the chunks PK is (document_id, chunk_index)).
+
+    The heading is the table's ``label`` when the extractor found one. This
+    matters more than it looks: ``embed_input`` builds a chunk's embedding from
+    the breadcrumb plus the body, so a table headed "Table (p. 1)" embeds as an
+    anonymous grid of names and dollar amounts. Headed "9.4 Conference(s)" it
+    embeds as what it is, and a search for approved conference travel can
+    actually reach it. Falls back to the page label when there is no caption to
+    be had — PDF tables have none."""
     out: list[Chunk] = []
     for i, tb in enumerate(tables):
         content = tb.markdown[:TABLE_MAX_CHARS]
@@ -153,7 +161,7 @@ def _table_chunks(
             content=content,
             section_path=f"T{tb.page}#{i + 1}",
             section_type="Table",
-            heading=f"Table (p. {tb.page})",
+            heading=tb.label or f"Table (p. {tb.page})",
             order_index=start_order + i,
             kind="table",
             **doc_meta,  # type: ignore[arg-type]
@@ -254,6 +262,7 @@ async def ingest_manifests(
     partial_ocr: bool = False,       # also OCR scanned pages inside text-bearing PDFs
     reocr: bool = False,             # re-OCR docs already OCR'd, replacing their chunks
     tables_only: bool = False,       # backfill: add table chunks to already-ingested docs
+    replace_tables: bool = False,    # with tables_only: re-derive, don't just add
 ) -> IngestStats:
     """Ingest manifest entries. ``conn is None`` means dry-run (no writes).
 
@@ -492,6 +501,18 @@ async def ingest_manifests(
                     note = "no-tables"
                     continue
                 note = f"{len(chunks)} table(s)"
+                if replace_tables and conn is not None:
+                    # insert_chunks conflicts on (document_id, chunk_index) and
+                    # does nothing, so re-deriving tables is a no-op unless the
+                    # old ones go first. Only the table chunks are cleared —
+                    # prose keeps its embeddings, scores and clusters.
+                    with conn.cursor() as cur:
+                        gone = schools_db.delete_document_table_chunks(
+                            cur, document_id=doc_id
+                        )
+                    conn.commit()
+                    if gone:
+                        note = f"{len(chunks)} table(s), replaced {gone}"
             elif extracted.content_chars < min_chars or not chunks:
                 stats.docs_no_text += 1
                 note = "no_text"      # in OCR mode: OCR recovered nothing usable
@@ -767,6 +788,11 @@ def tables(
     dry_run: bool = typer.Option(
         True, help="Detect + count tables only; no DB, no Voyage."
     ),
+    replace: bool = typer.Option(
+        False,
+        help="Re-derive tables: drop each document's existing table chunks first. "
+             "Use after the table extractor changes; costs re-embedding.",
+    ),
     wave_size: int = typer.Option(DEFAULT_WAVE, help="Chunks per embed/write flush."),
     report: str | None = typer.Option(None, help="Write a markdown report here."),
 ) -> None:
@@ -778,6 +804,12 @@ def tables(
     scores and cluster assignments are left alone, and re-running is safe
     (``on conflict do nothing``). The dry run (default) just counts how many
     tables each district would gain — fast, no Voyage, no writes.
+
+    ``--replace`` is for when the extractor itself improves rather than when a
+    document is new: it clears each document's existing ``kind='table'`` chunks
+    before re-deriving them. Without it ``insert_chunks`` conflicts on
+    ``(document_id, chunk_index)`` and does nothing, so the old grids survive
+    and the backfill looks like it worked while changing nothing.
     """
     pairs, _ = _gather_pairs(root=root, manifest=manifest, district=district,
                              doc_type=doc_type, limit=limit)
@@ -808,7 +840,7 @@ def tables(
         try:
             return await ingest_manifests(
                 pairs, conn=conn, voyage=voyage, wave_size=wave_size,
-                on_doc=on_doc, tables_only=True,
+                on_doc=on_doc, tables_only=True, replace_tables=replace,
             )
         finally:
             if voyage is not None:

@@ -242,6 +242,21 @@ def delete_document_chunks(cur: psycopg.Cursor, *, document_id: UUID) -> int:
     return cur.rowcount
 
 
+def delete_document_table_chunks(cur: psycopg.Cursor, *, document_id: UUID) -> int:
+    """Delete just the ``kind='table'`` chunks of one document.
+
+    For re-deriving tables when the extractor improves. ``insert_chunks``
+    conflicts on ``(document_id, chunk_index)`` and does nothing, so without
+    clearing first a backfill silently keeps the old grids — which is exactly
+    the failure mode when tables were being split from their headers. Prose
+    chunks, their embeddings, scores and cluster assignments are untouched.
+    """
+    cur.execute(
+        "delete from chunks where document_id = %s and kind = 'table'", (document_id,)
+    )
+    return cur.rowcount
+
+
 def upsert_salary(
     cur: psycopg.Cursor,
     *,
