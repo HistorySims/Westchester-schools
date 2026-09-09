@@ -1,7 +1,15 @@
 # Reclaiming database space
 
-Working plan, opened 2026-09-07. Delete this file once the corpus is back
-under the tier limit and the halfvec migration has landed.
+Working plan, opened 2026-09-07, and finished the same day: 791 MB → 296 MB
+with no data deleted. All six steps are done and the index question is
+decided (no index).
+
+Kept rather than deleted because three things in it outlive the incident: the
+measured per-chunk cost, which is what any future sizing should use; the note
+that a Supabase dashboard timeout does **not** abort the statement; and the
+rejected alternative, which is a good worked example of arithmetic resting on
+an unrun query. Fold those into `docs/STATUS.md` and delete this when
+convenient.
 
 ## Situation
 
@@ -183,11 +191,24 @@ measures, does not move. The space becomes reusable by later inserts, which
 is worth something, but a reported reduction needs `vacuum full chunks`, and
 that needs room for a second copy of the table.
 
-### 6. Decide the index question
+### 6. Decide the index question — DECIDED: no index
 
-Everything above is settled. This is the last open question, and unlike the
-earlier ones it is not answerable from a catalog query — it needs a real
-search against the finished corpus.
+Measured against the finished corpus: `ask` returns, and the latency is
+acceptable for how this corpus is actually used. So `chunks_hnsw_idx` stays
+dropped and the database stays around 342 MB rather than 480 MB.
+
+This is reversible at any time and costs no re-embedding — if query volume
+grows or the corpus doubles, revisit it with the two options below. The
+binary-quantized variant is the one to reach for first; a full halfvec HNSW
+buys speed this workload has not asked for at 2.5× the space.
+
+Original reasoning follows.
+
+---
+
+This is the last open question, and unlike the earlier ones it is not
+answerable from a catalog query — it needs a real search against the
+finished corpus.
 
 Totals below use the measured 296 MB plus the projected import:
 
@@ -279,10 +300,6 @@ The estimate accompanying it (~300 MB) required roughly two-thirds of the
 corpus being quarantined garbage, which no query had been run to establish.
 
 ## Still unknown
-
-- Whether semantic search is fast enough with no index. This is the only
-  question left that changes what gets built, and it cannot be answered
-  before the import — see step 6.
 
 - How much scoring and trimming would recover. No longer urgent: at 296 MB
   every index option fits.
