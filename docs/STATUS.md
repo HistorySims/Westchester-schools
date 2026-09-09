@@ -1206,6 +1206,26 @@ this month is the thing worth writing about. Neither is optional to goal B.
 
    Then add the missing seeds and run `crawl-contracts` → `ingest` →
    `extract`.
+
+   **Successor search, 2026-09-09 — nothing published for either.**
+   Tarrytown: `Tarrytown-TAT-2022-2025.pdf` is still the only TAT agreement
+   published anywhere reachable. TUFSD does not post CBAs on its own site at
+   all — neither `/departments/human-resources` nor its `employees` sub-page
+   lists a contract, negotiated agreement or salary schedule — and the file we
+   hold is a NYSUT Tarrytown Regional Office upload
+   (`tarrytownlearningcenter.org`, a regional office site, not the local
+   association's). That host still carries only the 2022-2025 file. White
+   Plains: `WPTA2022-2026CBA_.pdf` is likewise the newest published agreement.
+   Absent means *not published where we can look*, not *not ratified* — a
+   successor could exist unposted, so the corpus's own Tarrytown minutes are
+   the next place to check: **Actions → ask**, `districts: tarrytowns`,
+   `since: 2025-01-01`, "Did the board approve a successor collective
+   bargaining agreement with the Teachers Association of the Tarrytowns?"
+
+   **Most district and union domains are blocked from the dev container** by
+   the egress proxy (`theexaminernews.com`, `wptaonline.net` both refused;
+   `tufsd.org` and `tarrytownlearningcenter.org` answered). Runners have open
+   network, so CBA hunting belongs in `crawl-contracts`, not in a session.
 5. **Arm the schedule** — `refresh`'s cron is inert until the workflow is on
    the default branch. Without it the corpus goes stale between manual
    dispatches, which is fatal for a *monthly* product.
