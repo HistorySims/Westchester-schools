@@ -118,3 +118,109 @@ def test_docx_and_rtf_attachments_are_readable(tmp_path):
     assert "Times" not in text              # font table dropped, not read as prose
     assert "red0" not in text               # colour table too
     assert "\u2014- ends this." in text      # \uN escape decoded, fallback char dropped
+
+
+# --- BoardDocs agenda tables ------------------------------------------------
+
+def _agenda_item(subject: str, body: str) -> str:
+    """One BoardDocs agenda item: a Subject/dd pair, then the item body."""
+    return (
+        f'<dl class="row"><dt class="col leftcol">Subject</dt>'
+        f'<dd class="col rightcol">{subject}</dd></dl>'
+        f'<dl class="row"><dt class="col leftcol">Type</dt>'
+        f'<dd class="col rightcol">Action (Consent)</dd></dl>'
+        f'<div class="itembody">{body}</div>'
+    )
+
+
+def test_split_header_and_body_tables_are_rejoined() -> None:
+    """Word pastes emit the header and the rows as separate <table>s.
+
+    Port Chester's 2026-02-26 conference list arrives exactly this way. Left
+    alone it yields one chunk of pure noise (a header with no rows) and one
+    chunk of names and amounts whose columns are anonymous.
+    """
+    html = "<html><body>" + _agenda_item(
+        "9.4 Conference(s)",
+        "<p>RESOLVED, that the Board approves the following:</p>"
+        "<table><tr><td>Name</td><td>Conference</td><td>Amount</td></tr></table>"
+        "<table>"
+        "<tr><td>Samantha Calvert</td><td>The Writing Revolution</td><td>$1,200.00</td></tr>"
+        "<tr><td>Timothy Hartnett</td><td>NY Inspires</td><td>$2,100.00</td></tr>"
+        "</table>",
+    ) + "</body></html>"
+
+    doc = extract_html_text(html)
+    assert len(doc.tables) == 1                       # not two
+    md = doc.tables[0].markdown
+    assert md.splitlines()[0] == "| Name | Conference | Amount |"
+    assert "Samantha Calvert" in md and "Timothy Hartnett" in md
+    # The label is what makes the grid findable as conference travel.
+    assert doc.tables[0].label == "9.4 Conference(s)"
+
+
+def test_header_only_table_with_no_body_is_dropped() -> None:
+    """A header with nothing under it is a retrievable piece of nothing."""
+    html = "<html><body>" + _agenda_item(
+        "9.4 Conference(s)",
+        "<table><tr><td>Name</td><td>Conference</td><td>Amount</td></tr></table>",
+    ) + "</body></html>"
+    assert extract_html_text(html).tables == []
+
+
+def test_two_real_tables_under_one_item_stay_separate() -> None:
+    """The merge rule keys on a single-row block, so real grids never glue."""
+    html = "<html><body>" + _agenda_item(
+        "8.3 Competitive Bid(s)",
+        "<table>"
+        "<tr><td>Award To</td><td>Amount</td></tr>"
+        "<tr><td>Better Speech, LLC</td><td>Various</td></tr>"
+        "</table>"
+        "<table>"
+        "<tr><td>Vendor</td><td>Rate</td></tr>"
+        "<tr><td>Carver Center</td><td>37,500</td></tr>"
+        "</table>",
+    ) + "</body></html>"
+    assert len(extract_html_text(html).tables) == 2
+
+
+def test_tables_under_different_items_are_never_merged() -> None:
+    """A bare header does not absorb the next item's table."""
+    html = "<html><body>" + _agenda_item(
+        "9.4 Conference(s)",
+        "<table><tr><td>Name</td><td>Conference</td><td>Amount</td></tr></table>",
+    ) + _agenda_item(
+        "9.6 Professional Services",
+        "<table>"
+        "<tr><td>Vendor</td><td>Function</td><td>Rate</td></tr>"
+        "<tr><td>Carver Center</td><td>Smart Scholars</td><td>37,500</td></tr>"
+        "</table>",
+    ) + "</body></html>"
+    tables = extract_html_text(html).tables
+    assert len(tables) == 1                            # the bare header is gone
+    assert tables[0].label == "9.6 Professional Services"
+    assert "Name" not in tables[0].markdown
+
+
+def test_table_label_falls_back_to_caption_then_heading() -> None:
+    """Ordinary HTML has no BoardDocs Subject/dd pair."""
+    capt = (
+        "<html><body><table><caption>Fee Schedule</caption>"
+        "<tr><td>Item</td><td>Fee</td></tr><tr><td>Transcript</td><td>$5</td></tr>"
+        "</table></body></html>"
+    )
+    assert extract_html_text(capt).tables[0].label == "Fee Schedule"
+
+    head = (
+        "<html><body><h3>Salary Steps</h3><table>"
+        "<tr><td>Lane</td><td>Step</td></tr><tr><td>MA</td><td>5</td></tr>"
+        "</table></body></html>"
+    )
+    assert extract_html_text(head).tables[0].label == "Salary Steps"
+
+    bare = (
+        "<html><body><table>"
+        "<tr><td>a</td><td>b</td></tr><tr><td>1</td><td>2</td></tr>"
+        "</table></body></html>"
+    )
+    assert extract_html_text(bare).tables[0].label == ""
