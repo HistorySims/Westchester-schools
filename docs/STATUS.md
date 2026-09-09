@@ -814,10 +814,16 @@ What this corpus can be trusted to answer, as of 2026-09-05:
 
 * **Policies and regulations** — all eight districts, good coverage, and
   current by construction (scraped from the live published manuals).
-* **Contracts** — all eight present. **Currency unverified**: the CBA used as
-  this project's test case, `Tarrytown-TAT-2022-2025`, expired over a year
-  ago. "Compare current contracts" may be comparing superseded agreements
-  while sounding authoritative. Unresolved.
+* **Contracts** — all eight present. **Currency is now stated, not assumed**:
+  every citation to a contract carries its term, read off the document title by
+  `herald.contract_term` — "contract expired 2025-06-30", "contract in term
+  through 2028-06-30", or "contract term not stated in its title". Expired
+  figures are labelled, never dropped, and the RAG system prompt requires an
+  answer quoting one to say the term has ended. That fixes the *sounding
+  authoritative* half. The other half is still open: `Tarrytown-TAT-2022-2025`
+  expired 2025-06-30 and `WPTA2022-2026` expired 2026-06-30, and no successor
+  agreement has been acquired for either. See docs/STRUCTURED.md, "Contract
+  currency".
 * **Budgets** — all eight; materially cleaner since 226 slide decks moved to
   `presentation` and stopped competing with the budget books.
 * **What boards took up** — all eight, once the agenda-capture crawl has run
@@ -1183,11 +1189,23 @@ this month is the thing worth writing about. Neither is optional to goal B.
    change shape substantially. Both need to run on the new corpus before any
    drift number means anything; drift measured across an acquisition jump
    reports the crawl, not the boards.
-4. **Check contract currency** — goal A's one unverified assumption.
-   `Tarrytown-TAT-2022-2025` expired over a year ago. If every district's
-   CBAs predate 2025, "compare current contracts" is comparing superseded
-   agreements while sounding authoritative, which is worse than answering
-   nothing. Query in the scope statement above.
+4. **Acquire successor CBAs** — goal A's one unverified assumption is now
+   *visible* rather than fixed: citations state each agreement's term
+   (`herald.contract_term`), so a superseded schedule no longer reads as
+   today's rate. What remains is acquisition. Both CBAs we can name have run
+   out — `Tarrytown-TAT-2022-2025` (2025-06-30) and `WPTA2022-2026`
+   (2026-06-30) — and successors, where they have been ratified, are not in
+   `data/targets/cba_sources.json`. To see the whole picture in one go:
+
+   ```sql
+   select di.slug, d.title, d.source_url, d.fetched_at
+   from documents d join districts di on di.id = d.district_id
+   where d.doc_type = 'contract'
+   order by di.slug, d.title;
+   ```
+
+   Then add the missing seeds and run `crawl-contracts` → `ingest` →
+   `extract`.
 5. **Arm the schedule** — `refresh`'s cron is inert until the workflow is on
    the default branch. Without it the corpus goes stale between manual
    dispatches, which is fatal for a *monthly* product.

@@ -312,6 +312,48 @@ stores `document_id` + `page`; every computed answer links back to them, so a
 claim like "District X's MA+30 step jumps $6,200 at year 15" is one click from
 the CBA page it came from. Same bar as the cited RAG answers.
 
+## Contract currency (`contract_term.py`)
+
+Provenance says *where* a number came from; it does not say whether that
+agreement is still in force. Goal A is about **current** contracts, and the
+corpus cannot tell current from superseded — a CBA is scraped once and stays
+forever. `Tarrytown-TAT-2022-2025`, the schedule behind the first working
+analytical answer, ran out on 2025-06-30, and the answer read as though it were
+today's rate. `WPTA2022-2026` — the newest CBA in `data/targets/cba_sources.json`
+— expired 2026-06-30. This is the normal case, not an edge case.
+
+`herald.contract_term` reads the term off the document **title**, which is the
+only place we have it: `documents` stores no term, and a 90-page CBA states it in
+prose that would cost a model call per document to recover. District CBA
+filenames carry it almost universally (`Tarrytown-TAT-2022-2025.pdf`,
+`WPTA2022-2026CBA_.pdf`). NY agreements run July 1 → June 30, so both
+`2022-2025` (a three-year term) and `2024-25` (one school year) end June 30 of
+the later year.
+
+Three verdicts, and only contracts get one:
+
+| state | citation reads | when |
+|---|---|---|
+| `expired` | `contract expired 2025-06-30` | term end is in the past |
+| `current` | `contract in term through 2028-06-30` | term end is today or later |
+| `unknown` | `contract term not stated in its title` | no parseable span |
+
+Both answer paths carry it. The analytical path puts `expired` on the ranked
+line (where the figure is read) and every verdict in the Sources block, plus a
+caveat that an expired figure is the most recent schedule extracted, not
+necessarily the rate in force. The RAG path puts the verdict on each evidence
+header — where the *model* reads it — and the system prompt requires an answer
+quoting an expired agreement to say so in the sentence.
+
+**Expired figures are labelled, never dropped.** A stale number that says it is
+stale is useful; a missing number is not. And `unknown` is never rendered as
+current: a title that states no term is a fact about the title.
+
+The limits are worth stating. A title parse cannot see a contract extended by a
+memorandum of agreement, cannot see a successor the corpus has not acquired, and
+reads a mis-titled file wrongly. It answers "is the document we are citing still
+in its stated term", which is the question that was silently going unasked.
+
 ## Decisions (locked)
 
 1. **Templated queries, not text-to-SQL.** The router output is a filled
@@ -329,6 +371,9 @@ the CBA page it came from. Same bar as the cited RAG answers.
    flat-dollar rankings, reported separately as non-comparable.
 8. **Automated audit invariants** in `--dry-run` (monotonic salary, lane
    ordering, year-over-year non-decreasing, sanity bounds).
+9. **Contract currency is labelled, not filtered.** An expired agreement's
+   figures stay in the answer wearing their end date; a title with no stated
+   term is reported as unknown, never as current.
 
 ## Sequencing
 

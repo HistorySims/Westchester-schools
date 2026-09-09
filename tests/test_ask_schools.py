@@ -220,3 +220,51 @@ def test_render_markdown_includes_evidence_and_absence():
     assert "## Evidence" in md
     assert "peekskill · 2026-03-17" in md and "ossining · 2026-03-17" in md
     assert "No evidence retrieved from: elmsford" in md
+
+
+# ---- contract currency in the evidence panel ---------------------------
+
+_ON = _dt.date(2026, 9, 9)
+
+
+def _contract_panel(title: str) -> Panel:
+    c = EvidenceChunk(
+        chunk_id=U1, district="tarrytowns", meeting_date=None, doc_type="contract",
+        doc_title=title, section_path="T87", heading="Appendix A — Salary Schedule",
+        content="MA step 3 79,571", source_url="https://x/cba.pdf",
+    )
+    return Panel(question="Third year, masters, 0 credits?",
+                 by_district={"tarrytowns": [c]}, empty_districts=[])
+
+
+def test_expired_contract_is_flagged_where_the_model_reads_it():
+    text, _ = format_evidence(_contract_panel("Tarrytown-TAT-2022-2025.pdf"), on=_ON)
+    assert "contract expired 2025-06-30" in text
+    assert "79,571" in text                              # the figure still ships
+
+
+def test_in_term_and_untitled_contracts_are_labelled_too():
+    text, _ = format_evidence(_contract_panel("TAT 2024-2028.pdf"), on=_ON)
+    assert "contract in term through 2028-06-30" in text
+    text, _ = format_evidence(_contract_panel("Teachers Agreement.pdf"), on=_ON)
+    assert "contract term not stated in its title" in text
+
+
+def test_non_contract_evidence_is_unchanged():
+    text, _ = format_evidence(_panel(), on=_ON)
+    assert "contract" not in text
+
+
+def test_rendered_evidence_footer_carries_the_term():
+    panel = _contract_panel("Tarrytown-TAT-2022-2025.pdf")
+    _, ordered = format_evidence(panel, on=_ON)
+    ans = Answer(text="MA step 3 is $79,571 [1].", panel=panel, evidence=ordered,
+                 model="claude-sonnet-5")
+    assert "contract expired 2025-06-30" in render_markdown(ans, on=_ON)
+
+
+def test_the_system_prompt_tells_the_model_what_the_marker_means():
+    from herald.ask_schools import SYSTEM_PROMPT
+
+    assert "contract expired" in SYSTEM_PROMPT
+    assert "never drop it" in SYSTEM_PROMPT
