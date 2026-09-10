@@ -38,6 +38,23 @@ def test_en_dash_and_slash_spans():
     assert parse_term("CBA 2021 / 2024") == ContractTerm(2021, 2024)
 
 
+def test_unseparated_span_from_a_real_filename():
+    # Port Chester publishes its current CBA as PCTA_Contract_20232027.pdf; with
+    # only the separated pattern a live contract reported "term not stated".
+    assert parse_term("PCTA_Contract_20232027.pdf") == ContractTerm(2023, 2027)
+
+
+def test_unseparated_pattern_does_not_eat_timestamps():
+    # 8-digit dates are the obvious false positive; the second half is not a year
+    assert parse_term("minutes_20260930.pdf") is None
+    assert parse_term("scan_20240115_final.pdf") is None
+    assert parse_term("id 20202020") is None          # zero-length span
+
+
+def test_a_separated_span_wins_over_a_trailing_stamp():
+    assert parse_term("Agreement 2023-2027 rev 20240115") == ContractTerm(2023, 2027)
+
+
 def test_no_span_is_not_a_term():
     assert parse_term("Collective Bargaining Agreement.pdf") is None
     assert parse_term("") is None

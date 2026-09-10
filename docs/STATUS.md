@@ -832,7 +832,7 @@ What this corpus can be trusted to answer, as of 2026-09-05:
   | elmsford | none | — |
   | greenburgh-central | none | — |
   | ossining | none (both seeds dead — item 10) | — |
-  | port-chester-rye | individual administrator agreements only | — |
+  | port-chester-rye | **PCTA_Contract_20232027** (operator-supplied) | **in term to 2027-06-30** |
 
   So for four districts the salary-schedule gap is **acquisition, not
   extraction**. Peekskill is the opposite and the best next target: a current
@@ -1259,7 +1259,7 @@ this month is the thing worth writing about. Neither is optional to goal B.
    | greenburgh-central | `Greenburgh-TF-2021-2024.pdf` | 2.4 MB | expired 2024-06-30 |
    | ossining | `Ossining-TA-Contract-2017-2021.pdf` | 25.2 MB | expired 2021-06-30 |
    | ossining | `Ossining-Support-Staf-Contract-2016-2020.pdf` | 13.1 MB | expired 2020-06-30 |
-   | port-chester-rye | `Port-Chester-UFSD-2019-2023.pdf` | 20.8 MB | expired 2023-06-30 |
+   | port-chester-rye | `Port-Chester-UFSD-2019-2023.pdf` | 20.8 MB | superseded — see below |
 
    All stale, and the two 20 MB+ files are almost certainly scans — budget an
    `ocr` pass before `extract` expects grids from them. Stale is still worth
@@ -1280,6 +1280,31 @@ this month is the thing worth writing about. Neither is optional to goal B.
    one crawl pass — leave it alone, the NYSUT copy covers it. The seeded
    `ossiningteachersassociation.org/documents` is a hard **404**, which is the
    dead seed item 10 refers to; the site root still resolves.
+
+   **Port Chester has a current agreement, and it is a scan.** A copy supplied
+   by the operator on 2026-09-10 is `PCTA_Contract_20232027.pdf`: Port
+   Chester-Rye UFSD ↔ PCTA, covering 2023-24 through 2026-27, so **in term to
+   2027-06-30** — the first non-expired teacher CBA in the corpus, and it
+   supersedes the 2019-2023 copy seeded above. Appendix A (printed p.26, PDF
+   p.28) is a clean BA / MA / MA+30 / MA+45 / MA+60 / MA+90 / Doctorate grid,
+   steps 1-28, one page per school year.
+
+   All 56 pages are image-only: `extract_pdf` returns **0 characters and 0
+   tables**, and `image_only_pages` flags every page. That is the brief's
+   branch-2 answer for this district — the grid is a real table inside a scan,
+   not positioned text runs — and it explains the shape of the diagnosis
+   numbers: Port Chester shows 34 contracts but only 14 contract table chunks,
+   where digital-PDF districts run 3-5 table chunks *per* contract. Chain for
+   it is `crawl-contracts` → **`ocr` with `engine: vision`** (tesseract returns
+   a jumble of numbers with no grid) → `extract`.
+
+   Note the lane header carries a second row of "Level" numbers (BA=1, MA=6,
+   MA+30=8 …) above the step column. Watch that the extractor does not read
+   Level as step; if it does, that is a `data/lane_crosswalk.csv` entry.
+
+   No public URL for the 2023-2027 file was confirmed — the search engine
+   conflates at least four "PCTA"s (Port Washington NY, Portsmouth OH, Pinellas
+   County FL). The union's `/resources/` page is the likely home and is seeded.
 
    **SeeThroughNY** (`seethroughny.net/contracts`) is the obvious next source —
    the canonical NY CBA aggregator, and reachable. Its search is a Backbone app
