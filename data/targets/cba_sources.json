@@ -2,11 +2,14 @@
   "_comment": "Seed URLs for teacher collective-bargaining agreements / salary schedules, which live OUTSIDE the board-docs corpus — on district HR pages and teacher-union sites (found by web search 2026-08). Each district maps to a list of seeds: an HR/contracts page to crawl, a union site to crawl, and/or a direct CBA PDF URL to download. Used by `herald-scrape contracts`. These union domains are public-records sources beyond the board-docs allowlist; added deliberately for CBA acquisition.",
   "sources": {
     "port-chester-rye": [
-      "https://www.pcteachersassociation.org/"
+      "https://www.pcteachersassociation.org/",
+      "https://tarrytownlearningcenter.org/wp-content/uploads/2022/08/Port-Chester-UFSD-2019-2023.pdf"
     ],
     "ossining": [
-      "https://www.ossiningteachersassociation.org/documents",
-      "https://www.ossiningufsd.org/departments/human-resources/teachers-association"
+      "https://www.ossiningteachersassociation.org/",
+      "https://www.ossiningufsd.org/departments/human-resources/teachers-association",
+      "https://tarrytownlearningcenter.org/wp-content/uploads/2023/08/Ossining-TA-Contract-2017-2021.pdf",
+      "https://tarrytownlearningcenter.org/wp-content/uploads/2023/08/Ossining-Support-Staf-Contract-2016-2020.pdf"
     ],
     "peekskill": [
       "https://peekskillfa.com/"
@@ -26,11 +29,13 @@
     ],
     "greenburgh-central": [
       "https://www.greenburghcsd.org/Page/1271",
-      "https://www.greenburghcsd.org/apps/pages/index.jsp?uREC_ID=4380087&type=d&pREC_ID=2584639"
+      "https://www.greenburghcsd.org/apps/pages/index.jsp?uREC_ID=4380087&type=d&pREC_ID=2584639",
+      "https://tarrytownlearningcenter.org/wp-content/uploads/2023/08/Greenburgh-TF-2021-2024.pdf"
     ],
     "white-plains": [
       "https://www.wptaonline.net/",
       "https://resources.finalsite.net/images/v1682538735/whiteplainspublicschoolsorg/zm94sgbasvvm7hi4dvnw/WPTA2022-2026CBA_.pdf"
     ]
-  }
+  },
+  "_verified": "Reachability and CBA hunt, 2026-09-10. The NYSUT Tarrytown Regional Office (tarrytownlearningcenter.org) is the single most productive source we have found: it serves 44,000 members across Westchester, Putnam, Rockland and Orange and its /wp-content/uploads/ holds ~134 PDFs including the local teacher CBAs for many districts. Its WordPress media index (/wp-json/wp/v2/media?mime_type=application/pdf) enumerates them in two pages, but the index is INCOMPLETE — Port-Chester-UFSD-2019-2023.pdf is live and absent from it, so search the site as well as listing it. Every URL added below was confirmed 200 application/pdf. Elmsford publishes no CBA anywhere we could find: its Personnel & Employment page links only a payroll calendar, and no union or aggregator copy surfaced. www.pcteachersassociation.org answered 429 after a crawl pass — leave it alone; its contract is covered by the NYSUT copy. www.ossiningteachersassociation.org/documents is a hard 404 (the dead seed docs/STATUS.md item 10 refers to); the site root still resolves."
 }
