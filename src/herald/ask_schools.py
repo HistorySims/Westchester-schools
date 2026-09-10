@@ -25,6 +25,7 @@ from dataclasses import dataclass
 import typer
 from rich.console import Console
 
+from herald.contract_term import citation_suffix
 from herald.embed import VoyageEmbedder
 from herald.rerank import VoyageReranker
 from herald.schools_retrieval import (
@@ -92,6 +93,14 @@ Dates matter: policies change. Prefer the most recent evidence, and when \
 older passages conflict with newer ones, present it as a change over \
 time, with dates.
 
+Contract currency. A passage from a collective bargaining agreement carries \
+its term after the citation header — "contract expired 2025-06-30", "contract \
+in term through 2027-06-30", or "contract term not stated in its title". A \
+figure from an expired agreement is still worth reporting, but the sentence \
+reporting it must say the agreement's term has ended and give the date; never \
+present it as the rate in force today, and never drop it for being stale. \
+Where a term is not stated, do not assume the agreement is current.
+
 Tone: a careful analyst briefing a school-board watcher — precise, plain, \
 district-by-district. Quote documents sparingly, only when exact wording \
 is the point.\
@@ -100,8 +109,13 @@ is the point.\
 
 # ---- evidence formatting ----------------------------------------------
 
-def format_evidence(panel: Panel) -> tuple[str, list[EvidenceChunk]]:
-    """Numbered, district-grouped evidence block + the chunks in [N] order."""
+def format_evidence(
+    panel: Panel, *, on: _dt.date | None = None
+) -> tuple[str, list[EvidenceChunk]]:
+    """Numbered, district-grouped evidence block + the chunks in [N] order.
+
+    ``on`` is the date contract terms are judged against (default: today).
+    """
     ordered: list[EvidenceChunk] = []
     lines: list[str] = []
     n = 0
@@ -112,9 +126,13 @@ def format_evidence(panel: Panel) -> tuple[str, list[EvidenceChunk]]:
             ordered.append(c)
             date = c.meeting_date.isoformat() if c.meeting_date else "undated"
             head = f" — {c.heading}" if c.heading else ""
+            # A CBA that ran out is the corpus's quietest failure mode: the
+            # figure is real, the citation is real, and it is no longer in
+            # force. Say so where the model reads it, not only in the footer.
+            term = citation_suffix(c.doc_title, doc_type=c.doc_type, on=on)
             lines.append(
                 f"[{n}] ({slug}, {date}, {c.doc_type or 'document'}: "
-                f"{c.doc_title}, §{c.section_path}{head})"
+                f"{c.doc_title}, §{c.section_path}{head}){term}"
             )
             body = c.content
             if len(body) > MAX_CHUNK_CHARS:
@@ -129,8 +147,10 @@ def format_evidence(panel: Panel) -> tuple[str, list[EvidenceChunk]]:
     return "\n".join(lines), ordered
 
 
-def build_user_prompt(panel: Panel) -> tuple[str, list[EvidenceChunk]]:
-    evidence, ordered = format_evidence(panel)
+def build_user_prompt(
+    panel: Panel, *, on: _dt.date | None = None
+) -> tuple[str, list[EvidenceChunk]]:
+    evidence, ordered = format_evidence(panel, on=on)
     prompt = (
         f"Question: {panel.question}\n\n"
         f"Evidence panel ({len(ordered)} passages, grouped by district):\n\n"
@@ -229,7 +249,9 @@ async def synthesize(
 
 # ---- rendering ---------------------------------------------------------
 
-def render_markdown(ans: Answer, *, scope: str = "") -> str:
+def render_markdown(
+    ans: Answer, *, scope: str = "", on: _dt.date | None = None
+) -> str:
     lines = [
         f"# {ans.panel.question}",
         "",
@@ -248,9 +270,10 @@ def render_markdown(ans: Answer, *, scope: str = "") -> str:
     ]
     for i, c in enumerate(ans.evidence, start=1):
         date = c.meeting_date.isoformat() if c.meeting_date else "undated"
+        term = citation_suffix(c.doc_title, doc_type=c.doc_type, on=on, sep=" · ")
         lines.append(
             f"**[{i}]** {c.district} · {date} · {c.doc_type or 'document'} · "
-            f"{c.doc_title} · §{c.section_path}  \n"
+            f"{c.doc_title} · §{c.section_path}{term}  \n"
             f"<{c.source_url}>"
         )
         lines.append("")
@@ -269,8 +292,8 @@ def render_markdown(ans: Answer, *, scope: str = "") -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_evidence_only(panel: Panel) -> str:
-    evidence, ordered = format_evidence(panel)
+def render_evidence_only(panel: Panel, *, on: _dt.date | None = None) -> str:
+    evidence, ordered = format_evidence(panel, on=on)
     return (
         f"# Evidence panel: {panel.question}\n\n"
         f"_{len(ordered)} passages; retrieval only, no synthesis._\n\n"

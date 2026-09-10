@@ -146,7 +146,27 @@ def _clean_slug(value: str | None) -> str | None:
 
 # ---- candidate selection ----------------------------------------------
 
-def _candidate_sql(*, district: bool, limit: bool, only_new: bool = True) -> str:
+def _candidate_sql(
+    *, district: bool, limit: bool, only_new: bool = True, doc_type: bool = False
+) -> str:
+    """Candidate table chunks, ordered so that a ``--limit`` run is a *sample*.
+
+    Two properties of the ordering are load-bearing, and the obvious ordering
+    (``order by di.slug, d.meeting_date desc nulls last``) got both wrong in a
+    way that is invisible until you read the audit and see nothing:
+
+    **Round-robin across districts, not district by district.** Ordering by
+    slug means ``--limit 20`` spends every call on elmsford — the first slug —
+    and reports a confident zero for the other seven. Ranking within each
+    district and ordering by that rank gives ~2-3 tables from all eight.
+
+    **Undated documents FIRST.** A contract has no ``meeting_date``: it is not
+    a meeting. Under ``nulls last`` every CBA in the corpus sorts behind every
+    agenda table in its district, so a limited run never reaches the salary
+    grids this command exists to extract. Undated is the signal, not the
+    afterthought — for prose-table candidates it means contract, handbook or
+    standalone salary schedule.
+    """
     where = [
         "c.kind = 'table'",
         "c.status = 'active'",
@@ -156,14 +176,20 @@ def _candidate_sql(*, district: bool, limit: bool, only_new: bool = True) -> str
         where.append("c.extracted_at is null")
     if district:
         where.append("di.slug = %(district)s")
+    if doc_type:
+        where.append("d.doc_type = %(doc_type)s")
     sql = (
+        "select id, document_id, district_id, slug, content, section_path, "
+        "heading, title, meeting_date from ("
         "select c.id, c.document_id, d.district_id, di.slug, c.content, "
-        "c.section_path, c.heading, d.title, d.meeting_date "
+        "c.section_path, c.heading, d.title, d.meeting_date, "
+        "row_number() over (partition by di.slug "
+        "order by d.meeting_date desc nulls first, c.id) as rn "
         "from chunks c "
         "join documents d on d.id = c.document_id "
         "join districts di on di.id = d.district_id "
-        f"where {' and '.join(where)} "
-        "order by di.slug, d.meeting_date desc nulls last"
+        f"where {' and '.join(where)}"
+        ") t order by rn, slug"
     )
     if limit:
         sql += " limit %(limit)s"
@@ -574,7 +600,18 @@ def run(
     district: str | None = typer.Option(
         None, help="Only this district slug.", callback=_clean_slug
     ),
-    limit: int | None = typer.Option(None, help="Stop after N candidate tables."),
+    doc_type: str | None = typer.Option(
+        None,
+        help="Only documents of this type (e.g. 'contract'). The salary grids "
+             "live in contracts, and scoping there is much cheaper than the "
+             "whole keyword-matched pool.",
+        callback=_clean_slug,
+    ),
+    limit: int | None = typer.Option(
+        None,
+        help="Stop after N candidate tables — sampled across all eight "
+             "districts, undated (contract) tables first.",
+    ),
     dry_run: bool = typer.Option(
         True, "--dry-run/--write",
         help="Extract + audit + report only; no DB writes.",
@@ -601,8 +638,10 @@ def run(
     conn = schools_db.connect(db_url)
     cur = conn.cursor()
     cur.execute(
-        _candidate_sql(district=bool(district), limit=bool(limit), only_new=not reextract),
-        {"kw": CANDIDATE_KEYWORDS, "district": district, "limit": limit},
+        _candidate_sql(district=bool(district), limit=bool(limit),
+                       only_new=not reextract, doc_type=bool(doc_type)),
+        {"kw": CANDIDATE_KEYWORDS, "district": district, "limit": limit,
+         "doc_type": doc_type},
     )
     candidates = [
         Candidate(chunk_id=r[0], document_id=r[1], district_id=r[2], slug=r[3],
@@ -612,7 +651,8 @@ def run(
     ]
     conn.commit()
     console.print(f"{len(candidates)} candidate table(s)"
-                  + (f" in {district}" if district else ""))
+                  + (f" in {district}" if district else "")
+                  + (f", doc_type={doc_type}" if doc_type else ""))
 
     done = 0
 

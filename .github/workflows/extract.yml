@@ -11,6 +11,11 @@ name: extract
 # to upsert. Idempotent — re-runs skip already-extracted chunks and correct
 # rather than duplicate.
 #
+# `dry_run` gates the DATABASE WRITE ONLY — every candidate is still sent to the
+# model and still billed. That is what `limit` and `doc_type` are for: the
+# keyword-matched pool is ~1,760 tables corpus-wide, of which the ones holding
+# salary grids are the ~360 inside contracts. Scope before you spend.
+#
 # Apply db/migrations/0004_structured.sql once before the first real run.
 # Required secrets: SUPABASE_DB_URL, ANTHROPIC_API_KEY.
 
@@ -31,8 +36,20 @@ on:
           - greenburgh-central
           - white-plains
         default: all
+      doc_type:
+        description: "Scope to one document type (contract = where the salary grids are)"
+        type: choice
+        options:
+          - ""
+          - contract
+          - policy
+          - handbook
+          - budget
+          - agenda
+          - minutes
+        default: contract
       limit:
-        description: "Stop after N candidate tables (blank = all)"
+        description: "Stop after N candidate tables (blank = all). Sampled across all districts."
         type: string
         default: ""
       dry_run:
@@ -75,6 +92,7 @@ jobs:
         run: |
           uv run herald-extract run \
             ${{ inputs.district != 'all' && format('--district "{0}"', inputs.district) || '' }} \
+            ${{ inputs.doc_type && format('--doc-type "{0}"', inputs.doc_type) || '' }} \
             ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
             ${{ inputs.reextract && '--reextract' || '' }} \
             --report extract-report.md \

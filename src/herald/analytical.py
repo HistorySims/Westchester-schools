@@ -21,8 +21,10 @@ Numbers never pass through the model — only the framing does.
 
 from __future__ import annotations
 
+import datetime as _dt
 from dataclasses import dataclass, field
 
+from herald.contract_term import citation_suffix, status_of
 from herald.extract_schools import parse_model_json
 from herald.taxonomy import normalize_lane
 
@@ -167,7 +169,7 @@ latest as (
   from both order by district_id, school_year desc
 )
 select di.slug, l.school_year, l.sal_from, l.sal_to, (l.sal_to - l.sal_from) as delta,
-       l.page, d.title, d.source_url
+       l.page, d.title, d.source_url, d.doc_type
 from latest l
 join districts di on di.id = l.district_id
 join documents d on d.id = l.doc_id
@@ -182,7 +184,7 @@ def _step_slope(cur, p: dict, all_slugs: list[str]) -> AnalyticalResult:
     rows = [
         {"slug": r[0], "school_year": r[1], "value": float(r[4]),
          "detail": f"step {a} ${float(r[2]):,.0f} → step {b} ${float(r[3]):,.0f}",
-         "page": r[5], "doc_title": r[6], "source_url": r[7]}
+         "page": r[5], "doc_title": r[6], "source_url": r[7], "doc_type": r[8]}
         for r in cur.fetchall()
     ]
     return AnalyticalResult(
@@ -199,7 +201,7 @@ with rows as (
   where bargaining_unit = 'teacher' and lane = %(lane)s and step = %(step)s
   order by district_id, school_year desc
 )
-select di.slug, r.school_year, r.salary, r.page, d.title, d.source_url
+select di.slug, r.school_year, r.salary, r.page, d.title, d.source_url, d.doc_type
 from rows r
 join districts di on di.id = r.district_id
 join documents d on d.id = r.document_id
@@ -214,7 +216,7 @@ def _max_at_step(cur, p: dict, all_slugs: list[str]) -> AnalyticalResult:
     rows = [
         {"slug": r[0], "school_year": r[1], "value": float(r[2]),
          "detail": f"{lane} step {step}", "page": r[3], "doc_title": r[4],
-         "source_url": r[5]}
+         "source_url": r[5], "doc_type": r[6]}
         for r in cur.fetchall()
     ]
     return AnalyticalResult(
@@ -234,7 +236,7 @@ with rows as (
   order by district_id, school_year desc, amount desc
 )
 select di.slug, r.school_year, r.position, r.tier, r.amount, r.amount_high, r.page,
-       d.title, d.source_url
+       d.title, d.source_url, d.doc_type
 from rows r
 join districts di on di.id = r.district_id
 join documents d on d.id = r.document_id
@@ -260,7 +262,7 @@ def _stipend_compare(cur, p: dict, all_slugs: list[str]) -> AnalyticalResult:
         {"slug": r[0], "school_year": r[1], "value": float(r[4]),
          "detail": (f"{r[2]}" + (f" ({r[3]})" if r[3] else "")
                     + (f", range to ${float(r[5]):,.0f}" if r[5] else "")),
-         "page": r[6], "doc_title": r[7], "source_url": r[8]}
+         "page": r[6], "doc_title": r[7], "source_url": r[8], "doc_type": r[9]}
         for r in cur.fetchall()
     ]
     cur.execute(STIPEND_PCT_SQL, {"pos": like})
@@ -293,7 +295,7 @@ agg as (
   from rows group by district_id
 )
 select di.slug, a.sal_first, a.sal_last, (a.sal_last - a.sal_first) as delta,
-       a.yr_first, a.yr_last, a.page, d.title, d.source_url
+       a.yr_first, a.yr_last, a.page, d.title, d.source_url, d.doc_type
 from agg a
 join districts di on di.id = a.district_id
 join documents d on d.id = a.doc_id
@@ -308,7 +310,7 @@ def _delta_over_years(cur, p: dict, all_slugs: list[str]) -> AnalyticalResult:
     rows = [
         {"slug": r[0], "school_year": f"{r[4]}→{r[5]}", "value": float(r[3]),
          "detail": f"${float(r[1]):,.0f} → ${float(r[2]):,.0f}", "page": r[6],
-         "doc_title": r[7], "source_url": r[8]}
+         "doc_title": r[7], "source_url": r[8], "doc_type": r[9]}
         for r in cur.fetchall()
     ]
     return AnalyticalResult(
@@ -336,8 +338,19 @@ def run_query(cur, decision: RouterDecision) -> AnalyticalResult:
 
 # ---- rendering ---------------------------------------------------------
 
-def render_markdown(result: AnalyticalResult) -> str:
-    """A cited, ranked answer. Numbers are SQL-computed, not model-written."""
+_EXPIRED_CAVEAT = (
+    "Figures marked expired come from an agreement whose term has ended. They are "
+    "the most recent schedule this corpus has extracted, not necessarily the rate "
+    "in force today — a successor contract may exist that we have not acquired."
+)
+
+
+def render_markdown(result: AnalyticalResult, *, on: _dt.date | None = None) -> str:
+    """A cited, ranked answer. Numbers are SQL-computed, not model-written.
+
+    ``on`` is the date the contract terms are judged against (default: today);
+    it exists so the rendering is testable without freezing the clock.
+    """
     lines = [f"# {result.question}", ""]
     if not result.rows:
         lines += [
@@ -349,12 +362,25 @@ def render_markdown(result: AnalyticalResult) -> str:
     else:
         lines += [f"**{result.headline}** — ranked across districts:", ""]
         for i, r in enumerate(result.rows, 1):
+            # Only expired is worth the width here; the Sources block below
+            # states every contract's term, current ones included.
+            stale = citation_suffix(
+                r.get("doc_title") or "", doc_type=r.get("doc_type"), on=on,
+                expired_only=True, sep="; ",
+            )
             lines.append(
                 f"{i}. **{r['slug']}** — ${r['value']:,.0f} "
-                f"({r['detail']}, {r['school_year']}) [{i}]"
+                f"({r['detail']}, {r['school_year']}{stale}) [{i}]"
             )
         lines.append("")
-    for c in result.caveats:
+    caveats = list(result.caveats)
+    if any(
+        (st := status_of(r.get("doc_title") or "", doc_type=r.get("doc_type"), on=on))
+        and st.is_expired
+        for r in result.rows
+    ):
+        caveats.append(_EXPIRED_CAVEAT)
+    for c in caveats:
         lines.append(f"_{c}_")
     if result.noncomparable:
         lines.append("")
@@ -371,8 +397,12 @@ def render_markdown(result: AnalyticalResult) -> str:
         lines += ["", "## Sources", ""]
         for i, r in enumerate(result.rows, 1):
             page = f" · p.{r['page']}" if r.get("page") else ""
+            term = citation_suffix(
+                r.get("doc_title") or "", doc_type=r.get("doc_type"), on=on, sep=" · "
+            )
             lines.append(
-                f"**[{i}]** {r['slug']} · {r['school_year']} · {r['doc_title']}{page}  \n"
+                f"**[{i}]** {r['slug']} · {r['school_year']} · {r['doc_title']}"
+                f"{page}{term}  \n"
                 f"<{r['source_url']}>"
             )
             lines.append("")

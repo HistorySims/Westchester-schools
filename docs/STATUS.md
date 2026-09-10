@@ -814,10 +814,40 @@ What this corpus can be trusted to answer, as of 2026-09-05:
 
 * **Policies and regulations** — all eight districts, good coverage, and
   current by construction (scraped from the live published manuals).
-* **Contracts** — all eight present. **Currency unverified**: the CBA used as
-  this project's test case, `Tarrytown-TAT-2022-2025`, expired over a year
-  ago. "Compare current contracts" may be comparing superseded agreements
-  while sounding authoritative. Unresolved.
+* **Contracts** — `doc_type='contract'` is **not** a CBA inventory, and reading
+  it as one is why "all eight present" was ever believed. It is dominated by
+  vendor and service agreements: Greenburgh's 32 are tuition and service
+  contracts (Anderson Center for Autism, Devereux, bond counsel) with no
+  bargaining agreement among them; Elmsford's *one* contract is a Data
+  Protection Agreement; Mount Vernon's 37 include Student Device Agreements in
+  nine languages and a run of architectural RFPs. Actual teacher agreements,
+  district by district (2026-09-09):
+
+  | district | teacher agreement held | term |
+  |---|---|---|
+  | peekskill | PFA Agreement 2023-2026, plus standalone `TCH Salary Schedule 2025-2026` | expired 2026-06-30; **the salary schedule is current** |
+  | tarrytowns | Tarrytown-TAT-2022-2025 | expired 2025-06-30 |
+  | white-plains | WPTA2022-2026 | expired 2026-06-30 |
+  | mount-vernon | MVFT Teacher Unit MOA (+ a 2019-2021 MOA) | memoranda, not a full CBA |
+  | elmsford | none | — |
+  | greenburgh-central | none | — |
+  | ossining | none (both seeds dead — item 10) | — |
+  | port-chester-rye | individual administrator agreements only | — |
+
+  So for four districts the salary-schedule gap is **acquisition, not
+  extraction**. Peekskill is the opposite and the best next target: a current
+  teacher salary schedule is already ingested and has never been extracted.
+
+* **Contract currency is now stated, not assumed**:
+  every citation to a contract carries its term, read off the document title by
+  `herald.contract_term` — "contract expired 2025-06-30", "contract in term
+  through 2028-06-30", or "contract term not stated in its title". Expired
+  figures are labelled, never dropped, and the RAG system prompt requires an
+  answer quoting one to say the term has ended. That fixes the *sounding
+  authoritative* half. The other half is still open: `Tarrytown-TAT-2022-2025`
+  expired 2025-06-30 and `WPTA2022-2026` expired 2026-06-30, and no successor
+  agreement has been acquired for either. See docs/STRUCTURED.md, "Contract
+  currency".
 * **Budgets** — all eight; materially cleaner since 226 slide decks moved to
   `presentation` and stopped competing with the budget books.
 * **What boards took up** — all eight, once the agenda-capture crawl has run
@@ -1183,11 +1213,43 @@ this month is the thing worth writing about. Neither is optional to goal B.
    change shape substantially. Both need to run on the new corpus before any
    drift number means anything; drift measured across an acquisition jump
    reports the crawl, not the boards.
-4. **Check contract currency** — goal A's one unverified assumption.
-   `Tarrytown-TAT-2022-2025` expired over a year ago. If every district's
-   CBAs predate 2025, "compare current contracts" is comparing superseded
-   agreements while sounding authoritative, which is worse than answering
-   nothing. Query in the scope statement above.
+4. **Acquire successor CBAs** — goal A's one unverified assumption is now
+   *visible* rather than fixed: citations state each agreement's term
+   (`herald.contract_term`), so a superseded schedule no longer reads as
+   today's rate. What remains is acquisition. Both CBAs we can name have run
+   out — `Tarrytown-TAT-2022-2025` (2025-06-30) and `WPTA2022-2026`
+   (2026-06-30) — and successors, where they have been ratified, are not in
+   `data/targets/cba_sources.json`. To see the whole picture in one go:
+
+   ```sql
+   select di.slug, d.title, d.source_url, d.fetched_at
+   from documents d join districts di on di.id = d.district_id
+   where d.doc_type = 'contract'
+   order by di.slug, d.title;
+   ```
+
+   Then add the missing seeds and run `crawl-contracts` → `ingest` →
+   `extract`.
+
+   **Successor search, 2026-09-09 — nothing published for either.**
+   Tarrytown: `Tarrytown-TAT-2022-2025.pdf` is still the only TAT agreement
+   published anywhere reachable. TUFSD does not post CBAs on its own site at
+   all — neither `/departments/human-resources` nor its `employees` sub-page
+   lists a contract, negotiated agreement or salary schedule — and the file we
+   hold is a NYSUT Tarrytown Regional Office upload
+   (`tarrytownlearningcenter.org`, a regional office site, not the local
+   association's). That host still carries only the 2022-2025 file. White
+   Plains: `WPTA2022-2026CBA_.pdf` is likewise the newest published agreement.
+   Absent means *not published where we can look*, not *not ratified* — a
+   successor could exist unposted, so the corpus's own Tarrytown minutes are
+   the next place to check: **Actions → ask**, `districts: tarrytowns`,
+   `since: 2025-01-01`, "Did the board approve a successor collective
+   bargaining agreement with the Teachers Association of the Tarrytowns?"
+
+   **Most district and union domains are blocked from the dev container** by
+   the egress proxy (`theexaminernews.com`, `wptaonline.net` both refused;
+   `tufsd.org` and `tarrytownlearningcenter.org` answered). Runners have open
+   network, so CBA hunting belongs in `crawl-contracts`, not in a session.
 5. **Arm the schedule** — `refresh`'s cron is inert until the workflow is on
    the default branch. Without it the corpus goes stale between manual
    dispatches, which is fatal for a *monthly* product.
