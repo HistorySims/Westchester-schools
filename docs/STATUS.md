@@ -1246,10 +1246,47 @@ this month is the thing worth writing about. Neither is optional to goal B.
    `since: 2025-01-01`, "Did the board approve a successor collective
    bargaining agreement with the Teachers Association of the Tarrytowns?"
 
-   **Most district and union domains are blocked from the dev container** by
-   the egress proxy (`theexaminernews.com`, `wptaonline.net` both refused;
-   `tufsd.org` and `tarrytownlearningcenter.org` answered). Runners have open
-   network, so CBA hunting belongs in `crawl-contracts`, not in a session.
+   **CBA hunt, 2026-09-10 — three of the four gaps now have a source.**
+   The productive find is that the **NYSUT Tarrytown Regional Office**
+   (`tarrytownlearningcenter.org`), already in the seeds as the host of the
+   Tarrytown CBA, is a *regional* library: 44,000 members across Westchester,
+   Putnam, Rockland and Orange, and ~134 PDFs under `/wp-content/uploads/`
+   including local teacher CBAs for many districts. Confirmed 200
+   `application/pdf` and added to `cba_sources.json`:
+
+   | district | agreement | size | term |
+   |---|---|---:|---|
+   | greenburgh-central | `Greenburgh-TF-2021-2024.pdf` | 2.4 MB | expired 2024-06-30 |
+   | ossining | `Ossining-TA-Contract-2017-2021.pdf` | 25.2 MB | expired 2021-06-30 |
+   | ossining | `Ossining-Support-Staf-Contract-2016-2020.pdf` | 13.1 MB | expired 2020-06-30 |
+   | port-chester-rye | `Port-Chester-UFSD-2019-2023.pdf` | 20.8 MB | expired 2023-06-30 |
+
+   All stale, and the two 20 MB+ files are almost certainly scans — budget an
+   `ocr` pass before `extract` expects grids from them. Stale is still worth
+   having: it is the difference between "no schedule" and a labelled 2021
+   schedule, and the citation now says which.
+
+   Enumerate that host with its WordPress media index
+   (`/wp-json/wp/v2/media?per_page=100&mime_type=application/pdf`, two pages) —
+   but the index is **incomplete**: `Port-Chester-UFSD-2019-2023.pdf` is live
+   and absent from it, so search the site too.
+
+   **Elmsford remains a genuine blank.** Its Personnel & Employment page links
+   only a payroll calendar; no union or aggregator copy surfaced; NYSUT's media
+   index has zero Elmsford hits. Treat "no Elmsford schedule" as the honest
+   answer until someone files a FOIL request.
+
+   Two operational notes. `www.pcteachersassociation.org` answered **429** after
+   one crawl pass — leave it alone, the NYSUT copy covers it. The seeded
+   `ossiningteachersassociation.org/documents` is a hard **404**, which is the
+   dead seed item 10 refers to; the site root still resolves.
+
+   **SeeThroughNY** (`seethroughny.net/contracts`) is the obvious next source —
+   the canonical NY CBA aggregator, and reachable. Its search is a Backbone app
+   posting to `/index.php/tools/reports/contract?action=…`; the autocomplete
+   endpoints return empty for plain `term=`/`q=` params, so it needs real
+   browser interaction. That is a `--group browser` job in a workflow
+   (`browser_fetch.py`, Playwright), not a hand-driven one.
 5. **Arm the schedule** — `refresh`'s cron is inert until the workflow is on
    the default branch. Without it the corpus goes stale between manual
    dispatches, which is fatal for a *monthly* product.
