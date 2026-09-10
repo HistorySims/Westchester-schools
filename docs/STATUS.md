@@ -814,7 +814,31 @@ What this corpus can be trusted to answer, as of 2026-09-05:
 
 * **Policies and regulations** — all eight districts, good coverage, and
   current by construction (scraped from the live published manuals).
-* **Contracts** — all eight present. **Currency is now stated, not assumed**:
+* **Contracts** — `doc_type='contract'` is **not** a CBA inventory, and reading
+  it as one is why "all eight present" was ever believed. It is dominated by
+  vendor and service agreements: Greenburgh's 32 are tuition and service
+  contracts (Anderson Center for Autism, Devereux, bond counsel) with no
+  bargaining agreement among them; Elmsford's *one* contract is a Data
+  Protection Agreement; Mount Vernon's 37 include Student Device Agreements in
+  nine languages and a run of architectural RFPs. Actual teacher agreements,
+  district by district (2026-09-09):
+
+  | district | teacher agreement held | term |
+  |---|---|---|
+  | peekskill | PFA Agreement 2023-2026, plus standalone `TCH Salary Schedule 2025-2026` | expired 2026-06-30; **the salary schedule is current** |
+  | tarrytowns | Tarrytown-TAT-2022-2025 | expired 2025-06-30 |
+  | white-plains | WPTA2022-2026 | expired 2026-06-30 |
+  | mount-vernon | MVFT Teacher Unit MOA (+ a 2019-2021 MOA) | memoranda, not a full CBA |
+  | elmsford | none | — |
+  | greenburgh-central | none | — |
+  | ossining | none (both seeds dead — item 10) | — |
+  | port-chester-rye | individual administrator agreements only | — |
+
+  So for four districts the salary-schedule gap is **acquisition, not
+  extraction**. Peekskill is the opposite and the best next target: a current
+  teacher salary schedule is already ingested and has never been extracted.
+
+* **Contract currency is now stated, not assumed**:
   every citation to a contract carries its term, read off the document title by
   `herald.contract_term` — "contract expired 2025-06-30", "contract in term
   through 2028-06-30", or "contract term not stated in its title". Expired

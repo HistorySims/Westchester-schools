@@ -239,8 +239,48 @@ robust table parser (brittle); a careful per-artifact extraction we can audit.
    confirm (some are real: a genuine one-year freeze, a lane that truly dips).
    But it turns "trust the model on 400 numbers" into "review the 3 it flagged."
 
-Runs in GitHub Actions (`extract.yml`), needs `ANTHROPIC_API_KEY`. Cost is
-trivial — a handful of Claude calls.
+Runs in GitHub Actions (`extract.yml`), needs `ANTHROPIC_API_KEY`.
+
+### Scope the pool before you spend (measured 2026-09-09)
+
+Cost is *not* trivial at corpus scale, and `--dry-run` does not make it so: the
+flag gates the database write only, so every candidate is still sent to the
+model and still billed. The keyword-matched pool:
+
+| district | candidate tables | never tried | contracts | contract table chunks | salary rows | stipend rows |
+|---|---:|---:|---:|---:|---:|---:|
+| elmsford | 31 | 17 | 1 | 10 | 0 | 0 |
+| greenburgh-central | 185 | 181 | 32 | 115 | 0 | 0 |
+| mount-vernon | 607 | 443 | 37 | 92 | 0 | 0 |
+| ossining | 503 | 221 | 0 | 0 | 0 | 391 |
+| peekskill | 215 | 143 | 19 | 94 | 0 | 301 |
+| port-chester-rye | 92 | 26 | 34 | 14 | 0 | 0 |
+| tarrytowns | 70 | 24 | 164 | 17 | 664 | 133 |
+| white-plains | 57 | 42 | 6 | 21 | 0 | 0 |
+
+1,760 candidates, 1,097 never tried — but only ~363 table chunks sit inside
+contracts, and that is where teacher salary grids live. `--doc-type contract`
+is a 5x cost cut before anything else is decided.
+
+### Two ordering bugs that made a limited run lie
+
+Both were invisible: the audit came back empty and looked like an answer.
+
+- **`order by di.slug` + `--limit 20` spent every call on elmsford** and
+  reported a confident zero for the other seven districts. Candidates are now
+  ranked *within* each district and ordered by that rank, so a limit is a
+  sample across all eight.
+- **`meeting_date desc nulls last` sorted every contract behind every agenda.**
+  A CBA has no `meeting_date` — it is not a meeting — so under `nulls last` a
+  limited run never reached a single salary grid. Undated now sorts first: for
+  a table candidate, undated means contract, handbook or standalone schedule.
+
+663 candidates had already been through the model before this was found, and
+produced zero salary rows outside Tarrytown. Some of that is genuine (Ossining
+holds no contracts at all; its 391 stipend rows came from agendas), but the
+ordering means earlier limited runs were sampling agenda tables, not schedules.
+Treat the pre-2026-09 `extracted_at` stamps as weak evidence and re-run with
+`--reextract` where a district still shows nothing.
 
 ---
 

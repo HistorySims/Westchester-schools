@@ -290,6 +290,27 @@ def test_candidate_sql_shape():
     )
 
 
+def test_candidate_sql_scopes_by_doc_type_only_when_asked():
+    assert "d.doc_type = %(doc_type)s" not in _candidate_sql(district=False, limit=False)
+    scoped = _candidate_sql(district=False, limit=False, doc_type=True)
+    assert "d.doc_type = %(doc_type)s" in scoped
+
+
+def test_a_limited_run_samples_every_district_not_just_the_first_slug():
+    # `order by di.slug ... limit 20` spent every call on elmsford and reported
+    # a confident zero for the other seven. Rank within district, order by rank.
+    sql = _candidate_sql(district=False, limit=True)
+    assert "row_number() over (partition by di.slug" in sql
+    assert "order by rn, slug" in sql
+
+
+def test_undated_documents_sort_first_because_contracts_have_no_meeting_date():
+    # A CBA is not a meeting, so meeting_date is null. Under `nulls last` every
+    # salary grid sorted behind every agenda table and a limited run never
+    # reached one.
+    assert "d.meeting_date desc nulls first" in _candidate_sql(district=False, limit=False)
+
+
 # ---- upsert SQL shapes -------------------------------------------------
 
 class _RecCursor:
