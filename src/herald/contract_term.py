@@ -45,7 +45,16 @@ CONTRACT_DOC_TYPES = frozenset({"contract"})
 
 # Same shape as extract_schools._TITLE_YEAR, kept separate on purpose: that one
 # wants the school year a *grid* applies to, this one wants the span's end.
-_TERM_RE = re.compile(r"(20\d{2})\s*[-–—/]\s*(20\d{2}|\d{2})")  # noqa: RUF001
+#
+# The unseparated form is not hypothetical: Port Chester publishes its current
+# agreement as `PCTA_Contract_20232027.pdf`, and with only the separated pattern
+# a live 2023-2027 contract reported "term not stated". Requiring BOTH halves to
+# start with "20" keeps it off timestamps — 20260930 doesn't match, because
+# "0930" is not a year — and MAX_TERM_YEARS rejects what slips past.
+_TERM_RES = (
+    re.compile(r"(20\d{2})\s*[-–—/]\s*(20\d{2}|\d{2})"),  # noqa: RUF001
+    re.compile(r"(20\d{2})(20\d{2})"),
+)
 
 
 @dataclass(frozen=True)
@@ -83,18 +92,19 @@ def parse_term(title: str) -> ContractTerm | None:
     behaviour so a document's term and its inferred school year can't disagree
     about which pair of years they read.
     """
-    m = _TERM_RE.search(title or "")
-    if not m:
-        return None
-    start = int(m.group(1))
-    raw_end = m.group(2)
-    # '2024-25' takes the century from the start year; '2024-2027' is literal.
-    end = int(raw_end) if len(raw_end) == 4 else start - start % 100 + int(raw_end)
-    if end < start:
-        end += 100                                  # a '2099-00' style rollover
-    if not 0 < end - start <= MAX_TERM_YEARS:
-        return None
-    return ContractTerm(start_year=start, end_year=end)
+    for pattern in _TERM_RES:
+        m = pattern.search(title or "")
+        if not m:
+            continue
+        start = int(m.group(1))
+        raw_end = m.group(2)
+        # '2024-25' takes the century from the start year; '2024-2027' is literal.
+        end = int(raw_end) if len(raw_end) == 4 else start - start % 100 + int(raw_end)
+        if end < start:
+            end += 100                              # a '2099-00' style rollover
+        if 0 < end - start <= MAX_TERM_YEARS:
+            return ContractTerm(start_year=start, end_year=end)
+    return None
 
 
 def status_of(
