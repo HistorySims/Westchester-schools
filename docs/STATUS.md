@@ -1261,10 +1261,20 @@ this month is the thing worth writing about. Neither is optional to goal B.
    | ossining | `Ossining-Support-Staf-Contract-2016-2020.pdf` | 13.1 MB | expired 2020-06-30 |
    | port-chester-rye | `Port-Chester-UFSD-2019-2023.pdf` | 20.8 MB | superseded — see below |
 
-   All stale, and the two 20 MB+ files are almost certainly scans — budget an
-   `ocr` pass before `extract` expects grids from them. Stale is still worth
-   having: it is the difference between "no schedule" and a labelled 2021
-   schedule, and the citation now says which.
+   All stale, and the two 20 MB+ files are scans — `ocr --engine vision` is the
+   only way to get grids out of them.
+
+   **Do not spend that OCR pass on Ossining** (operator decision, 2026-09-12):
+   `Ossining-TA-Contract-2017-2021` expired five years ago and a per-page vision
+   pass on a 25 MB scan is real money for a schedule nobody should quote.
+   Greenburgh's 2021-2024 is two years stale rather than five, and at 2.4 MB may
+   well have a text layer — let `ingest` report it before deciding. Port
+   Chester's 2019-2023 is both expired and superseded by the snapshot; its only
+   value is extending `delta_over_years` back to 2019.
+
+   Ingesting them anyway is still right and costs nothing: a scan lands
+   `no_text` with zero chunks, and the document row records that we hold the
+   agreement and what its term was.
 
    Enumerate that host with its WordPress media index
    (`/wp-json/wp/v2/media?per_page=100&mime_type=application/pdf`, two pages) —
@@ -1346,12 +1356,25 @@ this month is the thing worth writing about. Neither is optional to goal B.
    Not transcribed, and not needed for schedules: Appendix C-F (side letters,
    the APPR plan, and the 2012 MOAs on TIPS and appeals), printed 42-49.
 
+   **Ossining's current agreement is not published anywhere public** (checked
+   2026-09-12). Both seeded URLs are hard 404s, and they are genuine server
+   answers, not bot filtering — the site root returns 200 from the same client.
+   The district's navigation no longer has a Teachers Association page at all;
+   `/departments/human-resources` lists only Employment Opportunities and an
+   "Employee Forms" link to a Google Site gated behind an `@ossiningufsd.org`
+   login. The union site rate-limits (429) after a single pass. So the only
+   public copy of any Ossining teacher CBA is NYSUT's 2017-2021, and the route
+   to a current one is the **FOIL Requests** page in the district's own nav —
+   not a crawler. Same conclusion as Elmsford, reached differently.
+
    **SeeThroughNY** (`seethroughny.net/contracts`) is the obvious next source —
    the canonical NY CBA aggregator, and reachable. Its search is a Backbone app
    posting to `/index.php/tools/reports/contract?action=…`; the autocomplete
    endpoints return empty for plain `term=`/`q=` params, so it needs real
-   browser interaction. That is a `--group browser` job in a workflow
-   (`browser_fetch.py`, Playwright), not a hand-driven one.
+   browser interaction. That is a `--group browser` job **on a runner**, not
+   here: Chromium is installed in the dev container but cannot reach the network
+   through the egress proxy (`ERR_PROXY_CONNECTION_FAILED`, with and without
+   `--no-sandbox`), so the browser adapter can only be exercised in Actions.
 5. **Arm the schedule** — `refresh`'s cron is inert until the workflow is on
    the default branch. Without it the corpus goes stale between manual
    dispatches, which is fatal for a *monthly* product.
