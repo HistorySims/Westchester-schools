@@ -51,6 +51,29 @@ MAX_TABLE_CHARS = 20000          # cap the table sent to the model
 DEFAULT_CROSSWALK = "data/lane_crosswalk.csv"
 SALARY_MIN, SALARY_MAX = 30_000, 250_000   # sanity band for the audit
 
+# The floor is unit-dependent, and a single one was wrong. $30k catches a
+# misread teacher salary, but a PART-TIME support-staff grid legitimately sits
+# under it: Port Chester's teaching assistants are paid by the hours worked
+# (5, 6 or 7 a day) and the 5-hour track starts at $25,511, so a single floor
+# flagged roughly forty perfectly correct cells. An audit that cries wolf on
+# real data is worse than no audit, because the flood is what hides the one
+# genuine misread. Units paid hourly or part-time get a floor low enough to
+# still catch a stipend transcribed into the salary column.
+SALARY_MIN_BY_UNIT: dict[str, int] = {
+    "aide": 10_000,
+    "monitor": 10_000,
+    "food_service": 10_000,
+    "transportation": 10_000,
+    "security": 10_000,
+    "clerical": 10_000,
+    "custodial": 10_000,
+}
+
+
+def salary_floor(bargaining_unit: str | None) -> int:
+    """Lowest plausible annual salary for a unit; see SALARY_MIN_BY_UNIT."""
+    return SALARY_MIN_BY_UNIT.get((bargaining_unit or "").strip().lower(), SALARY_MIN)
+
 # Candidate table chunks: headers/content/title mentioning a schedule.
 #
 # The lane patterns matter as much as the words: a bare salary grid's text is
@@ -406,9 +429,10 @@ def audit_salary(rows: list[tuple[str, SalaryScheduleRow]]) -> list[AuditViolati
                     f"{b.school_year} ${b.salary:,.0f}"))
 
     for slug, r in rows:
-        if r.salary < SALARY_MIN or r.salary > SALARY_MAX:
+        if r.salary < salary_floor(r.bargaining_unit) or r.salary > SALARY_MAX:
             v.append(AuditViolation("salary_out_of_bounds", slug,
-                f"{r.school_year} {r.lane} step {r.step}: ${r.salary:,.0f}"))
+                f"{r.school_year} {r.lane} step {r.step} ({r.bargaining_unit}): "
+                f"${r.salary:,.0f}"))
     return v
 
 

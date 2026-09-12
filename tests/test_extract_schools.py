@@ -311,6 +311,41 @@ def test_undated_documents_sort_first_because_contracts_have_no_meeting_date():
     assert "d.meeting_date desc nulls first" in _candidate_sql(district=False, limit=False)
 
 
+
+def test_ma_plus_90_is_a_canonical_lane():
+    # Port Chester's Appendix A runs BA..MA+90..Doctorate. Without MA+90 in the
+    # vocabulary the whole column normalized to 'other': invisible to a lane
+    # query, and unranked in the lane-ordering audit.
+    from herald.taxonomy import CANONICAL_LANES, lane_rank, normalize_lane
+
+    assert normalize_lane("MA+90") == "MA+90"
+    assert normalize_lane("MA 90") == "MA+90"
+    assert "MA+90" in CANONICAL_LANES
+    # ordering stays sane either side of it
+    assert lane_rank("MA+75") < lane_rank("MA+90") < lane_rank("Doctorate")
+
+
+
+def test_part_time_support_staff_are_not_flagged_by_the_teacher_floor():
+    # Port Chester's teaching assistants are paid by hours worked per day; the
+    # 5-hour track starts at $25,511, and a single $30k floor flagged ~40
+    # correct cells. The flood is what hides a genuine misread.
+    aide = _sr(bargaining_unit="aide", lane="TA51", lane_raw="TA51", salary=25_511.0)
+    assert audit_salary([("port-chester-rye", aide)]) == []
+
+
+def test_the_teacher_floor_still_catches_a_misread():
+    teacher = _sr(bargaining_unit="teacher", salary=25_511.0)
+    v = audit_salary([("port-chester-rye", teacher)])
+    assert [x.kind for x in v] == ["salary_out_of_bounds"]
+
+
+def test_the_ceiling_applies_to_every_unit():
+    for unit in ("teacher", "aide"):
+        v = audit_salary([("x", _sr(bargaining_unit=unit, salary=400_000.0))])
+        assert [x.kind for x in v] == ["salary_out_of_bounds"], unit
+
+
 # ---- upsert SQL shapes -------------------------------------------------
 
 class _RecCursor:
