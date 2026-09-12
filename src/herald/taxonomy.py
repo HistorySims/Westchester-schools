@@ -17,7 +17,7 @@ from pathlib import Path
 # audit checks that a higher lane pays ≥ the lane to its left at the same step.
 CANONICAL_LANES: list[str] = [
     "BA", "BA+15", "BA+30", "BA+45",
-    "MA", "MA+15", "MA+20", "MA+30", "MA+40", "MA+45", "MA+60", "MA+75",
+    "MA", "MA+15", "MA+20", "MA+30", "MA+40", "MA+45", "MA+60", "MA+75", "MA+90",
     "Doctorate",
 ]
 _LANE_RANK = {lane: i for i, lane in enumerate(CANONICAL_LANES)}

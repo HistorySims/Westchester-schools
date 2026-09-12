@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import Counter
 from datetime import date
 from pathlib import Path
@@ -1315,6 +1316,93 @@ def agenda_snapshot_import(
 
     verb = "would import" if dry_run else "imported"
     lines = ["## Agenda snapshot import", "",
+             "| district | " + verb + " | skipped (already held) |", "|---|---:|---:|"]
+    for slug in sorted(set(stored) | set(skipped)):
+        console.print(f"  {slug}: {verb} {stored[slug]}, skipped {skipped[slug]}")
+        lines.append(f"| {slug} | {stored[slug]} | {skipped[slug]} |")
+    console.print(f"\n[bold]{verb} {sum(stored.values())}[/bold], "
+                  f"skipped {sum(skipped.values())}")
+    if report:
+        Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@app.command("contract-snapshot-import")
+def contract_snapshot_import(
+    snapshot: str = typer.Option("data/snapshots/pcta-contract-2023-2027.jsonl.gz",
+                                 help="Gzipped JSONL snapshot of transcribed contracts."),
+    only: str | None = typer.Option(None, help="Only these district slug(s), comma-separated."),
+    out: str = typer.Option("data/raw", help="Root dir for the raw store."),
+    report: str | None = typer.Option(None, help="Write a markdown summary here."),
+    dry_run: bool = typer.Option(False, help="Read + count only; write nothing."),
+) -> None:
+    """Expand a transcribed-contract snapshot into the raw store — no network.
+
+    The sibling of ``agenda-snapshot-import``, for a different blocker. The
+    agenda snapshots exist because BoardDocs refuses the runner's IP; this one
+    exists because a contract is a **scan**: ``extract_pdf`` returns no text and
+    no tables for it, so the salary grids never reach ``salary_schedule`` no
+    matter how many times ingest runs. Transcribing it on a runner needs
+    ``herald-ingest ocr --engine vision`` and the original PDF in a scrape
+    artifact; when neither is available, a committed transcription is the way
+    in.
+
+    Records are written as ``.html`` so ingest dispatches to ``extract_html``
+    and its table-aware chunking, which turns each ``<table>`` into a whole
+    ``kind='table'`` chunk — exactly the shape ``herald-extract`` reads. A
+    snapshot record carries its own ``doc_type``, defaulting to contract.
+    """
+    import gzip
+
+    from herald.scrape.core import make_manifest_entry, sha256_bytes
+    from herald.scrape.models import DocType, ScrapedDoc
+
+    path = Path(snapshot)
+    if not path.is_file():
+        console.print(f"[red]no snapshot at {path}[/red]")
+        raise typer.Exit(1)
+    wanted = {s.strip() for s in (only or "").split(",") if s.strip()} or None
+    out_dir = Path(out)
+    manifest = Manifest(out_dir / "manifest.jsonl")
+    store = RawStore(out_dir)
+    stored: Counter[str] = Counter()
+    skipped: Counter[str] = Counter()
+
+    with gzip.open(path, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            slug = rec["district"]
+            if wanted and slug not in wanted:
+                continue
+            body = rec["html"].encode("utf-8")
+            sha = sha256_bytes(body)
+            if manifest.has_url_hash(rec["source_url"], sha):
+                skipped[slug] += 1
+                continue
+            stored[slug] += 1
+            if dry_run:
+                continue
+            # A filename per source_url, so two transcriptions of one district
+            # cannot overwrite each other in the store.
+            stem = re.sub(r"[^A-Za-z0-9]+", "-", rec["source_url"]).strip("-")[-60:]
+            doc = ScrapedDoc(
+                district=slug,
+                doc_type=DocType(rec.get("doc_type", "contract")),
+                title=rec["title"],
+                source_url=rec["source_url"],
+                date=date.fromisoformat(rec["date"]) if rec.get("date") else None,
+                suggested_filename=f"{stem}.html",
+            )
+            local = store.write(doc, body, default_ext=".html")
+            manifest.append(make_manifest_entry(
+                doc, local_path=local, sha256=sha, size_bytes=len(body),
+                content_type="text/html",
+            ))
+
+    verb = "would import" if dry_run else "imported"
+    lines = ["## Contract snapshot import", "",
              "| district | " + verb + " | skipped (already held) |", "|---|---:|---:|"]
     for slug in sorted(set(stored) | set(skipped)):
         console.print(f"  {slug}: {verb} {stored[slug]}, skipped {skipped[slug]}")

@@ -1,0 +1,102 @@
+name: contracts-snapshot
+
+# Import the committed transcribed-contract snapshot and ingest it.
+# No network beyond the database and the embedder.
+#
+#   Actions -> contracts-snapshot -> Run workflow
+#
+# The BoardDocs snapshots (`agendas`, `policy-boarddocs`) exist because a
+# runner's IP is refused. This one exists because the DOCUMENT is unreadable:
+# Port Chester's current teacher CBA, PCTA_Contract_20232027.pdf, is a 56-page
+# scan — `extract_pdf` returns 0 characters and 0 tables — so its salary grids
+# never reach `salary_schedule` no matter how often ingest runs.
+#
+# The normal fix for a scan is `ocr` with engine=vision, which needs the
+# original PDF sitting in a scrape run's artifacts. That file has no confirmed
+# public URL, so no crawl can put it there. Transcribing it and committing the
+# result is the way in — the same escape hatch, a different blocker.
+#
+# Records are stored as .html, so ingest dispatches to extract_html and its
+# table-aware chunking: one whole kind='table' chunk per school-year grid,
+# which is exactly what `herald-extract` reads.
+#
+# After this, run:  extract  (district: port-chester-rye, doc_type: contract)
+#
+# Regenerate the snapshot:  uv run python scripts/build_pcta_snapshot.py
+#
+# Required secrets: SUPABASE_DB_URL, VOYAGE_API_KEY
+
+on:
+  workflow_dispatch:
+    inputs:
+      snapshot:
+        description: "Snapshot file to import"
+        type: string
+        default: "data/snapshots/pcta-contract-2023-2027.jsonl.gz"
+      district:
+        description: "District to import (all = every district in the snapshot)"
+        type: choice
+        options:
+          - all
+          - port-chester-rye
+          - ossining
+          - peekskill
+          - tarrytowns
+          - elmsford
+          - mount-vernon
+          - greenburgh-central
+          - white-plains
+        default: all
+      dry_run:
+        description: "Report what would be imported and ingested; write nothing"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ingest          # never write the corpus from two runs at once
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Check secrets (real run only)
+        if: ${{ !inputs.dry_run }}
+        run: |
+          [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
+          [ -n "$VOYAGE_API_KEY" ]  || { echo "VOYAGE_API_KEY secret is missing"; exit 1; }
+      - name: Expand the snapshot into the raw store
+        run: |
+          uv run herald-scrape contract-snapshot-import \
+            --snapshot "${{ inputs.snapshot }}" \
+            ${{ inputs.district != 'all' && format('--only "{0}"', inputs.district) || '' }} \
+            --out data/raw \
+            --report contract-import.md \
+            --no-dry-run
+      - name: Ingest
+        run: |
+          uv run herald-ingest run \
+            --root data/raw \
+            ${{ inputs.district != 'all' && format('--district "{0}"', inputs.district) || '' }} \
+            --report contract-ingest.md \
+            ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}
+      - name: Publish reports to run summary
+        if: always()
+        run: |
+          cat contract-import.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          cat contract-ingest.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true

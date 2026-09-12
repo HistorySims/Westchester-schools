@@ -262,6 +262,27 @@ model and still billed. The keyword-matched pool:
 contracts, and that is where teacher salary grids live. `--doc-type contract`
 is a 5x cost cut before anything else is decided.
 
+### When the document itself is the blocker
+
+A scanned CBA has no text layer, so `extract_pdf` returns 0 characters and 0
+tables and the grids never become candidates at all. The designed answer is
+`herald-ingest ocr --engine vision`, which rasterizes and has Claude transcribe
+each page to Markdown, keeping grids as tables — but it needs the original PDF
+in a scrape run's artifacts, which means the file has to be fetchable.
+
+Port Chester's current CBA is neither: a 56-page scan with no confirmed public
+URL. For that case there is `contract-snapshot-import` and the
+`contracts-snapshot` workflow — the transcription is committed as a small
+gzipped JSONL and expanded on the runner into the same raw store and manifest a
+crawl would have left. Records are stored as `.html`, so ingest dispatches to
+`extract_html` and its table-aware chunking produces one `kind='table'` chunk
+per grid.
+
+The check that makes a committed transcription trustworthy is `audit_salary`,
+run over the transcribed cells before committing. It is the same wall-of-numbers
+problem the audit was written for, and it is why `scripts/build_pcta_snapshot.py`
+keeps the grids as data rather than as pre-rendered HTML.
+
 ### Two ordering bugs that made a limited run lie
 
 Both were invisible: the audit came back empty and looked like an answer.

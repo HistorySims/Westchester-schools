@@ -311,6 +311,20 @@ def test_undated_documents_sort_first_because_contracts_have_no_meeting_date():
     assert "d.meeting_date desc nulls first" in _candidate_sql(district=False, limit=False)
 
 
+
+def test_ma_plus_90_is_a_canonical_lane():
+    # Port Chester's Appendix A runs BA..MA+90..Doctorate. Without MA+90 in the
+    # vocabulary the whole column normalized to 'other': invisible to a lane
+    # query, and unranked in the lane-ordering audit.
+    from herald.taxonomy import CANONICAL_LANES, lane_rank, normalize_lane
+
+    assert normalize_lane("MA+90") == "MA+90"
+    assert normalize_lane("MA 90") == "MA+90"
+    assert "MA+90" in CANONICAL_LANES
+    # ordering stays sane either side of it
+    assert lane_rank("MA+75") < lane_rank("MA+90") < lane_rank("Doctorate")
+
+
 # ---- upsert SQL shapes -------------------------------------------------
 
 class _RecCursor:

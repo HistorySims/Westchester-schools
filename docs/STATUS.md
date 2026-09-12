@@ -832,7 +832,7 @@ What this corpus can be trusted to answer, as of 2026-09-05:
   | elmsford | none | — |
   | greenburgh-central | none | — |
   | ossining | none (both seeds dead — item 10) | — |
-  | port-chester-rye | **PCTA_Contract_20232027** (operator-supplied) | **in term to 2027-06-30** |
+  | port-chester-rye | **PCTA_Contract_20232027** (operator-supplied; Appendix A transcribed into a snapshot) | **in term to 2027-06-30** |
 
   So for four districts the salary-schedule gap is **acquisition, not
   extraction**. Peekskill is the opposite and the best next target: a current
@@ -1305,6 +1305,26 @@ this month is the thing worth writing about. Neither is optional to goal B.
    No public URL for the 2023-2027 file was confirmed — the search engine
    conflates at least four "PCTA"s (Port Washington NY, Portsmouth OH, Pinellas
    County FL). The union's `/resources/` page is the likely home and is seeded.
+
+   **Its four teacher grids are now in the corpus as a snapshot.** Because the
+   file has no fetchable URL, no crawl can put it in a scrape artifact, and
+   `ocr --engine vision` needs it there. So Appendix A was transcribed and
+   committed instead: `data/snapshots/pcta-contract-2023-2027.jsonl.gz` (4 KB),
+   built by `scripts/build_pcta_snapshot.py`, loaded with
+   **Actions → contracts-snapshot** and then `extract`. Same escape hatch as
+   the BoardDocs snapshots, different blocker — those are stopped by an IP
+   range, this by the document being a scan.
+
+   784 cells: BA / MA / MA+30 / MA+45 / MA+60 / MA+90 / Doctorate × steps 1-28
+   × four school years. All of them pass `audit_salary`'s invariants — monotonic
+   within lane, canonical lane ordering at equal step, year-over-year
+   non-decreasing, inside the $30k-$250k band — which is what makes a hand
+   transcription defensible: a transposed digit almost always breaks one.
+
+   Still missing from that contract, and worth a second pass: the
+   teaching-assistant grids (printed 30-33), Appendix A Addenda (34), and
+   Appendix B Additional Compensation (35-42), which is where Port Chester's
+   stipends live.
 
    **SeeThroughNY** (`seethroughny.net/contracts`) is the obvious next source —
    the canonical NY CBA aggregator, and reachable. Its search is a Backbone app
