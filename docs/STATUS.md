@@ -1356,6 +1356,30 @@ this month is the thing worth writing about. Neither is optional to goal B.
    Not transcribed, and not needed for schedules: Appendix C-F (side letters,
    the APPR plan, and the 2012 MOAs on TIPS and appeals), printed 42-49.
 
+   **First real extract attempt, 2026-09-12 — blocked on Anthropic credits.**
+   All 45 candidates returned `invalid_request_error: Your credit balance is too
+   low`. Nothing was billed (0 tokens in/out) and nothing was written, and
+   because a failed chunk is deliberately left unstamped, a re-run after a
+   top-up retries all 45. The run still confirmed three things in production:
+
+   * `--doc-type contract` cuts the pool from ~1,760 keyword matches to **45**.
+   * The round-robin ordering works — the log interleaves greenburgh-central,
+     mount-vernon, peekskill, port-chester-rye, white-plains rather than
+     spending everything on the first slug.
+   * `contracts-snapshot` loaded: the Port Chester Appendix A and B documents
+     appear as candidates, so the transcription reached the corpus intact.
+
+   **Skip the dry run from here.** `render_report` emits the Audit section on a
+   real run too and the upserts are idempotent, so with the pool already scoped
+   to 45 a dry run pays the model bill twice for nothing.
+
+   **Lead to check after extraction:** White Plains has documents titled
+   `WPTA SALARY SCHEDULE 2027` and `WPTA MOA 5.6.2022` alongside the
+   `2022-2026 Salary Schedule`. A 2027 schedule cannot come from an agreement
+   ending June 2026, so there is probably an MOA extension or a successor the
+   scope statement above does not yet reflect. Do not restate White Plains as
+   "expired 2026-06-30" until that is resolved.
+
    **Ossining's current agreement is not published anywhere public** (checked
    2026-09-12). Both seeded URLs are hard 404s, and they are genuine server
    answers, not bot filtering — the site root returns 200 from the same client.
