@@ -1306,25 +1306,45 @@ this month is the thing worth writing about. Neither is optional to goal B.
    conflates at least four "PCTA"s (Port Washington NY, Portsmouth OH, Pinellas
    County FL). The union's `/resources/` page is the likely home and is seeded.
 
-   **Its four teacher grids are now in the corpus as a snapshot.** Because the
-   file has no fetchable URL, no crawl can put it in a scrape artifact, and
-   `ocr --engine vision` needs it there. So Appendix A was transcribed and
-   committed instead: `data/snapshots/pcta-contract-2023-2027.jsonl.gz` (4 KB),
-   built by `scripts/build_pcta_snapshot.py`, loaded with
-   **Actions → contracts-snapshot** and then `extract`. Same escape hatch as
-   the BoardDocs snapshots, different blocker — those are stopped by an IP
-   range, this by the document being a scan.
+   **Appendices A and B are now in the corpus as a snapshot.** Because the file
+   has no fetchable URL, no crawl can put it in a scrape artifact, and
+   `ocr --engine vision` needs it there. So it was transcribed and committed
+   instead: `data/snapshots/pcta-contract-2023-2027.jsonl.gz` (13.5 KB), built
+   by `scripts/build_pcta_snapshot.py`, loaded with **Actions →
+   contracts-snapshot** and then `extract`. Same escape hatch as the BoardDocs
+   snapshots, different blocker — those are stopped by an IP range, this by the
+   document being a scan.
 
-   784 cells: BA / MA / MA+30 / MA+45 / MA+60 / MA+90 / Doctorate × steps 1-28
-   × four school years. All of them pass `audit_salary`'s invariants — monotonic
-   within lane, canonical lane ordering at equal step, year-over-year
-   non-decreasing, inside the $30k-$250k band — which is what makes a hand
-   transcription defensible: a transposed digit almost always breaks one.
+   Four documents, so a citation names the appendix it rests on:
 
-   Still missing from that contract, and worth a second pass: the
-   teaching-assistant grids (printed 30-33), Appendix A Addenda (34), and
-   Appendix B Additional Compensation (35-42), which is where Port Chester's
-   stipends live.
+   | record | printed | content |
+   |---|---|---|
+   | `appendix-a-teachers` | 26-29 | 4 grids, 7 lanes × 28 steps × 4 years |
+   | `appendix-a-teaching-assistants` | 30-33 | 4 grids, 9 tracks × 30 steps × 4 years |
+   | `appendix-a-addenda` | 34 | Level → lane mapping, service increments |
+   | `appendix-b` | 35-41 | 154 stipend positions + hourly/per-event rates |
+
+   17 table chunks, of which 16 are `herald-extract` candidates; the odd one out
+   is the hourly-rate table, which is neither a salary nor a stipend schedule
+   and would come back `none` anyway.
+
+   **1,864 salary cells, zero audit violations** — monotonic within lane,
+   canonical lane ordering at equal step, year-over-year non-decreasing, every
+   value inside its unit's band. That is what makes a hand transcription
+   defensible: a transposed digit almost always breaks one of them.
+
+   Two things the transcription taught the pipeline. `MA+90` was missing from
+   `CANONICAL_LANES`, so that whole column normalized to `other` — unranked by
+   the lane audit and invisible to a lane query; Appendix A Addenda confirms
+   Level 11 is ninety semester hours. And the `$30k` salary floor was wrong for
+   part-time support staff: teaching assistants are paid by scheduled hours per
+   day and the 5-hour track starts at `$25,511`, so one floor flagged ~40
+   correct cells. `SALARY_MIN_BY_UNIT` now sets the floor per bargaining unit —
+   an audit that cries wolf is worse than none, because the flood hides the one
+   real misread.
+
+   Not transcribed, and not needed for schedules: Appendix C-F (side letters,
+   the APPR plan, and the 2012 MOAs on TIPS and appeals), printed 42-49.
 
    **SeeThroughNY** (`seethroughny.net/contracts`) is the obvious next source —
    the canonical NY CBA aggregator, and reachable. Its search is a Backbone app

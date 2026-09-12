@@ -121,40 +121,10 @@ def test_a_missing_snapshot_is_an_error_not_an_empty_success(tmp_path):
     assert res.exit_code == 1
 
 
-# ---- the committed snapshot itself -------------------------------------
+# ---- the committed snapshot itself-------------------------------------
 
-def test_the_committed_snapshot_yields_four_candidate_salary_grids(tmp_path):
-    """The point of the whole exercise: table chunks herald-extract will read."""
-    import re
-
-    assert SNAPSHOT.is_file()
-    with gzip.open(SNAPSHOT, "rt", encoding="utf-8") as fh:
-        recs = [json.loads(line) for line in fh if line.strip()]
-    assert len(recs) == 1 and recs[0]["district"] == "port-chester-rye"
-
-    out, _ = _import(tmp_path, recs)
-    html = next(Path(out).rglob("*.html"))
-    doc = extract_html(html)
-
-    # one whole-table chunk per school year, 28 steps + header + separator
-    assert len(doc.tables) == 4
-    kw = re.compile(CANDIDATE_KEYWORDS.replace(r"\y", r"\b"), re.I)
-    for t, year in zip(doc.tables, ("2023/24", "2024/25", "2025/26", "2026/27"),
-                       strict=True):
-        assert year in t.label, t.label
-        assert kw.search(t.markdown + " " + t.label), "would not be an extract candidate"
-        assert t.markdown.count("\n") + 1 == 30
-    # MA+90 must survive as its own lane, not collapse into 'other'
-    assert "MA+90" in doc.tables[0].markdown
-
-
-def test_the_committed_transcription_passes_the_extractor_audit():
-    """784 hand-read cells, checked by the invariants that exist for misreads."""
+def _load_generator():
     import importlib.util
-
-    from herald.extract_schools import audit_salary
-    from herald.schools_db import SalaryScheduleRow
-    from herald.taxonomy import normalize_lane
 
     spec = importlib.util.spec_from_file_location(
         "build_pcta_snapshot", Path("scripts/build_pcta_snapshot.py")
@@ -162,7 +132,75 @@ def test_the_committed_transcription_passes_the_extractor_audit():
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    return mod
 
+
+def _records() -> list[dict]:
+    assert SNAPSHOT.is_file()
+    with gzip.open(SNAPSHOT, "rt", encoding="utf-8") as fh:
+        return [json.loads(line) for line in fh if line.strip()]
+
+
+def test_the_snapshot_holds_the_four_appendix_documents():
+    recs = _records()
+    assert len(recs) == 4
+    assert {r["district"] for r in recs} == {"port-chester-rye"}
+    assert {r["doc_type"] for r in recs} == {"contract"}
+    # a distinct source_url per appendix, so a citation names what it cites
+    assert len({r["source_url"] for r in recs}) == 4
+    # every title carries the term, so contract_term reports it as in force
+    for r in recs:
+        assert "2023-2027" in r["title"]
+
+
+def test_the_committed_snapshot_yields_the_expected_table_chunks(tmp_path):
+    """The point of the whole exercise: table chunks herald-extract will read."""
+    import re
+
+    out, _ = _import(tmp_path, _records())
+    by_name = {}
+    for html in Path(out).rglob("*.html"):
+        doc = extract_html(html)
+        by_name[html.read_text(encoding="utf-8").split("</h1>")[0][-40:]] = doc
+
+    docs = list(by_name.values())
+    assert sum(len(d.tables) for d in docs) == 17
+
+    kw = re.compile(CANDIDATE_KEYWORDS.replace(r"\y", r"\b"), re.I)
+    labels = [t.label for d in docs for t in d.tables]
+    # four teacher grids and four teaching-assistant grids, each labelled by year
+    for year in ("2023/24", "2024/25", "2025/26", "2026/27"):
+        assert sum(year in lab for lab in labels) == 2, year
+    # the only table that is NOT an extract candidate is the hourly-rate table,
+    # which is neither a salary nor a stipend schedule — the model would return
+    # "none" for it, so staying out of the candidate pool saves a call
+    non = [t.label for d in docs for t in d.tables
+           if not kw.search(t.markdown + " " + t.label)]
+    assert len(non) == 1 and non[0].startswith("Hourly rate")
+
+
+def test_lanes_and_tracks_survive_the_round_trip(tmp_path):
+    out, _ = _import(tmp_path, _records())
+    markdown = "\n".join(
+        t.markdown for f in Path(out).rglob("*.html") for t in extract_html(f).tables
+    )
+    # MA+90 must stay its own lane rather than collapsing into 'other'
+    for lane in ("BA", "MA+30", "MA+45", "MA+60", "MA+90", "Doctorate"):
+        assert f"| {lane} |" in markdown, lane
+    # teaching-assistant tracks are job classifications, kept verbatim
+    for track in ("TA51", "TA63", "TA73"):
+        assert track in markdown, track
+    # a printed "(n)" position count is preserved, not silently dropped
+    assert "7,210 (4)" in markdown
+
+
+def test_every_transcribed_salary_cell_passes_the_extractor_audit():
+    """1,864 hand-read cells, checked by the invariants written for misreads."""
+    from herald.extract_schools import audit_salary
+    from herald.schools_db import SalaryScheduleRow
+    from herald.taxonomy import normalize_lane
+
+    mod = _load_generator()
     rows = []
     for year, grid in mod.GRIDS.items():
         assert len(grid) == 28, year
@@ -171,7 +209,26 @@ def test_the_committed_transcription_passes_the_extractor_audit():
                 rows.append(("port-chester-rye", SalaryScheduleRow(
                     school_year=year, lane=normalize_lane(lane), lane_raw=lane,
                     step=r[0], years_service=None, is_longevity=False,
-                    salary=float(salary), bargaining_unit="teacher",
-                )))
-    assert len(rows) == 4 * 28 * 7
+                    salary=float(salary), bargaining_unit="teacher")))
+    for year, grid in mod.TA_GRIDS.items():
+        assert len(grid) == 30, year
+        for r in grid:
+            for track, salary in zip(mod.TA_TRACKS, r[1:], strict=True):
+                rows.append(("port-chester-rye", SalaryScheduleRow(
+                    school_year=year, lane=track, lane_raw=track, step=r[0],
+                    years_service=None, is_longevity=False, salary=float(salary),
+                    bargaining_unit="aide")))
+
+    assert len(rows) == 4 * 28 * 7 + 4 * 30 * 9 == 1864
     assert audit_salary(rows) == []
+
+
+def test_appendix_b_transcribes_every_position():
+    mod = _load_generator()
+    n = (len(mod.COACHES) + len(mod.ATHLETIC_COORDINATORS)
+         + sum(len(names) for _, _, names in mod.CLUB_TIERS)
+         + len(mod.FACILITATORS) + len(mod.OTHER_POSITIONS)
+         + len(mod.BAND_MUSIC_DRAMA) + len(mod.TECHNOLOGY))
+    assert n == 154
+    # the club tiers are flat rates; each tier's amount is stated once
+    assert [amount for _, amount, _ in mod.CLUB_TIERS] == ["1,751", "1,056", "876"]

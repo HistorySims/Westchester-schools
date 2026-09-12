@@ -325,6 +325,27 @@ def test_ma_plus_90_is_a_canonical_lane():
     assert lane_rank("MA+75") < lane_rank("MA+90") < lane_rank("Doctorate")
 
 
+
+def test_part_time_support_staff_are_not_flagged_by_the_teacher_floor():
+    # Port Chester's teaching assistants are paid by hours worked per day; the
+    # 5-hour track starts at $25,511, and a single $30k floor flagged ~40
+    # correct cells. The flood is what hides a genuine misread.
+    aide = _sr(bargaining_unit="aide", lane="TA51", lane_raw="TA51", salary=25_511.0)
+    assert audit_salary([("port-chester-rye", aide)]) == []
+
+
+def test_the_teacher_floor_still_catches_a_misread():
+    teacher = _sr(bargaining_unit="teacher", salary=25_511.0)
+    v = audit_salary([("port-chester-rye", teacher)])
+    assert [x.kind for x in v] == ["salary_out_of_bounds"]
+
+
+def test_the_ceiling_applies_to_every_unit():
+    for unit in ("teacher", "aide"):
+        v = audit_salary([("x", _sr(bargaining_unit=unit, salary=400_000.0))])
+        assert [x.kind for x in v] == ["salary_out_of_bounds"], unit
+
+
 # ---- upsert SQL shapes -------------------------------------------------
 
 class _RecCursor:
