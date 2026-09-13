@@ -1373,6 +1373,31 @@ this month is the thing worth writing about. Neither is optional to goal B.
    real run too and the upserts are idempotent, so with the pool already scoped
    to 45 a dry run pays the model bill twice for nothing.
 
+   **The extract landed, 2026-09-13.** 45 candidates, 0 errors, **2,383 salary
+   rows + 717 stipend rows**, 123,836 tokens in / 317,145 out — **$3.42** on
+   claude-sonnet-5. Five districts now have schedules where one did before.
+   Two round-trips validate exactly: Port Chester's Appendix A teacher grid came
+   back as **196 rows = 28 steps × 7 lanes**, and the teaching-assistant grid as
+   **270 = 30 × 9** — the transcription survived the snapshot, the chunker and
+   the model unchanged.
+
+   **697 audit flags, and one kind of them matters more than the rest.** White
+   Plains reported pairs like `2023-24 BA: step 1 $61,713 → step 1 $66`. Same
+   step, two values: that is not a dip, it is a **collision**.
+   `salary_schedule` is keyed on (district, school_year, lane, step), so two
+   table chunks emitting the same cell means one silently overwrites the other
+   and nothing records which won. Reported as `salary_non_monotonic` it read as
+   600-odd ordinary dips and buried the finding. `audit_salary` now raises
+   `duplicate_cell` for it, the step and lane checks skip same-step/same-lane
+   pairs, and the report leads with a by-kind summary instead of 697 flat rows.
+
+   **Do not trust White Plains figures until that is resolved.** Its
+   `2022-2026 Salary Schedule` appears as five separate table chunks (two of
+   which returned an identical 176 rows), so either the document is ingested
+   more than once or several pages re-emit the same grid under a school year
+   inferred from the title. Port Chester, Peekskill and Mount Vernon show no
+   such pattern.
+
    **Lead to check after extraction:** White Plains has documents titled
    `WPTA SALARY SCHEDULE 2027` and `WPTA MOA 5.6.2022` alongside the
    `2022-2026 Salary Schedule`. A 2027 schedule cannot come from an agreement

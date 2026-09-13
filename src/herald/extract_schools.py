@@ -95,6 +95,9 @@ CANDIDATE_KEYWORDS = (
 
 _VALID_BASIS = {"flat", "range", "percent_of_base"}
 
+#: Audit flags listed individually in the report before it truncates.
+AUDIT_DETAIL_LIMIT = 100
+
 
 EXTRACT_SYSTEM = """\
 You extract structured data from a SINGLE table taken from a school-district \
@@ -399,24 +402,46 @@ def audit_salary(rows: list[tuple[str, SalaryScheduleRow]]) -> list[AuditViolati
     by_lane: dict[tuple, list[SalaryScheduleRow]] = defaultdict(list)
     by_step: dict[tuple, list[SalaryScheduleRow]] = defaultdict(list)
     by_cell: dict[tuple, list[SalaryScheduleRow]] = defaultdict(list)
+    by_dup: dict[tuple, list[SalaryScheduleRow]] = defaultdict(list)
     for slug, r in rows:
         u = r.bargaining_unit
+        by_dup[(slug, u, r.school_year, r.lane, r.step)].append(r)
         by_lane[(slug, u, r.school_year, r.lane)].append(r)
         # Lane ordering is an education-lane invariant — only teacher lanes rank.
         if lane_rank(r.lane) >= 0:
             by_step[(slug, u, r.school_year, r.step)].append(r)
         by_cell[(slug, u, r.lane, r.step)].append(r)
 
+    # Duplicate cells first, and as their own kind. Two rows for one
+    # (unit, year, lane, step) are not a step progression that dips — they are a
+    # COLLISION: `upsert_salary` keys on (district, school_year, lane, step), so
+    # one of them silently overwrites the other and nothing records which won.
+    # Reported as salary_non_monotonic ("step 1 → step 1 (drops)") this read as
+    # 600-odd ordinary dips and buried the one finding that means the stored
+    # figure may be wrong. Measured 2026-09-13 on White Plains, whose schedule
+    # spans several table chunks that each re-emit the same lanes and steps.
+    for (slug, _u, sy, lane, step), rs in sorted(by_dup.items(), key=lambda kv: str(kv[0])):
+        salaries = sorted({r.salary for r in rs})
+        if len(salaries) > 1:
+            shown = ", ".join(f"${x:,.0f}" for x in salaries)
+            v.append(AuditViolation("duplicate_cell", slug,
+                f"{sy} {lane} step {step}: {len(rs)} rows disagree ({shown}) — "
+                f"one overwrites the other on write"))
+
     for (slug, _u, sy, lane), rs in by_lane.items():
         for a, b in pairwise(sorted(rs, key=lambda r: r.step)):
-            if b.salary < a.salary:
+            # a.step == b.step is a duplicate cell, flagged above; comparing them
+            # here would report the same collision a second time as a fake dip.
+            if a.step != b.step and b.salary < a.salary:
                 v.append(AuditViolation("salary_non_monotonic", slug,
                     f"{sy} {lane}: step {a.step} ${a.salary:,.0f} → step {b.step} "
                     f"${b.salary:,.0f} (drops)"))
 
     for (slug, _u, sy, step), rs in by_step.items():
         for a, b in pairwise(sorted(rs, key=lambda r: lane_rank(r.lane))):
-            if b.salary < a.salary:
+            # Same guard as the step check: two rows in the SAME lane are a
+            # duplicate cell, not lanes out of order.
+            if a.lane != b.lane and b.salary < a.salary:
                 v.append(AuditViolation("lane_out_of_order", slug,
                     f"{sy} step {step}: {a.lane} ${a.salary:,.0f} > {b.lane} "
                     f"${b.salary:,.0f}"))
@@ -603,8 +628,34 @@ def render_report(stats: ExtractStats, *, dry_run: bool) -> str:
     if not viol:
         lines.append("_No invariant violations._")
     else:
-        lines += ["| kind | district | detail |", "|---|---|---|"]
-        lines += [f"| {x.kind} | {x.district} | {x.detail} |" for x in viol]
+        # A flat list of every flag is unreadable past a few dozen — the first
+        # real run produced 697 — and the promise of the audit is "review the 3
+        # it flagged", not "read 697 rows". Lead with the shape: which kinds, in
+        # which districts, so the one that means a stored figure may be WRONG
+        # (duplicate_cell) is not buried under ordinary dips.
+        by_kind: Counter[str] = Counter(x.kind for x in viol)
+        by_kind_district: Counter[tuple[str, str]] = Counter(
+            (x.kind, x.district) for x in viol
+        )
+        lines += ["| kind | flags | districts |", "|---|---:|---|"]
+        for kind, n in by_kind.most_common():
+            where = ", ".join(
+                f"{d} ({c})" for (k, d), c in by_kind_district.most_common() if k == kind
+            )
+            lines.append(f"| {kind} | {n} | {where} |")
+        if "duplicate_cell" in by_kind:
+            lines += ["", "> **duplicate_cell means a row was silently overwritten.** "
+                      "`salary_schedule` is keyed on (district, school_year, lane, "
+                      "step), so when two table chunks emit the same cell with "
+                      "different figures only the last write survives. Resolve these "
+                      "before trusting the affected district's numbers."]
+        lines += ["", f"### Detail (first {AUDIT_DETAIL_LIMIT})", "",
+                  "| kind | district | detail |", "|---|---|---|"]
+        lines += [f"| {x.kind} | {x.district} | {x.detail} |"
+                  for x in viol[:AUDIT_DETAIL_LIMIT]]
+        if len(viol) > AUDIT_DETAIL_LIMIT:
+            lines.append("")
+            lines.append(f"_… and {len(viol) - AUDIT_DETAIL_LIMIT} more._")
     return "\n".join(lines) + "\n"
 
 
