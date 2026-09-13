@@ -11,6 +11,7 @@ from herald import taxonomy
 from herald.extract_schools import (
     AuditViolation,
     Candidate,
+    ExtractStats,
     _bool,
     _candidate_sql,
     _num,
@@ -344,6 +345,54 @@ def test_the_ceiling_applies_to_every_unit():
     for unit in ("teacher", "aide"):
         v = audit_salary([("x", _sr(bargaining_unit=unit, salary=400_000.0))])
         assert [x.kind for x in v] == ["salary_out_of_bounds"], unit
+
+
+
+def test_a_duplicate_cell_is_its_own_finding_not_a_fake_dip():
+    # White Plains' schedule spans several table chunks that each re-emit the
+    # same lanes and steps. Two rows for one (unit, year, lane, step) collide on
+    # the upsert key, so one silently overwrites the other — that is a different
+    # and worse finding than a step progression that dips.
+    rows = [("white-plains", _sr(step=1, salary=61_713.0)),
+            ("white-plains", _sr(step=1, salary=66.0))]
+    kinds = [x.kind for x in audit_salary(rows)]
+    assert "duplicate_cell" in kinds
+    # never as a step progression that dips, nor as lanes out of order
+    assert "salary_non_monotonic" not in kinds
+    assert "lane_out_of_order" not in kinds
+    dup = next(x for x in audit_salary(rows) if x.kind == "duplicate_cell")
+    assert "overwrites" in dup.detail
+    assert "$66" in dup.detail and "$61,713" in dup.detail
+
+
+def test_identical_duplicates_are_not_flagged():
+    # The same figure extracted twice is harmless: the overwrite is a no-op.
+    rows = [("white-plains", _sr(step=1, salary=61_713.0))] * 2
+    assert audit_salary(rows) == []
+
+
+def test_a_real_step_dip_is_still_flagged():
+    rows = [("ossining", _sr(step=1, salary=60_000.0)),
+            ("ossining", _sr(step=2, salary=59_000.0))]
+    assert [x.kind for x in audit_salary(rows)] == ["salary_non_monotonic"]
+
+
+def test_the_report_leads_with_the_shape_not_697_rows():
+    stats = ExtractStats(seen=2)
+    stats.salary_violations = (
+        [AuditViolation("duplicate_cell", "white-plains", f"cell {i}") for i in range(5)]
+        + [AuditViolation("salary_non_monotonic", "peekskill", f"dip {i}")
+           for i in range(120)]
+    )
+    md = render_report(stats, dry_run=False)
+    # a by-kind summary, most common first
+    assert "| kind | flags | districts |" in md
+    assert "| salary_non_monotonic | 120 | peekskill (120) |" in md
+    assert "| duplicate_cell | 5 | white-plains (5) |" in md
+    # the overwrite warning, because duplicates are present
+    assert "silently overwritten" in md
+    # and the detail list is capped rather than dumping everything
+    assert "and 25 more" in md
 
 
 # ---- upsert SQL shapes -------------------------------------------------

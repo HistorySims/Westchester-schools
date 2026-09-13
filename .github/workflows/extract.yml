@@ -16,6 +16,12 @@ name: extract
 # keyword-matched pool is ~1,760 tables corpus-wide, of which the ones holding
 # salary grids are the ~360 inside contracts. Scope before you spend.
 #
+# Once the pool IS scoped, SKIP the dry run. The audit is computed and printed
+# on a real run too (render_report always emits the Audit section), and the
+# upserts are idempotent and correcting, so a dry run buys nothing a real run
+# does not give you — it just pays the model bill twice. Measured 2026-09-12:
+# `doc_type: contract` selects 45 candidates corpus-wide, a couple of dollars.
+#
 # Apply db/migrations/0004_structured.sql once before the first real run.
 # Required secrets: SUPABASE_DB_URL, ANTHROPIC_API_KEY.
 
