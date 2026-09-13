@@ -145,6 +145,12 @@ def _missing(all_slugs: list[str], present: set[str]) -> list[str]:
     return [s for s in all_slugs if s not in present]
 
 
+_BASIS_CAVEAT = (
+    "Figures are annual salaries. A district's summer-school, per-diem and "
+    "longevity schedules sit on the same lane and step axes and are excluded "
+    "here — they measure different things."
+)
+
 _STEP_CAVEAT = (
     "Figures use the printed salary step as the year-of-service axis; for most "
     "schedules the step is the year of service, but where a contract states them "
@@ -160,7 +166,8 @@ with pairs as (
     max(document_id) filter (where step = %(b)s) as doc_id,
     max(page)        filter (where step = %(b)s) as page
   from salary_schedule
-  where bargaining_unit = 'teacher' and lane = %(lane)s and step in (%(a)s, %(b)s)
+  where bargaining_unit = 'teacher' and pay_basis = 'annual'
+        and lane = %(lane)s and step in (%(a)s, %(b)s)
   group by district_id, school_year
 ),
 both as (select * from pairs where sal_from is not null and sal_to is not null),
@@ -190,7 +197,8 @@ def _step_slope(cur, p: dict, all_slugs: list[str]) -> AnalyticalResult:
     return AnalyticalResult(
         question="", headline=f"{lane} salary increase from step {a} to step {b}",
         metric_label="increase", rows=rows,
-        caveats=[_STEP_CAVEAT], not_available=_missing(all_slugs, {r["slug"] for r in rows}),
+        caveats=[_STEP_CAVEAT, _BASIS_CAVEAT],
+        not_available=_missing(all_slugs, {r["slug"] for r in rows}),
     )
 
 
@@ -198,7 +206,8 @@ MAX_AT_STEP_SQL = """
 with rows as (
   select distinct on (district_id) district_id, school_year, salary, document_id, page
   from salary_schedule
-  where bargaining_unit = 'teacher' and lane = %(lane)s and step = %(step)s
+  where bargaining_unit = 'teacher' and pay_basis = 'annual'
+        and lane = %(lane)s and step = %(step)s
   order by district_id, school_year desc
 )
 select di.slug, r.school_year, r.salary, r.page, d.title, d.source_url, d.doc_type
@@ -221,7 +230,7 @@ def _max_at_step(cur, p: dict, all_slugs: list[str]) -> AnalyticalResult:
     ]
     return AnalyticalResult(
         question="", headline=f"{lane} salary at step {step}", metric_label="salary",
-        rows=rows, caveats=[_STEP_CAVEAT],
+        rows=rows, caveats=[_STEP_CAVEAT, _BASIS_CAVEAT],
         not_available=_missing(all_slugs, {r["slug"] for r in rows}),
     )
 
@@ -282,7 +291,8 @@ DELTA_YEARS_SQL = """
 with rows as (
   select district_id, school_year, salary, document_id, page
   from salary_schedule
-  where bargaining_unit = 'teacher' and lane = %(lane)s and step = %(step)s
+  where bargaining_unit = 'teacher' and pay_basis = 'annual'
+        and lane = %(lane)s and step = %(step)s
 ),
 agg as (
   select district_id,
@@ -315,7 +325,7 @@ def _delta_over_years(cur, p: dict, all_slugs: list[str]) -> AnalyticalResult:
     ]
     return AnalyticalResult(
         question="", headline=f"{lane} step {step} salary change across school years",
-        metric_label="change", rows=rows, caveats=[_STEP_CAVEAT],
+        metric_label="change", rows=rows, caveats=[_STEP_CAVEAT, _BASIS_CAVEAT],
         not_available=_missing(all_slugs, {r["slug"] for r in rows}),
     )
 

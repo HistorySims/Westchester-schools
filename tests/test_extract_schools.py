@@ -415,9 +415,43 @@ def test_upsert_salary_sql_shape():
     assert n == 1
     sql, rows = cur.many[0]
     assert "insert into salary_schedule" in sql
-    assert "on conflict (district_id, bargaining_unit, school_year, lane, step)" in sql
+    # pay_basis joins the key (0008): a summer-school hourly rate and an annual
+    # salary share (year, lane, step) and must not overwrite each other.
+    assert ("on conflict (district_id, bargaining_unit, pay_basis, school_year, "
+            "lane, step)") in sql
     assert rows[0][0] == DID
 
+
+
+def test_pay_basis_defaults_to_annual_and_rejects_junk():
+    data = {"table_kind": "salary", "salary_rows": [
+        {"lane_raw": "MA", "step": 1, "salary": 70000, "school_year": "2024-25"},
+        {"lane_raw": "MA", "step": 2, "salary": 66, "school_year": "2024-25",
+         "pay_basis": "hourly"},
+        {"lane_raw": "MA", "step": 3, "salary": 70000, "school_year": "2024-25",
+         "pay_basis": "per-hour-ish"},
+    ]}
+    rows, _ = build_salary_rows(data, district_slug="white-plains", crosswalk={},
+                                page=1, fallback_year=None)
+    assert [r.pay_basis for r in rows] == ["annual", "hourly", "annual"]
+
+
+def test_the_sanity_band_only_judges_annual_pay():
+    # $66 is a real summer-school hourly rate; $2,700 a real longevity increment.
+    # Judging them against a teacher's annual floor produced the noise that hid
+    # the actual fault.
+    for basis, salary in (("hourly", 66.0), ("increment", 2_700.0)):
+        v = audit_salary([("white-plains", _sr(pay_basis=basis, salary=salary))])
+        assert v == [], (basis, v)
+    v = audit_salary([("white-plains", _sr(pay_basis="annual", salary=66.0))])
+    assert [x.kind for x in v] == ["salary_out_of_bounds"]
+
+
+def test_two_bases_for_one_cell_are_not_a_duplicate():
+    # The whole point of 0008: these coexist instead of overwriting.
+    rows = [("white-plains", _sr(step=1, salary=61_713.0, pay_basis="annual")),
+            ("white-plains", _sr(step=1, salary=66.0, pay_basis="hourly"))]
+    assert [x.kind for x in audit_salary(rows)] == []
 
 def test_upsert_stipend_sql_shape_and_mark():
     cur = _RecCursor()
