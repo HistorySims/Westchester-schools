@@ -1522,3 +1522,14 @@ this month is the thing worth writing about. Neither is optional to goal B.
   451 MB) — pull them from the Actions artifact instead of attaching.
 - **Scrape-time metadata is provisional** — `date`/`doc_type` get their
   authoritative values at ingest.
+- **The `.bin` download bug is fixed** (2026-09-17). `_guess_ext` now reads the
+  magic number before the Content-Type header, because Content-Type is a claim
+  and `%PDF` is a fact: Google Drive serves a PDF as
+  `application/octet-stream`, which mapped to `.bin`, and ingest dispatches on
+  extension. Both the Ossining and Greenburgh CBAs are seeded as Drive links
+  and would have landed unreadable.
+- **A Drive seed carries no filename and no link text**, so `classify_link`
+  abstains and the document lands `doc_type='other'` — invisible to
+  `herald-extract --doc-type contract`. `docs_from_seed` takes a
+  `default_doc_type` that the contracts crawler sets to `contract`, applied
+  only when the classifier abstains.

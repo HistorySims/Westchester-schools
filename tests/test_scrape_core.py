@@ -226,3 +226,19 @@ def test_fetcher_allows_when_robots_absent(httpx_mock):
     httpx_mock.add_response(url="https://y.test/thing", text="ok")
     with Fetcher(min_request_interval=0.0, retry_base_delay=0.0) as f:
         assert f.get("https://y.test/thing").text == "ok"
+
+
+def test_extension_comes_from_the_bytes_not_the_servers_claim():
+    """Google Drive serves a PDF as application/octet-stream. Mapped on the
+    claim alone that became '.bin', ingest dispatches on extension, and PyMuPDF
+    never opened the file — the "Greenburgh download saved as .bin" in
+    docs/STATUS.md. Both CBAs now seeded as Drive links would have hit it.
+    """
+    from herald.scrape.runner import _guess_ext
+
+    assert _guess_ext("application/octet-stream", b"%PDF-1.6\r\n...") == ".pdf"
+    assert _guess_ext(None, b"%PDF-1.4") == ".pdf"
+    # the claim still decides when the bytes say nothing recognisable
+    assert _guess_ext("text/html", b"<html>") == ".html"
+    assert _guess_ext("application/octet-stream", b"not a pdf") == ".bin"
+    assert _guess_ext(None, b"") == ".bin"
