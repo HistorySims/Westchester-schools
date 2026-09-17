@@ -828,14 +828,15 @@ What this corpus can be trusted to answer, as of 2026-09-05:
   | peekskill | PFA Agreement 2023-2026, plus standalone `TCH Salary Schedule 2025-2026` | expired 2026-06-30; **the salary schedule is current** |
   | tarrytowns | Tarrytown-TAT-2022-2025 | expired 2025-06-30 |
   | white-plains | WPTA2022-2026 | expired 2026-06-30 |
-  | mount-vernon | MVFT Teacher Unit MOA (+ a 2019-2021 MOA) | memoranda, not a full CBA |
-  | elmsford | none | — |
-  | greenburgh-central | none | — |
-  | ossining | none (both seeds dead — item 10) | — |
+  | mount-vernon | MVFT Teacher Unit MOA; full 2019-2023 CBA exists as a scan | superseded — a successor was ratified May 2026 |
+  | elmsford | **ETA 2024-2027** (operator-supplied; Appendix A transcribed into a snapshot) | **in term to 2027-06-30** |
+  | greenburgh-central | **GTF 2024-2028** (Google Site; grids in a digital MOA) | **in term to 2028-06-30** |
+  | ossining | **OTA 2025-2029** (Google Site; digital pdf) | **in term to 2029-06-30** |
   | port-chester-rye | **PCTA_Contract_20232027** (operator-supplied; Appendix A transcribed into a snapshot) | **in term to 2027-06-30** |
 
-  So for four districts the salary-schedule gap is **acquisition, not
-  extraction**. Peekskill is the opposite and the best next target: a current
+  **All eight districts now hold a teacher agreement.** The acquisition gap that
+  opened this work is closed; what remains per district is currency, not
+  absence. Peekskill is the opposite and the best next target: a current
   teacher salary schedule is already ingested and has never been extracted.
 
 * **Contract currency is now stated, not assumed**:
@@ -1405,8 +1406,56 @@ this month is the thing worth writing about. Neither is optional to goal B.
    scope statement above does not yet reflect. Do not restate White Plains as
    "expired 2026-06-30" until that is resolved.
 
-   **Ossining's current agreement is not published anywhere public** (checked
-   2026-09-12). Both seeded URLs are hard 404s, and they are genuine server
+   **CORRECTED 2026-09-17 — Ossining's current agreement IS public.** The OTA
+   contract for **July 1 2025 – June 30 2029** is published on a *Google Site*,
+   `sites.google.com/ossiningufsd.org/ossiningteachersassociation/contract-2025-2029`,
+   with the PDF as a Drive file. The `uc?export=download&id=1EbVVnzSeuND...`
+   form returns bytes identical to an operator-supplied copy (sha256 verified)
+   and is seeded. It is **digital** — 156,506 chars of text, 32 tables, zero
+   image-only pages — so it needs neither OCR nor a snapshot: crawl-contracts →
+   ingest → extract handles it.
+
+   67 pages and **12 salary grids**: OTA 2025-26 through 2028-29 (BA / BA+15 /
+   MA / MA+15 / MA+30 / MA+45 / MA+60 / DOC), plus Clinician/Counselor and OT/PT
+   schedules for the same four years. BA step 1 in 2025-26 is $64,121.
+
+   The lesson for coverage work: **check Google Sites before concluding a
+   district publishes nothing.** Every check below was sound and every one
+   missed it, because the district's own navigation does not link it.
+
+   It generalizes. Greenburgh's current GTF agreement (2024-2028) is published
+   the same way — `greenburghteachers.com/contract`, a Google Site with Drive
+   embeds — and was missed by the same checks. Five files there; the one that
+   matters is `2024-2028_Steps_Lanes_Rates_MOA.pdf`, **digital**, holding all
+   four annual grids, so Greenburgh needs no OCR either. Its full "CBA with
+   Appendices" (86pp) and the 9pp MOA are scans carrying prose rather than
+   grids — OCR those only if the prose is wanted.
+
+   **Elmsford is a third kind of unreadable, and the most dangerous.** Its
+   2024-2027 agreement (current) is a scan carrying an OCR text layer that is
+   *wrong about numbers*: `$75,039` reads as `375,038`, `$86,153` as `$36,153`,
+   `$101,153` as `S101, 153.00:`. `extract_pdf` also finds **0 tables** in it, so
+   the grids never become candidates — accidentally protective, since the
+   alternative was loading fabricated salaries. Neither `no_text` nor
+   `ocr --engine partial` catches it, because the pages *have* text; it is just
+   false. The grids are transcribed from the page images into
+   `data/snapshots/elmsford-contract-2024-2027.jsonl.gz` (411 cells, 2.5 KB) and
+   the prose ingests normally — OCR noise is survivable in prose and not in a
+   salary.
+
+   Its five audit flags are **real**: in the 2025-26 schedule steps 19 and 20
+   were left at their 2024-25 values for every lane except ED D while step 18
+   was uprated, so 18 → 19 dips. A defect in the printed contract, kept verbatim.
+
+   **Mount Vernon: do not OCR the 2019-2023 teachers-unit CBA.** It is a 67-page
+   scan, expired, *and* superseded — the Board ratified a successor covering
+   teachers, teaching assistants and security monitors in May 2026. The district
+   contracts page is already seeded; the new agreement should arrive that way.
+
+   The superseded finding, kept because its negative results still hold — those
+   hosts really are dead ends:
+   **Ossining's current agreement is not published on the obvious hosts**
+   (checked 2026-09-12). Both seeded URLs are hard 404s, and they are genuine server
    answers, not bot filtering — the site root returns 200 from the same client.
    The district's navigation no longer has a Teachers Association page at all;
    `/departments/human-resources` lists only Employment Opportunities and an

@@ -119,6 +119,16 @@ headings, or surrounding context: one of "teacher", "administrator", \
 "food_service", "transportation", or "other". If it is clearly a teacher \
 schedule or you cannot tell, use "teacher".
 
+One association often covers SEVERAL job families, each with its own schedule \
+on the same step axis — a teachers' association contract may carry separate \
+grids for clinicians, counselors, psychologists, social workers, nurses, and \
+occupational/physical therapists. Those are NOT "teacher": use "nurse" for \
+nursing and "other" for the rest, even though the same union negotiated them \
+and the lane headers look similar. Reserve "teacher" for the classroom-teacher \
+grid. This matters because a row is keyed on (unit, pay basis, year, lane, \
+step): label a clinician grid "teacher" and its MA+30 column overwrites the \
+real teacher salary for that cell.
+
 Output ONLY a JSON object, no prose and no code fences:
 
 {
@@ -343,8 +353,25 @@ def build_salary_rows(
         # Education-lane normalization only makes sense for teachers; other
         # units' columns are titles/grades, kept verbatim in lane_raw and as
         # the lane itself so their grids don't all collapse to 'other'.
-        lane = (normalize_lane(lane_raw, district_slug=district_slug, crosswalk=crosswalk)
-                if unit == "teacher" else lane_raw)
+        #
+        # A teacher table gets the same protection for any header normalization
+        # does NOT recognize. 'other' is a verdict ("I won't guess a canonical
+        # lane"), not an identity, and storing it as the lane makes every
+        # unrecognized header in a grid the SAME lane — so they collide on the
+        # upsert key and all but one are lost. Greenburgh publishes teacher
+        # lanes and six teaching-assistant tracks (TA, TAA, TAL1-3, TAPP) in one
+        # grid: as 'other' that is five columns destroyed. Verbatim they stay
+        # distinct, `lane_rank` still returns -1 so they are excluded from
+        # lane-ordering checks and cross-district rankings, and a query for a
+        # canonical lane still never matches them — exactly as before, minus the
+        # collision. Two headers that both normalize to a REAL lane can still
+        # collide (Ossining's "DOC" and "DOC + $3866"); `duplicate_cell` flags
+        # that, because there is no safe way to tell them apart here.
+        lane = lane_raw
+        if unit == "teacher":
+            canonical = normalize_lane(lane_raw, district_slug=district_slug,
+                                       crosswalk=crosswalk)
+            lane = lane_raw if canonical == "other" else canonical
         basis = str(r.get("pay_basis") or "").strip().lower()
         if basis not in _VALID_PAY_BASIS:
             basis = "annual"
