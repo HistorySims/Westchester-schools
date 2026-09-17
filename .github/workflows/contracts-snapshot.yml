@@ -22,7 +22,13 @@ name: contracts-snapshot
 #
 # After this, run:  extract  (district: port-chester-rye, doc_type: contract)
 #
-# Regenerate the snapshot:  uv run python scripts/build_pcta_snapshot.py
+# Two snapshots exist; run this once per file. Port Chester's CBA is a pure
+# scan, Elmsford's is a scan whose OCR text layer is wrong about numbers -
+# both unreachable by ocr --engine vision because neither has a fetchable URL
+# for a scrape artifact to hold.
+#
+# Regenerate:  uv run python scripts/build_pcta_snapshot.py
+#              uv run python scripts/build_elmsford_snapshot.py
 #
 # Required secrets: SUPABASE_DB_URL, VOYAGE_API_KEY
 
@@ -30,9 +36,12 @@ on:
   workflow_dispatch:
     inputs:
       snapshot:
-        description: "Snapshot file to import"
-        type: string
-        default: "data/snapshots/pcta-contract-2023-2027.jsonl.gz"
+        description: "Which transcribed contract to import"
+        type: choice
+        options:
+          - data/snapshots/pcta-contract-2023-2027.jsonl.gz
+          - data/snapshots/elmsford-contract-2024-2027.jsonl.gz
+        default: data/snapshots/pcta-contract-2023-2027.jsonl.gz
       district:
         description: "District to import (all = every district in the snapshot)"
         type: choice

@@ -232,3 +232,69 @@ def test_appendix_b_transcribes_every_position():
     assert n == 154
     # the club tiers are flat rates; each tier's amount is stated once
     assert [amount for _, amount, _ in mod.CLUB_TIERS] == ["1,751", "1,056", "876"]
+
+
+
+# ---- the Elmsford snapshot ---------------------------------------------
+
+ELMSFORD = Path("data/snapshots/elmsford-contract-2024-2027.jsonl.gz")
+
+
+def _elmsford_generator():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "build_elmsford_snapshot", Path("scripts/build_elmsford_snapshot.py")
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_elmsford_snapshot_is_a_current_contract_with_three_grids(tmp_path):
+    assert ELMSFORD.is_file()
+    with gzip.open(ELMSFORD, "rt", encoding="utf-8") as fh:
+        recs = [json.loads(line) for line in fh if line.strip()]
+    assert len(recs) == 1 and recs[0]["district"] == "elmsford"
+    # the term must be in the title, so the citation reads "in term through"
+    assert "2024-2027" in recs[0]["title"]
+
+    out, _ = _import(tmp_path, recs)
+    doc = extract_html(next(Path(out).rglob("*.html")))
+    assert len(doc.tables) == 3
+    for t, year in zip(doc.tables, ("2024/25", "2025/26", "2026/27"), strict=True):
+        assert year in t.label
+
+
+def test_elmsford_transcription_matches_the_printed_grid():
+    """411 cells; the BA lane ends at step 17 and the five dips are real."""
+    from herald.extract_schools import audit_salary
+    from herald.schools_db import SalaryScheduleRow
+    from herald.taxonomy import normalize_lane
+
+    mod = _elmsford_generator()
+    rows = []
+    for year, grid in mod.GRIDS.items():
+        assert len(grid) == 20, year
+        for r in grid:
+            for lane, salary in zip(mod.LANES, r[1:], strict=True):
+                if salary is None:
+                    continue          # $0.00 printed = empty cell, not a salary
+                rows.append(("elmsford", SalaryScheduleRow(
+                    school_year=year, lane=normalize_lane(lane), lane_raw=lane,
+                    step=r[0], years_service=None, is_longevity=False,
+                    salary=float(salary), bargaining_unit="teacher")))
+    assert len(rows) == 411
+    # BA runs 1-17 in all three years; every other lane runs 1-20
+    ba = [r for _, r in rows if r.lane == "BA"]
+    assert len(ba) == 3 * 17 and max(r.step for r in ba) == 17
+    # "ED D" is the doctorate lane
+    assert any(r.lane == "Doctorate" for _, r in rows)
+
+    v = audit_salary(rows)
+    # Exactly the five real ones: 2025-26 steps 19-20 were left at their
+    # 2024-25 values for every lane but ED D, while step 18 was uprated.
+    assert {x.kind for x in v} == {"salary_non_monotonic"}
+    assert len(v) == 5, [x.detail for x in v]
+    assert all("2025-26" in x.detail and "step 18" in x.detail for x in v)
