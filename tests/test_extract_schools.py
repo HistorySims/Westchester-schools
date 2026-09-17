@@ -477,6 +477,39 @@ def test_the_prompt_separates_job_families_inside_one_association():
     assert "occupational/physical therapists" in EXTRACT_SYSTEM
     assert "overwrites the real" in EXTRACT_SYSTEM
 
+
+def test_unrecognized_teacher_lanes_stay_distinct_instead_of_all_becoming_other():
+    # Greenburgh's 2024-2028 grid carries eight teacher lanes and six teaching-
+    # assistant tracks in ONE table. Stored as 'other' the six share a key and
+    # five are lost; verbatim they survive.
+    data = {"table_kind": "salary", "bargaining_unit": "teacher", "salary_rows": [
+        {"lane_raw": lane, "step": 1, "salary": amount, "school_year": "2024-25"}
+        for lane, amount in [("BA", 60_700), ("PHD", 81_143), ("TA", 28_640),
+                             ("TAA", 29_565), ("TAL1", 27_712), ("TAPP", 30_183)]
+    ]}
+    rows, _ = build_salary_rows(data, district_slug="greenburgh-central",
+                                crosswalk={}, page=1, fallback_year=None)
+    lanes = [r.lane for r in rows]
+    assert lanes == ["BA", "Doctorate", "TA", "TAA", "TAL1", "TAPP"]
+    assert len(set(lanes)) == len(lanes), "collapsed lanes would collide on write"
+    # No collision. The assistant rows DO trip the teacher salary floor, and
+    # that flag is wanted: it is the audit asking why rows paid like aides are
+    # labelled 'teacher', which is the right question for a mixed-unit grid.
+    kinds = {x.kind for x in audit_salary([("greenburgh-central", r) for r in rows])}
+    assert kinds == {"salary_out_of_bounds"}
+    assert "duplicate_cell" not in kinds
+
+
+def test_a_recognized_lane_still_normalizes():
+    data = {"table_kind": "salary", "bargaining_unit": "teacher", "salary_rows": [
+        {"lane_raw": "BA15", "step": 1, "salary": 62_923, "school_year": "2024-25"},
+        {"lane_raw": "MA 30", "step": 1, "salary": 74_753, "school_year": "2024-25"},
+    ]}
+    rows, _ = build_salary_rows(data, district_slug="greenburgh-central",
+                                crosswalk={}, page=1, fallback_year=None)
+    assert [r.lane for r in rows] == ["BA+15", "MA+30"]
+    assert [r.lane_raw for r in rows] == ["BA15", "MA 30"]
+
 def test_upsert_stipend_sql_shape_and_mark():
     cur = _RecCursor()
     row = StipendScheduleRow(position="Head Coach", position_raw="Head Coach",

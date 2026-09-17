@@ -828,13 +828,13 @@ What this corpus can be trusted to answer, as of 2026-09-05:
   | peekskill | PFA Agreement 2023-2026, plus standalone `TCH Salary Schedule 2025-2026` | expired 2026-06-30; **the salary schedule is current** |
   | tarrytowns | Tarrytown-TAT-2022-2025 | expired 2025-06-30 |
   | white-plains | WPTA2022-2026 | expired 2026-06-30 |
-  | mount-vernon | MVFT Teacher Unit MOA (+ a 2019-2021 MOA) | memoranda, not a full CBA |
+  | mount-vernon | MVFT Teacher Unit MOA; full 2019-2023 CBA exists as a scan | superseded — a successor was ratified May 2026 |
   | elmsford | none | — |
-  | greenburgh-central | none | — |
+  | greenburgh-central | **GTF 2024-2028** (Google Site; grids in a digital MOA) | **in term to 2028-06-30** |
   | ossining | **OTA 2025-2029** (Google Site; digital pdf) | **in term to 2029-06-30** |
   | port-chester-rye | **PCTA_Contract_20232027** (operator-supplied; Appendix A transcribed into a snapshot) | **in term to 2027-06-30** |
 
-  So for three districts the salary-schedule gap is **acquisition, not
+  So for one district — Elmsford — the salary-schedule gap is **acquisition, not
   extraction**. Peekskill is the opposite and the best next target: a current
   teacher salary schedule is already ingested and has never been extracted.
 
@@ -1421,6 +1421,19 @@ this month is the thing worth writing about. Neither is optional to goal B.
    The lesson for coverage work: **check Google Sites before concluding a
    district publishes nothing.** Every check below was sound and every one
    missed it, because the district's own navigation does not link it.
+
+   It generalizes. Greenburgh's current GTF agreement (2024-2028) is published
+   the same way — `greenburghteachers.com/contract`, a Google Site with Drive
+   embeds — and was missed by the same checks. Five files there; the one that
+   matters is `2024-2028_Steps_Lanes_Rates_MOA.pdf`, **digital**, holding all
+   four annual grids, so Greenburgh needs no OCR either. Its full "CBA with
+   Appendices" (86pp) and the 9pp MOA are scans carrying prose rather than
+   grids — OCR those only if the prose is wanted.
+
+   **Mount Vernon: do not OCR the 2019-2023 teachers-unit CBA.** It is a 67-page
+   scan, expired, *and* superseded — the Board ratified a successor covering
+   teachers, teaching assistants and security monitors in May 2026. The district
+   contracts page is already seeded; the new agreement should arrive that way.
 
    The superseded finding, kept because its negative results still hold — those
    hosts really are dead ends:
