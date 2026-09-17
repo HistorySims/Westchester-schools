@@ -114,7 +114,11 @@ def load_crosswalk(path: str | Path) -> dict[tuple[str | None, str], str]:
 # The lookahead `(?=\d|\b)` accepts the plus-less notation real contracts use
 # ("MA30", "BA15" — Tarrytown's Appendix A) as well as "MA+30"/"MA 30", while
 # still refusing to match inside an ordinary word like "March".
-_DOCTORATE = re.compile(r"doctor|ph\.?\s*d|ed\.?\s*d|\bdr\b", re.I)
+# `\bdoc\b` because Ossining heads its doctorate column exactly "DOC" (OTA
+# 2025-2029 Appendix III). Without it the whole column fell to 'other', which is
+# worse than a wrong lane: 'other' is the bucket every unrecognized header lands
+# in, so two different columns in one grid collide there and overwrite.
+_DOCTORATE = re.compile(r"doctor|ph\.?\s*d|ed\.?\s*d|\bdr\b|\bdoc\b", re.I)
 _MASTER = re.compile(r"master|m\.?\s*a(?=\d|\b)|\bms\b|\bm\b|m\s*\+", re.I)
 _BACHELOR = re.compile(r"bachelor|b\.?\s*a(?=\d|\b)|\bbs\b|\bb\b|b\s*\+", re.I)
 _CREDITS = re.compile(r"(\d{2})")

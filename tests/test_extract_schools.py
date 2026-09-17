@@ -453,6 +453,30 @@ def test_two_bases_for_one_cell_are_not_a_duplicate():
             ("white-plains", _sr(step=1, salary=66.0, pay_basis="hourly"))]
     assert [x.kind for x in audit_salary(rows)] == []
 
+
+def test_doc_is_the_doctorate_lane():
+    # Ossining heads its doctorate column "DOC" (OTA 2025-2029 Appendix III).
+    # Falling to 'other' is worse than a wrong lane: 'other' is where every
+    # unrecognized header lands, so two columns collide there and overwrite.
+    from herald.taxonomy import normalize_lane
+
+    assert normalize_lane("DOC") == "Doctorate"
+    assert normalize_lane("Doc.") == "Doctorate"
+    # and it must not swallow ordinary words
+    assert normalize_lane("document") == "other"
+    assert normalize_lane("dock") == "other"
+
+
+def test_the_prompt_separates_job_families_inside_one_association():
+    # A teachers' association contract carries clinician, counselor and OT/PT
+    # grids on the same step axis; labelling them "teacher" overwrites the real
+    # teacher salaries cell for cell.
+    from herald.extract_schools import EXTRACT_SYSTEM
+
+    assert "clinicians" in EXTRACT_SYSTEM
+    assert "occupational/physical therapists" in EXTRACT_SYSTEM
+    assert "overwrites the real" in EXTRACT_SYSTEM
+
 def test_upsert_stipend_sql_shape_and_mark():
     cur = _RecCursor()
     row = StipendScheduleRow(position="Head Coach", position_raw="Head Coach",

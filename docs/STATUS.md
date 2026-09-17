@@ -831,10 +831,10 @@ What this corpus can be trusted to answer, as of 2026-09-05:
   | mount-vernon | MVFT Teacher Unit MOA (+ a 2019-2021 MOA) | memoranda, not a full CBA |
   | elmsford | none | — |
   | greenburgh-central | none | — |
-  | ossining | none (both seeds dead — item 10) | — |
+  | ossining | **OTA 2025-2029** (Google Site; digital pdf) | **in term to 2029-06-30** |
   | port-chester-rye | **PCTA_Contract_20232027** (operator-supplied; Appendix A transcribed into a snapshot) | **in term to 2027-06-30** |
 
-  So for four districts the salary-schedule gap is **acquisition, not
+  So for three districts the salary-schedule gap is **acquisition, not
   extraction**. Peekskill is the opposite and the best next target: a current
   teacher salary schedule is already ingested and has never been extracted.
 
@@ -1405,8 +1405,27 @@ this month is the thing worth writing about. Neither is optional to goal B.
    scope statement above does not yet reflect. Do not restate White Plains as
    "expired 2026-06-30" until that is resolved.
 
-   **Ossining's current agreement is not published anywhere public** (checked
-   2026-09-12). Both seeded URLs are hard 404s, and they are genuine server
+   **CORRECTED 2026-09-17 — Ossining's current agreement IS public.** The OTA
+   contract for **July 1 2025 – June 30 2029** is published on a *Google Site*,
+   `sites.google.com/ossiningufsd.org/ossiningteachersassociation/contract-2025-2029`,
+   with the PDF as a Drive file. The `uc?export=download&id=1EbVVnzSeuND...`
+   form returns bytes identical to an operator-supplied copy (sha256 verified)
+   and is seeded. It is **digital** — 156,506 chars of text, 32 tables, zero
+   image-only pages — so it needs neither OCR nor a snapshot: crawl-contracts →
+   ingest → extract handles it.
+
+   67 pages and **12 salary grids**: OTA 2025-26 through 2028-29 (BA / BA+15 /
+   MA / MA+15 / MA+30 / MA+45 / MA+60 / DOC), plus Clinician/Counselor and OT/PT
+   schedules for the same four years. BA step 1 in 2025-26 is $64,121.
+
+   The lesson for coverage work: **check Google Sites before concluding a
+   district publishes nothing.** Every check below was sound and every one
+   missed it, because the district's own navigation does not link it.
+
+   The superseded finding, kept because its negative results still hold — those
+   hosts really are dead ends:
+   **Ossining's current agreement is not published on the obvious hosts**
+   (checked 2026-09-12). Both seeded URLs are hard 404s, and they are genuine server
    answers, not bot filtering — the site root returns 200 from the same client.
    The district's navigation no longer has a Teachers Association page at all;
    `/departments/human-resources` lists only Employment Opportunities and an

@@ -119,6 +119,16 @@ headings, or surrounding context: one of "teacher", "administrator", \
 "food_service", "transportation", or "other". If it is clearly a teacher \
 schedule or you cannot tell, use "teacher".
 
+One association often covers SEVERAL job families, each with its own schedule \
+on the same step axis — a teachers' association contract may carry separate \
+grids for clinicians, counselors, psychologists, social workers, nurses, and \
+occupational/physical therapists. Those are NOT "teacher": use "nurse" for \
+nursing and "other" for the rest, even though the same union negotiated them \
+and the lane headers look similar. Reserve "teacher" for the classroom-teacher \
+grid. This matters because a row is keyed on (unit, pay basis, year, lane, \
+step): label a clinician grid "teacher" and its MA+30 column overwrites the \
+real teacher salary for that cell.
+
 Output ONLY a JSON object, no prose and no code fences:
 
 {
