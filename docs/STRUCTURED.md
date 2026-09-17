@@ -283,6 +283,46 @@ run over the transcribed cells before committing. It is the same wall-of-numbers
 problem the audit was written for, and it is why `scripts/build_pcta_snapshot.py`
 keeps the grids as data rather than as pre-rendered HTML.
 
+### Pay basis: one unit, several schedules, one set of axes
+
+The first real extract (2026-09-13) found the structural fault that 0005 had
+only half-solved. 0005 learned that a custodial grid and a teacher grid collide
+on `(year, lane, step)` and added the bargaining unit to the key. The other half
+is that a district publishes **several schedules for the same unit** on the same
+axes, measuring different things:
+
+| document | BA step 1 |
+|---|---|
+| White Plains `2022-2026 Salary Schedule` | $61,713 **per year** |
+| White Plains `2022-2026 Summer School Salary Schedule` | $66 **per hour** |
+
+Both are `teacher` rows for `(2023-24, BA, 1)`. Under 0005's key one silently
+overwrote the other, and the hourly rate won — the corpus held **$66 as a White
+Plains teacher's salary**. Tarrytown showed the same shape with longevity
+increments (`other` step 18 = $2,700) stored as salaries.
+
+Nothing here was a misread: the model read every grid correctly. The fault was
+that `salary_schedule` had nowhere to record *what the number measures*, so two
+correct readings destroyed each other.
+
+Migration 0008 adds `pay_basis` — `annual` (default), `hourly`, `daily`,
+`per_session`, `increment` — and puts it in the uniqueness key. Three things
+follow:
+
+* `EXTRACT_SYSTEM` asks for it, and says the quiet part: a rate table is still
+  titled "Salary Schedule" and still laid out on lane and step, so the title and
+  the magnitude are the signals. A grid of two-digit figures is an hourly rate.
+* The analytical queries filter `pay_basis = 'annual'`. Without that, "highest
+  MA step 3 salary" could answer **$70**.
+* The `$30k–$250k` sanity band judges annual rows only. An hourly rate and a
+  longevity increment are legitimately far below it, and flagging them was the
+  noise that made one structural fault look like 600 ordinary dips.
+
+**Re-extract after applying 0008.** The migration defaults existing rows to
+`annual`, which is right for most and wrong for exactly the rows that caused the
+problem — it cannot know better. Delete the affected district's salary rows and
+re-run `extract --reextract` so both bases land under their own keys.
+
 ### Two ordering bugs that made a limited run lie
 
 Both were invisible: the audit came back empty and looked like an answer.

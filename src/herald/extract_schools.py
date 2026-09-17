@@ -94,6 +94,7 @@ CANDIDATE_KEYWORDS = (
 )
 
 _VALID_BASIS = {"flat", "range", "percent_of_base"}
+_VALID_PAY_BASIS = {"annual", "hourly", "daily", "per_session", "increment"}
 
 #: Audit flags listed individually in the report before it truncates.
 AUDIT_DETAIL_LIMIT = 100
@@ -128,6 +129,7 @@ Output ONLY a JSON object, no prose and no code fences:
   "salary_rows": [
     {"school_year": "2024-25" or null, "lane_raw": "<column header, verbatim>",
      "step": <int>, "years_service": <int or null>, "is_longevity": <bool>,
+     "pay_basis": "annual"|"hourly"|"daily"|"per_session"|"increment",
      "salary": <number>}
   ],
   "stipend_rows": [
@@ -144,6 +146,20 @@ Rules:
 - Numbers are plain: no "$", no commas, no "%". 87,432 → 87432.
 - lane_raw: copy the column header EXACTLY; do NOT normalize it (that happens \
 downstream). One salary row per filled (lane, step) cell.
+- pay_basis: what the figure MEASURES, not how big it is. "annual" is a yearly \
+salary and is the default. Use "hourly", "daily" or "per_session" when the table \
+is a rate table — a SUMMER SCHOOL, per-diem, tutoring, home-teaching or \
+extra-session schedule — even when it is titled "Salary Schedule" and laid out \
+on the same lane/step axes as the annual grid. Use "increment" when the figure \
+is an AMOUNT ADDED to a salary rather than a salary: longevity or service \
+increments ("$2,500 after 25 years"), differentials, stipend-like add-ons \
+printed inside a salary grid. Two signals settle it fast: the title (does it say \
+summer school, hourly, per diem, longevity?) and the magnitude — a full-time \
+annual teacher salary is tens of thousands, so a grid of two-digit figures is an \
+hourly rate and a grid of low four-digit figures next to a real schedule is an \
+increment. Getting this wrong is worse than skipping the table: a district \
+publishes several schedules on the SAME lane and step axes, so a misclassified \
+row overwrites the real salary for that cell.
 - step: the step/row label as printed. years_service: only when the schedule \
 states years of service separately from the step number; else null.
 - is_longevity: true for longevity rows ("after 15 years", "15/20/25 longevity").
@@ -329,6 +345,9 @@ def build_salary_rows(
         # the lane itself so their grids don't all collapse to 'other'.
         lane = (normalize_lane(lane_raw, district_slug=district_slug, crosswalk=crosswalk)
                 if unit == "teacher" else lane_raw)
+        basis = str(r.get("pay_basis") or "").strip().lower()
+        if basis not in _VALID_PAY_BASIS:
+            basis = "annual"
         rows.append(SalaryScheduleRow(
             school_year=sy,
             lane=lane,
@@ -338,6 +357,7 @@ def build_salary_rows(
             is_longevity=_bool(r.get("is_longevity")),
             salary=salary,
             bargaining_unit=unit,
+            pay_basis=basis,
             page=page,
             notes=None if sy_read else "school_year inferred from document title/date",
         ))
@@ -405,7 +425,7 @@ def audit_salary(rows: list[tuple[str, SalaryScheduleRow]]) -> list[AuditViolati
     by_dup: dict[tuple, list[SalaryScheduleRow]] = defaultdict(list)
     for slug, r in rows:
         u = r.bargaining_unit
-        by_dup[(slug, u, r.school_year, r.lane, r.step)].append(r)
+        by_dup[(slug, u, r.pay_basis, r.school_year, r.lane, r.step)].append(r)
         by_lane[(slug, u, r.school_year, r.lane)].append(r)
         # Lane ordering is an education-lane invariant — only teacher lanes rank.
         if lane_rank(r.lane) >= 0:
@@ -420,7 +440,9 @@ def audit_salary(rows: list[tuple[str, SalaryScheduleRow]]) -> list[AuditViolati
     # 600-odd ordinary dips and buried the one finding that means the stored
     # figure may be wrong. Measured 2026-09-13 on White Plains, whose schedule
     # spans several table chunks that each re-emit the same lanes and steps.
-    for (slug, _u, sy, lane, step), rs in sorted(by_dup.items(), key=lambda kv: str(kv[0])):
+    for (slug, _u, _b, sy, lane, step), rs in sorted(
+        by_dup.items(), key=lambda kv: str(kv[0])
+    ):
         salaries = sorted({r.salary for r in rs})
         if len(salaries) > 1:
             shown = ", ".join(f"${x:,.0f}" for x in salaries)
@@ -454,6 +476,12 @@ def audit_salary(rows: list[tuple[str, SalaryScheduleRow]]) -> list[AuditViolati
                     f"{b.school_year} ${b.salary:,.0f}"))
 
     for slug, r in rows:
+        # The band is an ANNUAL band. An hourly rate ($66) or a longevity
+        # increment ($2,700) is legitimately far below it, and flagging those
+        # was the noise that made the White Plains misclassification look like
+        # 600 ordinary dips instead of one structural fault.
+        if r.pay_basis != "annual":
+            continue
         if r.salary < salary_floor(r.bargaining_unit) or r.salary > SALARY_MAX:
             v.append(AuditViolation("salary_out_of_bounds", slug,
                 f"{r.school_year} {r.lane} step {r.step} ({r.bargaining_unit}): "

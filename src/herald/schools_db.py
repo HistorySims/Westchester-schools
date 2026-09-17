@@ -85,6 +85,11 @@ class SalaryScheduleRow:
     is_longevity: bool
     salary: float
     bargaining_unit: str = "teacher"
+    #: What the figure MEASURES. A district publishes several schedules for one
+    #: unit on the same lane/step axes — an annual grid, a summer-school hourly
+    #: rate, a longevity increment — and they are not interchangeable. Part of
+    #: the uniqueness key since 0008; the analytical path filters to 'annual'.
+    pay_basis: str = "annual"
     page: int | None = None
     notes: str | None = None
 
@@ -264,22 +269,23 @@ def upsert_salary(
     document_id: UUID,
     rows: list[SalaryScheduleRow],
 ) -> int:
-    """Upsert salary rows. Idempotent on (district, unit, year, lane, step)."""
+    """Upsert salary rows. Idempotent on (district, unit, basis, year, lane, step)."""
     if not rows:
         return 0
     params = [
-        (district_id, document_id, r.page, r.bargaining_unit, r.school_year,
-         r.lane, r.lane_raw, r.step, r.years_service, r.is_longevity, r.salary,
-         r.notes)
+        (district_id, document_id, r.page, r.bargaining_unit, r.pay_basis,
+         r.school_year, r.lane, r.lane_raw, r.step, r.years_service,
+         r.is_longevity, r.salary, r.notes)
         for r in rows
     ]
     cur.executemany(
         """
         insert into salary_schedule
-            (district_id, document_id, page, bargaining_unit, school_year, lane,
-             lane_raw, step, years_service, is_longevity, salary, notes)
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        on conflict (district_id, bargaining_unit, school_year, lane, step)
+            (district_id, document_id, page, bargaining_unit, pay_basis,
+             school_year, lane, lane_raw, step, years_service, is_longevity,
+             salary, notes)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        on conflict (district_id, bargaining_unit, pay_basis, school_year, lane, step)
         do update set
             document_id   = excluded.document_id,
             page          = excluded.page,

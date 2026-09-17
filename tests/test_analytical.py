@@ -189,6 +189,27 @@ def test_a_non_contract_source_gets_no_currency_verdict():
     assert "term not stated" not in md
 
 
+def test_salary_queries_exclude_non_annual_pay():
+    """White Plains' summer-school hourly rates share the lane/step axes with its
+    annual grid; a query for "MA step 3 salary" must never return $66/hour."""
+    for dec in (
+        RouterDecision("analytical", "max_at_step", {"lane": "MA", "step": 3}),
+        RouterDecision("analytical", "step_slope",
+                       {"lane": "MA", "step_from": 1, "step_to": 10}),
+        RouterDecision("analytical", "delta_over_years", {"lane": "MA", "step": 3}),
+    ):
+        cur = _Cur([SLUGS, []])
+        run_query(cur, dec)
+        salary_sql = [s for s, _ in cur.sqls if "from salary_schedule" in s]
+        assert salary_sql, dec.query
+        assert all("pay_basis = 'annual'" in s for s in salary_sql), dec.query
+
+
+def test_the_answer_says_the_figures_are_annual():
+    md = render_markdown(_max_at_step_result("TAT 2024-2028.pdf"), on=_ON)
+    assert "annual salaries" in md
+
+
 def test_supported_queries_constant():
     assert set(analytical.SUPPORTED_QUERIES) == {
         "step_slope", "max_at_step", "stipend_compare", "delta_over_years",
