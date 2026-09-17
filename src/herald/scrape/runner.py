@@ -71,7 +71,26 @@ class ScrapeStats:
         self.by_type[doc_type] = self.by_type.get(doc_type, 0) + 1
 
 
-def _guess_ext(content_type: str | None) -> str:
+#: Leading bytes that identify a format regardless of what the server claims.
+_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"%PDF", ".pdf"),
+    (b"{\\rtf", ".rtf"),
+)
+
+
+def _guess_ext(content_type: str | None, data: bytes = b"") -> str:
+    """Pick a file extension, trusting the BYTES over the server's claim.
+
+    Content-Type is an assertion; the magic number is a fact. Google Drive
+    serves a PDF as ``application/octet-stream``, which mapped to ``.bin`` — and
+    ingest dispatches on extension, so the file landed where PyMuPDF would not
+    open it. That is the "Greenburgh download saved as .bin" in
+    docs/STATUS.md's things-to-remember, and it would have swallowed the
+    Ossining and Greenburgh CBAs, both of which are seeded as Drive links.
+    """
+    for magic, ext in _MAGIC:
+        if data.startswith(magic):
+            return ext
     if not content_type:
         return ".bin"
     ct = content_type.split(";")[0].strip().lower()
@@ -135,10 +154,10 @@ def download_docs(
                 (e for e in manifest.entries() if e.sha256 == sha), None
             )
             local_path = Path(existing.local_path) if existing else store.write(
-                doc, data, default_ext=_guess_ext(content_type)
+                doc, data, default_ext=_guess_ext(content_type, data)
             )
         else:
-            local_path = store.write(doc, data, default_ext=_guess_ext(content_type))
+            local_path = store.write(doc, data, default_ext=_guess_ext(content_type, data))
 
         manifest.append(
             make_manifest_entry(

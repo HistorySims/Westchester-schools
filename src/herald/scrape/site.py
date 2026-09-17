@@ -164,6 +164,7 @@ def docs_from_seed(
     *,
     max_pages: int = 60,
     target_only: bool = True,
+    default_doc_type: DocType | None = None,
 ) -> list[ScrapedDoc]:
     """Resolve one CBA seed URL to documents.
 
@@ -171,9 +172,20 @@ def docs_from_seed(
     yields just that document — always kept, since we seeded it deliberately.
     Otherwise the seed is a page (an HR or union-site index) and we crawl its
     site for contract-type PDFs.
+
+    ``default_doc_type`` types a direct seed the classifier cannot read. A Drive
+    link carries no filename and no link text, so ``classify_link`` has nothing
+    to work with and the document lands as 'other' — invisible to
+    ``herald-extract --doc-type contract``, which is the whole point of seeding
+    it. The caller knows what the list is: ``cba_sources.json`` is a list of
+    collective bargaining agreements, so the contracts crawler passes
+    ``DocType.contract``. Only applied when the classifier abstains; a seed that
+    reads clearly as something else keeps what it says.
     """
     direct = _as_document(seed, "", district, target_only=False)
     if direct is not None:
+        if default_doc_type is not None and direct.doc_type is DocType.other:
+            direct = direct.model_copy(update={"doc_type": default_doc_type})
         return [direct]
     return list(crawl_site(
         fetcher, base_url=seed, district=district,

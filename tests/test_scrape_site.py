@@ -200,3 +200,27 @@ def test_crawl_site_respects_page_cap(httpx_mock):
     # never fetches more page requests than the cap (sitemap probe excluded)
     page_reqs = [r for r in httpx_mock.get_requests() if "sitemap" not in str(r.url)]
     assert len(page_reqs) <= 5
+
+
+def test_a_drive_seed_is_typed_as_a_contract_by_the_cba_crawler():
+    """A Drive link has no filename and no link text, so classify_link abstains
+    and the doc lands as 'other' — invisible to extract --doc-type contract,
+    which is the entire reason it was seeded. cba_sources.json says what it is.
+    """
+    from herald.scrape.models import DocType
+
+    url = "https://drive.google.com/uc?export=download&id=1EbVVnzSeuNDUFoD9MnPT0_Sg"
+    plain = docs_from_seed(None, url, "ossining")
+    assert plain[0].doc_type is DocType.other
+
+    typed = docs_from_seed(None, url, "ossining", default_doc_type=DocType.contract)
+    assert typed[0].doc_type is DocType.contract
+
+
+def test_a_seed_the_classifier_does_read_keeps_its_own_type():
+    from herald.scrape.models import DocType
+
+    url = "https://example.test/Student-Handbook-2024.pdf"
+    docs = docs_from_seed(None, url, "ossining", default_doc_type=DocType.contract)
+    assert docs[0].doc_type is not DocType.other
+    assert docs[0].doc_type is not DocType.contract

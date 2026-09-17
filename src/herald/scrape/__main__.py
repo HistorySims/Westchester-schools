@@ -447,6 +447,8 @@ def contracts(
     crawl + direct CBA PDF URLs) and downloads contract-type documents into the
     same raw store + manifest the normal ingest consumes.
     """
+    from herald.scrape.models import DocType
+
     raw = json.loads(Path(sources).read_text(encoding="utf-8"))
     src = raw.get("sources", raw)
     wanted = {s.strip() for s in (only or "").split(",") if s.strip()} or None
@@ -469,6 +471,7 @@ def contracts(
                 try:
                     collected.extend(
                         docs_from_seed(f, seed, slug, max_pages=max_pages,
+                                       default_doc_type=DocType.contract,
                                        target_only=not all_pdfs)
                     )
                 except Exception as exc:  # one bad seed shouldn't sink the district
