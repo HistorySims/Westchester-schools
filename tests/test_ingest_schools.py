@@ -543,6 +543,33 @@ def test_fetch_pdf_tables_primes_boarddocs_session(tmp_path):
 
 # ---- SQL shapes ----------------------------------------------------------
 
+def test_find_or_insert_document_falls_back_when_conflict_upgrades_nothing():
+    # The do-update carries a WHERE, so a conflict on a row that needs no
+    # doc_type upgrade returns no row at all. The stored row still has to come
+    # back — with its real ingest_status, or the caller re-ingests what is
+    # already in the corpus.
+    class NoUpgradeCursor:
+        def __init__(self):
+            self.sql: list[str] = []
+            self._fetch = None
+
+        def execute(self, sql, params=None):
+            self.sql.append(" ".join(sql.split()))
+            self._fetch = None if "insert into documents" in self.sql[-1] else (
+                DOC_UUID, "ingested")
+
+        def fetchone(self):
+            return self._fetch
+
+    cur = NoUpgradeCursor()
+    doc_id, status = find_or_insert_document(
+        cur, district_id=DISTRICT_UUID, doc_type="contract", title="t",
+        source_url="u", sha256="b" * 64,
+    )
+    assert (doc_id, status) == (DOC_UUID, "ingested")
+    assert len(cur.sql) == 2 and cur.sql[1].startswith("select id, ingest_status")
+
+
 def test_schools_db_sql_shapes():
     conn = FakeConn()
     cur = conn.cursor()
@@ -553,6 +580,11 @@ def test_schools_db_sql_shapes():
         source_url="u", sha256="a" * 64,
     )
     assert (doc_id, status) == (DOC_UUID, "pending")
+    doc_sql = next(sql for sql, _ in conn.calls if "insert into documents" in sql)
+    # a conflict keeps the stored row, except that 'other' takes a better type
+    assert "on conflict (district_id, sha256) do update" in doc_sql
+    assert "set doc_type = excluded.doc_type" in doc_sql
+    assert "where documents.doc_type = 'other' and excluded.doc_type <> 'other'" in doc_sql
     n = insert_chunks(cur, document_id=doc_id, district_id=did, rows=[
         SchoolChunkRow(chunk_index=0, section_path="P1", section_type="Call to Order",
                        heading="Call to Order", content="x" * 50, embedding=None,

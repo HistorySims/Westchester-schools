@@ -158,6 +158,15 @@ def find_or_insert_document(
     existing row carries — the caller skips rows already ``'ingested'``
     and retries the rest (their chunks were never committed: chunk insert
     and the ``'ingested'`` mark share one transaction).
+
+    A conflict keeps the stored row except for one upgrade: a row filed as
+    ``'other'`` takes the new record's ``doc_type`` when that one is more
+    specific. The same PDF can be reached first by a crawler that cannot
+    tell what it is (Google Drive serves ``application/octet-stream`` and no
+    filename) and later by one that can. Without this, the first, vaguer
+    sighting wins forever, and a contract stranded as ``'other'`` is
+    invisible to every ``--doc-type contract`` pass downstream — which is
+    exactly how the Ossining CBA went missing after it had in fact ingested.
     """
     cur.execute(
         """
@@ -165,7 +174,9 @@ def find_or_insert_document(
             (district_id, doc_type, title, source_url, sha256, size_bytes,
              content_type, local_path, committee, meeting_id, meeting_date, fetched_at)
         values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        on conflict (district_id, sha256) do nothing
+        on conflict (district_id, sha256) do update
+            set doc_type = excluded.doc_type
+            where documents.doc_type = 'other' and excluded.doc_type <> 'other'
         returning id, ingest_status
         """,
         (district_id, doc_type, title, source_url, sha256, size_bytes,
@@ -173,6 +184,8 @@ def find_or_insert_document(
     )
     row = cur.fetchone()
     if row is None:
+        # Conflict with nothing to upgrade: the do-update's WHERE filtered it
+        # out, so no row comes back and the stored one has to be read.
         cur.execute(
             "select id, ingest_status from documents where district_id = %s and sha256 = %s",
             (district_id, sha256),
