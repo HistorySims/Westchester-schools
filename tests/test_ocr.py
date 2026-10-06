@@ -259,6 +259,7 @@ def test_transcription_budget_is_generous_and_truncation_is_loud(tmp_path, caplo
     with caplog.at_level(logging.WARNING, logger="herald.ocr"):
         ocr_mod.ocr_pdf_vision(pdf, client=client, model="m", dpi=72)
 
+    assert client.messages.max_tokens is not None     # it was passed at all
     assert client.messages.max_tokens >= 32000        # real headroom
     assert any("truncated" in r.message for r in caplog.records)
 

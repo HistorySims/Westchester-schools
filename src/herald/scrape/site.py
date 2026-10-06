@@ -17,7 +17,7 @@ from urllib.parse import urljoin, urlsplit
 from bs4 import BeautifulSoup
 
 from herald.chunking import CONTRACT_WORDS
-from herald.scrape.core import Fetcher
+from herald.scrape.core import Fetcher, attr
 from herald.scrape.models import DocType, ScrapedDoc
 
 logger = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ def extract_links(html: str, *, base_url: str) -> list[tuple[str, str]]:
     soup = BeautifulSoup(html, "html.parser")
     out: list[tuple[str, str]] = []
     for a in soup.find_all("a", href=True):
-        href = a["href"].strip()
+        href = attr(a, "href").strip()
         if not href or href.startswith(("#", "mailto:", "javascript:", "tel:")):
             continue
         url = urljoin(base_url, href).split("#")[0]

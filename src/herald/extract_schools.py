@@ -27,6 +27,8 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
+from typing import LiteralString, cast
+from uuid import UUID
 
 import typer
 from rich.console import Console
@@ -253,9 +255,9 @@ def _candidate_sql(
 
 @dataclass(frozen=True)
 class Candidate:
-    chunk_id: object
-    document_id: object
-    district_id: object
+    chunk_id: UUID
+    document_id: UUID
+    district_id: UUID
     slug: str
     content: str
     section_path: str
@@ -786,8 +788,9 @@ def run(
     conn = schools_db.connect(db_url)
     cur = conn.cursor()
     cur.execute(
-        _candidate_sql(district=bool(district), limit=bool(limit),
-                       only_new=not reextract, doc_type=bool(doc_type)),
+        cast(LiteralString, _candidate_sql(district=bool(district), limit=bool(limit),
+                                           only_new=not reextract,
+                                           doc_type=bool(doc_type))),
         {"kw": CANDIDATE_KEYWORDS, "district": district, "limit": limit,
          "doc_type": doc_type},
     )

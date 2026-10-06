@@ -214,10 +214,11 @@ async def synthesize(
     max_tokens: int = DEFAULT_MAX_TOKENS,
 ) -> Answer:
     from anthropic import AsyncAnthropic
+    from anthropic.types import MessageParam
 
     client = AsyncAnthropic(api_key=api_key)
     user_prompt, ordered = build_user_prompt(panel)
-    messages = [{"role": "user", "content": user_prompt}]
+    messages: list[MessageParam] = [{"role": "user", "content": user_prompt}]
     in_tok = out_tok = 0
     for attempt in (1, 2):
         resp = await client.messages.create(

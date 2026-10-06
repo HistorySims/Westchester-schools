@@ -294,10 +294,16 @@ async def retrieve_panel(
     """
     qvec = await voyage.embed_query(question)
     cur = conn.cursor()
-    filters = dict(districts=districts, doc_type=doc_type,
-                   date_from=date_from, date_to=date_to)
-    sem = panel_semantic(cur, query_embedding=qvec, per_district=pool, **filters)
-    fts = panel_fts(cur, query=question, per_district=pool, **filters)
+    # Passed through explicitly rather than as a **filters dict: a dict built
+    # inline collapses to its union value type, so every filter arrives typed
+    # `list[str] | str | date | None` and a swapped pair of arguments would not
+    # be caught anywhere.
+    sem = panel_semantic(cur, query_embedding=qvec, per_district=pool,
+                         districts=districts, doc_type=doc_type,
+                         date_from=date_from, date_to=date_to)
+    fts = panel_fts(cur, query=question, per_district=pool,
+                    districts=districts, doc_type=doc_type,
+                    date_from=date_from, date_to=date_to)
     # keep the full fused pool per district for the reranker to sift
     fused = rrf_fuse_per_district(sem, fts, keep=pool)
 

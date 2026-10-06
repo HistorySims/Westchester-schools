@@ -21,8 +21,11 @@ import logging
 import os
 import re
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import LiteralString, cast
+from uuid import UUID
 
 import typer
 from rich.console import Console
@@ -34,6 +37,7 @@ from herald.html_text import extract_html
 from herald.office_text import extract_docx, extract_rtf
 from herald.pdf_text import (
     ExtractedDoc,
+    ExtractedText,
     TableBlock,
     extract_pdf,
     image_only_pages,
@@ -246,7 +250,7 @@ class _DocWork:
     doc_type: str
     page_count: int
     text_chars: int
-    document_id: object = None  # UUID when writing to the DB
+    document_id: UUID | None = None  # set only when writing to the DB
     replace: bool = False       # re-OCR: delete existing chunks before insert
 
 
@@ -284,10 +288,13 @@ async def ingest_manifests(
     from herald import schools_db
 
     stats = IngestStats()
-    districts: dict[str, object] = {}   # slug -> district UUID
+    districts: dict[str, UUID] = {}   # slug -> district UUID
     wave: list[_DocWork] = []
 
     def district_id(slug: str):
+        # Only ever called from the `conn is not None` branch of flush(); the
+        # closure hides that from the checker.
+        assert conn is not None
         if slug not in districts:
             with conn.transaction():
                 districts[slug] = schools_db.upsert_district(conn.cursor(), slug=slug)
@@ -299,10 +306,14 @@ async def ingest_manifests(
         all_chunks = [c for w in wave for c in w.chunks]
         vectors: list[list[float] | None] = [None] * len(all_chunks)
         if voyage is not None:
-            vectors = await voyage.embed_documents([embed_input(c) for c in all_chunks])
+            vectors = [*await voyage.embed_documents([embed_input(c) for c in all_chunks])]
         if conn is not None:
             i = 0
             for w in wave:
+                # Set by the writing path before the entry joins the wave; the
+                # dataclass default is None only for the dry run, which never
+                # reaches here.
+                assert w.document_id is not None
                 rows = []
                 for c in w.chunks:
                     rows.append(schools_db.SchoolChunkRow(
@@ -506,6 +517,7 @@ async def ingest_manifests(
                     # does nothing, so re-deriving tables is a no-op unless the
                     # old ones go first. Only the table chunks are cleared —
                     # prose keeps its embeddings, scores and clusters.
+                    assert doc_id is not None
                     with conn.cursor() as cur:
                         gone = schools_db.delete_document_table_chunks(
                             cur, document_id=doc_id
@@ -694,7 +706,7 @@ def init_db(
     # Raw connection: the schema creates the `vector` extension, so the
     # pgvector adapter can't be registered until *after* this runs.
     with schools_db.connect_raw(_db_url()) as conn:
-        conn.execute(sql)
+        conn.execute(cast(LiteralString, sql))
     console.print(f"[green]applied[/green] {schema}")
 
 
@@ -1011,8 +1023,8 @@ def tables_db(
     conn = schools_db.connect(_db_url())
     cur = conn.cursor()
     cur.execute(
-        _candidate_docs_sql(district=bool(district), only_missing=only_missing,
-                            limit=bool(limit)),
+        cast(LiteralString, _candidate_docs_sql(district=bool(district), only_missing=only_missing,
+                            limit=bool(limit))),
         {"district": district, "limit": limit},
     )
     docs = cur.fetchall()  # (id, district_id, slug, source_url, doc_type, date, title)
@@ -1054,7 +1066,7 @@ def tables_db(
     conn.commit()  # close the read transaction before the write waves
 
     primed: set[str] = set()          # BoardDocs /Public pages already loaded
-    wave: list[tuple[object, object, list[Chunk]]] = []
+    wave: list[tuple[UUID, UUID, list[Chunk]]] = []
     no_table_marks: list[object] = []  # doc ids fetched-but-tableless, to stamp done
 
     def _mark_done(ids: list[object]) -> None:
@@ -1263,7 +1275,9 @@ def ocr(
 
     conn = None
     voyage = None
-    ocr_fn = None
+    # vision OCR returns a table-aware ExtractedDoc; tesseract returns flat
+    # ExtractedText. Callers handle both (see merge_extracted).
+    ocr_fn: Callable[..., ExtractedDoc | ExtractedText] | None = None
     vision_usage = None
     if not dry_run:
         from herald import schools_db
@@ -1284,15 +1298,19 @@ def ocr(
             client = anthropic.Anthropic()
             vision_usage = VisionUsage()
 
-            def ocr_fn(path, pages=None):
+            def _vision_ocr(path, pages=None):
                 return ocr_pdf_vision(
                     path, client=client, model=model, dpi=dpi,
                     max_pages=max_pages, pages=pages, usage=vision_usage)
+
+            ocr_fn = _vision_ocr
         else:
             from herald.ocr import ocr_pdf
 
-            def ocr_fn(path, pages=None):
+            def _tesseract_ocr(path, pages=None):
                 return ocr_pdf(path, dpi=dpi, max_pages=max_pages, pages=pages)
+
+            ocr_fn = _tesseract_ocr
 
     done = 0
 
@@ -1484,7 +1502,7 @@ def reclassify(
     seen = 0
 
     with connect_raw(url) as conn, conn.cursor() as cur:
-        cur.execute(sql, params)
+        cur.execute(cast(LiteralString, sql), params)
         rows = cur.fetchall()
         seen = len(rows)
 

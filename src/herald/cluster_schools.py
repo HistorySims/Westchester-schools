@@ -138,7 +138,7 @@ def umap_reduce(embeddings: np.ndarray, params: ClusterParams) -> np.ndarray:
     return np.asarray(reducer.fit_transform(embeddings), dtype=np.float32)
 
 
-def _normalize01(xy: np.ndarray) -> np.ndarray:
+def _normalize01(xy: object) -> np.ndarray:
     """Scale each axis to [0, 1] for the renderer (preserving aspect roughly)."""
     xy = np.asarray(xy, dtype=np.float32).copy()
     for dim in range(xy.shape[1]):
@@ -608,6 +608,7 @@ def run(
 
     emb = None
     if embeddings == "content":
+        assert voyage_key    # guarded above: content embeddings require the key
         emb = content_embeddings(voyage_key, rows, on_progress=lambda s: console.print(s))
     export = run_clustering(rows, params, embeddings=emb, api_key=api_key,
                             hierarchy_targets=_ints(tiers) or None,
@@ -673,9 +674,11 @@ def sweep(
     if not rows:
         raise typer.Exit(1)
 
-    emb = (content_embeddings(voyage_key, rows, on_progress=lambda s: console.print(s))
-           if embeddings == "content"
-           else np.vstack([r.embedding for r in rows]).astype(np.float32))
+    if embeddings == "content":
+        assert voyage_key    # guarded above: content embeddings require the key
+        emb = content_embeddings(voyage_key, rows, on_progress=lambda s: console.print(s))
+    else:
+        emb = np.vstack([r.embedding for r in rows]).astype(np.float32)
 
     results = sweep_clustering(
         emb, dims_list=_ints(dims), mcs_list=_ints(min_cluster_sizes),

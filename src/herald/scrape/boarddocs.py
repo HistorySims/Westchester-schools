@@ -33,7 +33,7 @@ from urllib.parse import quote, unquote
 
 from bs4 import BeautifulSoup
 
-from herald.scrape.core import Fetcher
+from herald.scrape.core import Fetcher, attr
 from herald.scrape.models import DocType, ScrapedDoc
 
 logger = logging.getLogger(__name__)
@@ -250,7 +250,7 @@ def parse_policy_books(html: str) -> list[str]:
     soup = BeautifulSoup(html or "", "html.parser")
     out: list[str] = []
     for a in soup.select("#policy-book-select a, .dropdown-menu a"):
-        name = (a.get("aria-label") or a.get_text(" ", strip=True) or "").strip()
+        name = (attr(a, "aria-label") or a.get_text(" ", strip=True) or "").strip()
         if name and name not in out:
             out.append(name)
     return out
@@ -302,7 +302,7 @@ def parse_policy_list(html: str, *, book: str = "") -> list[PolicyRef]:
             continue
         # NB: the attribute is emitted as `unique= "..."` — bs4 normalizes it,
         # but a regex over the raw HTML would not.
-        uid = (el.get("unique") or "").strip()
+        uid = attr(el, "unique").strip()
         if not uid:
             continue
         code_el = el.find("b")
@@ -323,7 +323,7 @@ def parse_policy_files(html: str, *, base_url: str) -> list[FileRef]:
     soup = BeautifulSoup(html or "", "html.parser")
     out: list[FileRef] = []
     for a in soup.select("a.public-file, a[href]"):
-        href = a.get("href") or ""
+        href = attr(a, "href")
         if "/pfiles/" not in href and "/$file/" not in href.lower():
             continue
         url = href if href.startswith("http") else f"{_origin_of(base_url)}{href}"
@@ -444,14 +444,14 @@ def _files_from_html(agenda_html: str, *, base_url: str) -> list[FileRef]:
     seen: set[str] = set()
     out: list[FileRef] = []
     for a in soup.find_all("a", href=True):
-        href = a["href"].strip()
+        href = attr(a, "href").strip()
         if not (_FILE_HREF.search(href) or _DOC_EXT.search(href)):
             continue
         url = href if href.startswith("http") else _join(base_url, href)
         if url in seen:
             continue
         seen.add(url)
-        title = a.get_text(strip=True) or a.get("title") or filename_of(url)
+        title = a.get_text(strip=True) or attr(a, "title") or filename_of(url)
         out.append(FileRef(url=url, title=title, item_title=_item_title_for(a)))
     return out
 
@@ -492,7 +492,7 @@ def analyze_public_html(html: str, *, status: int = 200) -> PublicPageInfo:
     the real AJAX endpoints; this surfaces both so we can read the actual API.
     """
     soup = BeautifulSoup(html, "html.parser")
-    scripts = [s["src"] for s in soup.find_all("script", src=True)]
+    scripts = [attr(s, "src") for s in soup.find_all("script", src=True)]
     hints: list[str] = []
     seen: set[str] = set()
     for m in re.finditer(r".{0,30}committee.{0,50}", html, re.IGNORECASE):

@@ -101,7 +101,8 @@ def extract_pdf_text(path: str | Path) -> ExtractedText:
     ingest loop catches per-document and records the error.
     """
     with fitz.open(str(path)) as doc:
-        pages = [page.get_text("text") for page in doc]
+        # get_text() is overloaded on its argument; "text" always returns str.
+        pages = [str(page.get_text("text")) for page in doc.pages()]
     return ExtractedText(text=sanitize("\n".join(pages).strip()), page_count=len(pages))
 
 
@@ -131,7 +132,7 @@ def image_only_pages(
     """
     out: list[int] = []
     with fitz.open(str(path)) as doc:
-        for pno, page in enumerate(doc, start=1):
+        for pno, page in enumerate(doc.pages(), start=1):
             if len(page.get_text("text").strip()) > max_chars:
                 continue
             page_area = abs(page.rect.get_area())
@@ -216,7 +217,7 @@ def extract_pdf(path: str | Path) -> ExtractedDoc:
     tables: list[TableBlock] = []
     page_count = 0
     with fitz.open(str(path)) as doc:
-        for pno, page in enumerate(doc, start=1):
+        for pno, page in enumerate(doc.pages(), start=1):
             page_count += 1
             try:
                 found = list(page.find_tables().tables)

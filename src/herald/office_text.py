@@ -120,7 +120,11 @@ def rtf_to_text(raw: str) -> str:
                 continue
             if _RTF_PARA.match(raw, i):
                 out.append("\n")
-                i = _RTF_CONTROL.match(raw, i).end()
+                # _RTF_PARA matched here, and every \par it matches is also an
+                # _RTF_CONTROL, so this cannot be None.
+                ctrl = _RTF_CONTROL.match(raw, i)
+                assert ctrl is not None
+                i = ctrl.end()
                 continue
             m = _RTF_CONTROL.match(raw, i)
             if m:
