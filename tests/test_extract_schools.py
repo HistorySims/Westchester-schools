@@ -105,6 +105,20 @@ def test_school_year_from_date():
     assert _school_year_from_date(None) is None
 
 
+def test_school_year_from_heading_reads_one_grid_year_only():
+    from herald.extract_schools import _school_year_from_heading
+
+    assert _school_year_from_heading("OTA 2026-2027 SALARY SCHEDULE") == "2026-27"
+    # the year the schedule IS, not the base year it was derived from
+    assert _school_year_from_heading(
+        "2024-2025 Salary Schedule (2023-2024 plus 1.25% Increase)") == "2024-25"
+    assert _school_year_from_heading("2025-26 Teacher Salary") == "2025-26"
+    # a contract term or a date is not one grid's year
+    assert _school_year_from_heading("GTF 2024-2028 Steps, Lanes & Rates MOA") is None
+    assert _school_year_from_heading("Minutes 2024-06-12") is None
+    assert _school_year_from_heading("Table (p. 4)") is None
+
+
 def test_school_year_from_title():
     from herald.extract_schools import _school_year_from_title
 

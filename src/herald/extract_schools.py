@@ -175,9 +175,12 @@ states years of service separately from the step number; else null.
 - is_longevity: true for longevity rows ("after 15 years", "15/20/25 longevity").
 - school_year: the year that grid applies. If the table has a column per year, \
 emit one salary row per (year, lane, step). If the grid does NOT show its own \
-year, use the school year from the document title (e.g. a "2023-2026" contract \
-term ⇒ the first grid is "2023-24"). Only null if neither the table nor the \
-title gives a year.
+year, use the year in the Table heading ("OTA 2026-2027 SALARY SCHEDULE" ⇒ \
+"2026-27"; "2024-2025 Salary Schedule (2023-2024 plus 1.25%)" ⇒ "2024-25", the \
+year the schedule IS, not the one it was derived from). Only if the heading \
+has no year either, fall back to the document title (a "2023-2026" contract \
+term ⇒ "2023-24"). A multi-year contract prints one grid per year, and the \
+title cannot tell them apart. Only null if none of the three gives a year.
 - Stipend amount_basis: "flat" = one dollar figure (in amount); "range" = a \
 low-high band (low in amount, high in amount_high); "percent_of_base" = a percent \
 of a base salary (percent in amount_pct, amount null).
@@ -329,6 +332,18 @@ def _school_year_from_title(title: str) -> str | None:
         return None
     start = int(m.group(1))
     return f"{start}-{(start + 1) % 100:02d}"
+
+
+def _school_year_from_heading(heading: str) -> str | None:
+    """A school year a table caption names: 'OTA 2026-2027 SALARY SCHEDULE' →
+    '2026-27'. Stricter than the title reader on purpose — only a consecutive
+    pair counts, so a dated heading ('Minutes 2024-06-12') or a contract term
+    ('2024-2028') is not mistaken for one grid's year."""
+    for m in _TITLE_YEAR.finditer(heading or ""):
+        start, end = int(m.group(1)), m.group(2)
+        if (int(end) if len(end) == 4 else 2000 + int(end)) == start + 1:
+            return f"{start}-{(start + 1) % 100:02d}"
+    return None
 
 
 def build_salary_rows(
@@ -605,11 +620,14 @@ async def extract_candidates(
                 continue
 
             # A teacher CBA grid rarely repeats its year and the doc has no
-            # meeting_date, so prefer the year in the title ("… 2023-2026") —
-            # without it every salary row is dropped for a missing school_year.
+            # meeting_date. The table's own caption ("OTA 2026-2027 SALARY
+            # SCHEDULE") is the precise answer; the title's contract term
+            # ("… 2023-2026") only gives the FIRST year, so ranked after it —
+            # title-first dated all four Greenburgh grids 2024-25.
             fy = fallback.setdefault(
                 cand.chunk_id,
-                _school_year_from_title(cand.doc_title)
+                _school_year_from_heading(cand.heading or "")
+                or _school_year_from_title(cand.doc_title)
                 or _school_year_from_date(cand.meeting_date),
             )
             srows, s_sk = build_salary_rows(

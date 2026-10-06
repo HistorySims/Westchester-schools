@@ -34,6 +34,15 @@ _MIN_TABLE_COLS = 2
 # Fraction of a text block that must sit inside a table's bbox before we treat
 # the block as belonging to the table (and drop it from the prose stream).
 _COVER_FRACTION = 0.5
+# A caption is the nearest text block above a grid, at most this far above its
+# top edge (points) and at most this long. A salary appendix prints one grid
+# per page under a line like "OTA 2026-2027 SALARY SCHEDULE", and that line is
+# the ONLY place the grid's year appears — the grid itself is just steps and
+# lanes. Measured: Ossining's caption sits 29pt above its grid (with an empty
+# image block in between), Greenburgh's ~60pt. Anything longer than a line or
+# two is a paragraph, not a caption.
+_CAPTION_MAX_GAP = 80.0
+_CAPTION_MAX_CHARS = 160
 
 
 @dataclass(frozen=True)
@@ -163,6 +172,35 @@ def _covered(block: fitz.Rect, tables: list[fitz.Rect]) -> bool:
     return any((block & t).get_area() / area >= _COVER_FRACTION for t in tables)
 
 
+def _caption_above(table: fitz.Rect, blocks: list) -> str:
+    """The short text line printed directly above a table, or "".
+
+    Without it, four year-grids of one contract are four identical-looking
+    tables and the extractor has nothing but the document title ("2024-2028")
+    to date them by — so it gave all four Greenburgh grids the year 2024-25 and
+    they overwrote one another. Image blocks and blank text blocks are skipped
+    (Ossining puts an empty one between caption and grid); the block must
+    overlap the table horizontally so a running header in the far margin is not
+    mistaken for a caption.
+    """
+    best: tuple[float, str] | None = None
+    for b in blocks:
+        if len(b) > 6 and b[6] != 0:  # image block
+            continue
+        text = " ".join(str(b[4]).split())
+        if not text or len(text) > _CAPTION_MAX_CHARS:
+            continue
+        x0, _y0, x1, y1 = b[:4]
+        gap = table.y0 - y1
+        if gap < -2 or gap > _CAPTION_MAX_GAP:
+            continue
+        if x1 <= table.x0 or x0 >= table.x1:
+            continue
+        if best is None or gap < best[0]:
+            best = (gap, text)
+    return best[1] if best else ""
+
+
 def extract_pdf(path: str | Path) -> ExtractedDoc:
     """Table-aware extraction.
 
@@ -192,21 +230,27 @@ def extract_pdf(path: str | Path) -> ExtractedDoc:
                 prose_pages.append(page.get_text("text"))
                 continue
             boxes = [fitz.Rect(t.bbox) for t in good]
+            blocks = page.get_text("blocks")
             kept = [
                 block[4]
-                for block in page.get_text("blocks")
+                for block in blocks
                 if not _covered(fitz.Rect(block[:4]), boxes)
             ]
             prose_pages.append("\n".join(kept))
-            for t in good:
+            for t, box in zip(good, boxes, strict=True):
                 try:
                     md = t.to_markdown().strip()
                 except Exception:
                     md = ""
                 if md:
-                    tables.append(TableBlock(page=pno, markdown=md))
+                    tables.append(TableBlock(
+                        page=pno, markdown=md, label=_caption_above(box, blocks)
+                    ))
     return ExtractedDoc(
         text=sanitize("\n".join(prose_pages).strip()),
-        tables=[TableBlock(page=t.page, markdown=sanitize(t.markdown)) for t in tables],
+        tables=[
+            TableBlock(page=t.page, markdown=sanitize(t.markdown), label=sanitize(t.label))
+            for t in tables
+        ],
         page_count=page_count,
     )

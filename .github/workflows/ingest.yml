@@ -18,6 +18,13 @@ name: ingest
 # chunking existed. Prose chunks are left untouched; re-running is safe.
 # Dry-run first to see the per-district table counts.
 #
+# 'replace_tables' (with tables_backfill) is for when the table EXTRACTOR
+# improves: it deletes each document's existing table chunks and re-derives
+# them. Without it the backfill conflicts on (document_id, chunk_index) and
+# silently keeps the old grids. First use: PDF grids gained their captions
+# ("OTA 2026-2027 SALARY SCHEDULE"), the only place a multi-year contract says
+# which year each grid is for.
+#
 #   Actions -> ingest -> Run workflow
 #
 # Required secrets (Settings -> Secrets and variables -> Actions):
@@ -82,6 +89,10 @@ on:
         default: other
       tables_backfill:
         description: "Backfill table chunks into already-ingested docs (adds kind='table' only)"
+        type: boolean
+        default: false
+      replace_tables:
+        description: "With tables_backfill: delete + re-derive existing table chunks"
         type: boolean
         default: false
       dry_run:
@@ -174,6 +185,7 @@ jobs:
             --root data/artifacts \
             ${{ inputs.district != 'all' && format('--district "{0}"', inputs.district) || '' }} \
             ${{ inputs.limit && format('--limit "{0}"', inputs.limit) || '' }} \
+            ${{ (inputs.tables_backfill && inputs.replace_tables) && '--replace' || '' }} \
             --report ingest-report.md \
             ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}
       - name: Publish report to run summary
