@@ -592,3 +592,42 @@ def test_dry_run_prices_a_partial_pass_without_spending_anything(tmp_path):
     assert "3 page(s)" in report
     assert "ossining" in report
     assert "estimate" in report.lower()   # never passed off as a measurement
+
+
+def test_split_markdown_tables_labels_each_grid_with_its_caption():
+    # Tarrytown's TA appendix: three grids on one page, the year only in the
+    # line above each. Unlabelled, all three were dated by the title (2022-23).
+    from herald.extract_schools import _school_year_from_heading
+    from herald.ocr import split_markdown_tables
+
+    md = "\n".join([
+        "APPENDIX B",
+        "",
+        "**2022 - 23 Teacher Assistant Salary Schedule**",
+        "| Step | TA3.25 |", "|---|---|", "| 1 | 13,369 |",
+        "",
+        "## 2023 - 24 Teacher Assistant Salary Schedule",
+        "",
+        "| Step | TA3.25 |", "|---|---|", "| 1 | 13,603 |",
+        "2024 - 25 Teacher Assistant Salary Schedule",
+        "| Step | TA3.25 |", "|---|---|", "| 1 | 13,855 |",
+    ])
+    prose, tables = split_markdown_tables(md, page=52)
+    assert [t.label for t in tables] == [
+        "2022 - 23 Teacher Assistant Salary Schedule",
+        "2023 - 24 Teacher Assistant Salary Schedule",
+        "2024 - 25 Teacher Assistant Salary Schedule",
+    ]
+    assert [_school_year_from_heading(t.label) for t in tables] == [
+        "2022-23", "2023-24", "2024-25"]
+    assert "2023 - 24 Teacher Assistant" in prose   # caption stays in prose too
+
+
+def test_split_markdown_tables_no_caption_when_far_or_a_paragraph():
+    from herald.ocr import split_markdown_tables
+
+    far = "Salary Schedule 2024-25\n\n\n\n| a | b |\n|---|---|"
+    para = ("The parties agree " * 15) + "\n| a | b |\n|---|---|"
+    assert split_markdown_tables(far, page=1)[1][0].label == ""
+    assert split_markdown_tables(para, page=1)[1][0].label == ""
+    assert split_markdown_tables("| a | b |\n|---|---|", page=1)[1][0].label == ""

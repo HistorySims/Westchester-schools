@@ -24,6 +24,7 @@ import base64
 import datetime as _dt
 import io
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -229,12 +230,45 @@ def _looks_like_table_row(line: str) -> bool:
     return s.startswith("|") and s.count("|") >= 2
 
 
+# A caption is the last short prose line before a table, at most this many
+# blank lines above it. Same reasoning, and the same limit, as
+# pdf_text._caption_above: a multi-year appendix dates each grid ONLY in the
+# line over it.
+_CAPTION_MAX_BLANK = 2
+_CAPTION_MAX_CHARS = 160
+_MD_DECOR = re.compile(r"^[#>*_\s]+|[*_\s]+$")
+
+
+def _caption_before(prose: list[str]) -> str:
+    """The short line immediately above a table in transcribed Markdown, or "".
+
+    Tarrytown's TA appendix is three grids on one scanned page, each under
+    "2022 - 23 / 2023 - 24 / 2024 - 25 Teacher Assistant Salary Schedule".
+    Transcribed, the captions landed in prose and the three tables went out
+    unlabelled, so extraction dated all three by the document title (2022-23)
+    and they overwrote one another. Markdown decoration (``**``, ``#``) is
+    stripped so the label reads as the page does.
+    """
+    blank = 0
+    for line in reversed(prose):
+        text = _MD_DECOR.sub("", line).strip()
+        if not text:
+            blank += 1
+            if blank > _CAPTION_MAX_BLANK:
+                return ""
+            continue
+        return text if len(text) <= _CAPTION_MAX_CHARS else ""
+    return ""
+
+
 def split_markdown_tables(md: str, *, page: int) -> tuple[str, list[TableBlock]]:
     """Split a page's Markdown into (prose, table blocks).
 
     A table is a run of two or more consecutive pipe-rows (``| … | … |``),
     which is how the vision prompt is asked to render grids. Everything else
     is prose. Kept deliberately simple: a stray one-line ``|`` stays in prose.
+    Each table is labelled with the caption line above it (``_caption_before``);
+    that line also stays in the prose, where it always was.
     """
     lines = md.split("\n")
     prose: list[str] = []
@@ -247,7 +281,9 @@ def split_markdown_tables(md: str, *, page: int) -> tuple[str, list[TableBlock]]
                 j += 1
             if j - i >= 2:
                 block = "\n".join(lines[i:j]).strip()
-                tables.append(TableBlock(page=page, markdown=block))
+                tables.append(
+                    TableBlock(page=page, markdown=block, label=_caption_before(prose))
+                )
                 i = j
                 continue
         prose.append(lines[i])

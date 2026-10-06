@@ -367,6 +367,12 @@ Three layers now agree, so no one of them has to be perfect:
   consecutive pair (`2026-2027`), so a contract term or a meeting date in a
   heading is not mistaken for one grid's year.
 
+The vision-OCR path had the same gap and gets the same treatment
+(`ocr._caption_before`, the last short prose line above a transcribed table):
+Tarrytown's scanned TA appendix is three grids on one page, and the 2026-10-06
+run dated all three 2022-23 — three values per cell, ~1.8% apart. A scanned
+document picks the fix up only through a vision re-OCR (`ocr`, `reocr`).
+
 Existing chunks keep their old, unlabelled headings until re-derived: ingest
 with `tables_backfill` + `replace_tables` against a fresh crawl, then extract
 with `reextract`.
