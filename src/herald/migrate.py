@@ -24,6 +24,7 @@ import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import LiteralString, cast
 
 import typer
 from rich.console import Console
@@ -164,7 +165,8 @@ def apply(
             try:
                 with conn.transaction():
                     cur = conn.cursor()
-                    cur.execute(m.sql)
+                    # Migration text comes from a file in this repo, not from input.
+                    cur.execute(cast(LiteralString, m.sql))
                     cur.execute(
                         "insert into schema_migrations (filename, sha256) values (%s, %s)",
                         (m.name, m.sha256),

@@ -62,6 +62,29 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def attr(tag: object, name: str, default: str = "") -> str:
+    """One HTML attribute, as a string.
+
+    bs4 types ``Tag.get`` as ``str | AttributeValueList | None``, because a
+    multi-valued attribute (``class``, ``rel``) comes back as a list. Every
+    attribute this crawler reads — ``href``, ``src``, ``unique``,
+    ``aria-label`` — is single-valued, so the list case is a type-level
+    possibility rather than a real one; joining it is still the right
+    behaviour if one ever turns up.
+
+    Takes ``object`` rather than ``Tag`` so callers can pass the result of a
+    ``find()`` without narrowing it first; a tag-shaped thing is anything with
+    a ``get``.
+    """
+    getter = getattr(tag, "get", None)
+    if getter is None:
+        return default
+    value = getter(name)
+    if value is None:
+        return default
+    return value if isinstance(value, str) else " ".join(str(v) for v in value)
+
+
 def slugify(text: str, *, maxlen: int = 120) -> str:
     """Filesystem-safe slug. Collapses runs of unsafe chars to ``-``."""
     text = _UNSAFE.sub("-", text).strip("-._")

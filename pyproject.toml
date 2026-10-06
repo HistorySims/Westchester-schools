@@ -81,8 +81,44 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 [tool.pyright]
 include = ["src", "tests"]
 pythonVersion = "3.11"
+# `tests/` has no __init__.py; pytest puts the repo root on sys.path at runtime,
+# which is how `from tests.test_ingest_schools import ...` resolves. Tell pyright
+# the same thing so shared test helpers are not reported as missing imports.
+extraPaths = ["."]
 typeCheckingMode = "basic"
 reportMissingImports = "error"
+# Optional dependency groups are not installed in the default environment, and
+# every use of them is already behind a runtime guard or a local import. An
+# unresolved `playwright` here means "not installed", not "broken".
+reportMissingModuleSource = "none"
+ignore = [
+    # Inherited newspaper-engine modules, pending their schools rewrite
+    # (docs/ENGINE_EXTRACTION.md). Same list and same reason as ruff's
+    # per-file-ignores; type-annotating code that is scheduled to be replaced
+    # buys nothing. Don't grow this list — new code type-checks clean.
+    "src/herald/classify.py",
+    "src/herald/cluster.py",
+    "src/herald/models.py",
+    "src/herald/quality.py",
+    "src/herald/retrieval.py",
+    "src/herald/db.py",
+    "src/herald/chunker.py",
+    "src/herald/synth.py",
+]
+
+[[tool.pyright.executionEnvironments]]
+# Tests build partial fixtures on purpose — a dict standing in for a response,
+# a parse result used without a None check because the test should fail loudly
+# if it is None. Asserting those away to satisfy the checker makes the tests
+# say less about intent, so the rules that fire on deliberate looseness are off
+# here. Imports and attribute access are still checked, which is what catches a
+# test referencing something that no longer exists.
+root = "tests"
+reportArgumentType = "none"
+reportOptionalMemberAccess = "none"
+reportOptionalSubscript = "none"
+reportIndexIssue = "none"
+reportCallIssue = "none"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

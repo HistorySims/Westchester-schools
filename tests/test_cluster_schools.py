@@ -214,7 +214,7 @@ def test_label_clusters_uses_real_teardown(monkeypatch):
             raise RuntimeError("boom")             # teardown blows up
 
     fake = types.ModuleType("anthropic")
-    fake.AsyncAnthropic = FakeClient
+    setattr(fake, "AsyncAnthropic", FakeClient)   # noqa: B010 — ModuleType has no such attr to assign
     monkeypatch.setitem(__import__("sys").modules, "anthropic", fake)
 
     labels = asyncio.run(label_clusters("k", {0: ["a passage"], 1: ["another"]}))

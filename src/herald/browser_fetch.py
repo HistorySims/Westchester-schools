@@ -42,7 +42,10 @@ class AsyncBrowserFetcher:
 
     async def start(self) -> None:
         """Launch Chromium. Raises if playwright isn't installed / can't launch."""
-        from playwright.async_api import async_playwright
+        # playwright lives in the optional `browser` dependency group, so it is
+        # absent from a default install by design; the import is local for that
+        # reason and this raises only if someone calls start() without it.
+        from playwright.async_api import async_playwright  # type: ignore[import-not-found]
 
         self._pw = await async_playwright().start()
         self._browser = await self._pw.chromium.launch(headless=True)
@@ -64,6 +67,7 @@ class AsyncBrowserFetcher:
         if public_url in self._primed:
             return
         self._primed.add(public_url)  # mark first: a failed prime shouldn't retry every file
+        assert self._context is not None, "call start() first"
         page = await self._context.new_page()
         try:
             await page.goto(public_url, wait_until="domcontentloaded",
@@ -78,6 +82,7 @@ class AsyncBrowserFetcher:
     async def get_bytes(self, url: str, *, referer: str | None = None) -> bytes:
         """Download ``url`` through the browser context; raises on a non-OK status."""
         headers = {"Referer": referer} if referer else None
+        assert self._context is not None, "call start() first"
         resp = await self._context.request.get(
             url, headers=headers, timeout=self._request_timeout_ms
         )

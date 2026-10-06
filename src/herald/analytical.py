@@ -96,7 +96,8 @@ async def route(question: str, *, api_key: str, model: str = ROUTER_MODEL) -> Ro
     mode = data.get("mode")
     if mode != "analytical" or query not in SUPPORTED_QUERIES:
         return RouterDecision("semantic", None, {}, data if isinstance(data, dict) else {})
-    params = data.get("params") if isinstance(data.get("params"), dict) else {}
+    raw_params = data.get("params")
+    params: dict = raw_params if isinstance(raw_params, dict) else {}
     return RouterDecision("analytical", query, params, data)
 
 
@@ -124,7 +125,7 @@ def _order(rank: object) -> str:
 def _req_int(p: dict, key: str) -> int:
     v = p.get(key)
     try:
-        return int(v)
+        return int(v)  # type: ignore[arg-type]  # None is the TypeError below
     except (TypeError, ValueError):
         raise UnsupportedQuery(f"missing/invalid '{key}'") from None
 

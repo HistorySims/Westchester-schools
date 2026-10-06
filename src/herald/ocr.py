@@ -186,7 +186,7 @@ def _render_pages(
     pages: list[tuple[int, bytes]] = []
     with fitz.open(str(path)) as doc:
         page_count = doc.page_count
-        for i, page in enumerate(doc):
+        for i, page in enumerate(doc.pages()):
             page_no = i + 1
             if wanted is not None and page_no not in wanted:
                 continue
@@ -213,7 +213,7 @@ def ocr_pdf(path: str | Path, *, dpi: int = 300, max_pages: int | None = None,
     done = 0
     with fitz.open(str(path)) as doc:
         page_count = doc.page_count
-        for i, page in enumerate(doc):
+        for i, page in enumerate(doc.pages()):
             if wanted is not None and (i + 1) not in wanted:
                 continue
             if max_pages is not None and done >= max_pages:

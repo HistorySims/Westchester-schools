@@ -35,6 +35,8 @@ from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
+from herald.scrape.core import attr
+
 logger = logging.getLogger(__name__)
 
 # A policy portal URL belonging to one of the known vendors.
@@ -82,7 +84,7 @@ def find_portal_links(html: str, *, base_url: str = "") -> list[str]:
     if base_url:
         soup = BeautifulSoup(html or "", "html.parser")
         for a in soup.find_all("a", href=True):
-            u = urljoin(base_url, a["href"]).replace("&amp;", "&")
+            u = urljoin(base_url, attr(a, "href")).replace("&amp;", "&")
             if vendor_of(u):
                 seen.setdefault(u, None)
     return list(seen)
@@ -94,7 +96,7 @@ def policy_page_links(html: str, *, base_url: str) -> list[str]:
     host = urlsplit(base_url).netloc
     out: dict[str, None] = {}
     for a in soup.find_all("a", href=True):
-        u = urljoin(base_url, a["href"]).split("#")[0]
+        u = urljoin(base_url, attr(a, "href")).split("#")[0]
         if urlsplit(u).netloc != host:
             continue
         if _POLICY_PAGE.search(u) or _POLICY_PAGE.search(a.get_text(" ", strip=True)):
@@ -181,13 +183,13 @@ def probe_portal(fetcher, district: str, url: str, *, save_to: Path | None = Non
     soup = BeautifulSoup(body, "html.parser")
     if soup.title and soup.title.string:
         p.title = soup.title.string.strip()[:200]
-    p.frames = [urljoin(p.final_url, f.get("src", ""))
-                for f in soup.find_all(["frame", "iframe"]) if f.get("src")][:10]
-    p.scripts = [urljoin(p.final_url, s.get("src", ""))
-                 for s in soup.find_all("script") if s.get("src")][:15]
-    p.forms = [urljoin(p.final_url, f.get("action", "")) or p.final_url
+    p.frames = [urljoin(p.final_url, attr(f, "src"))
+                for f in soup.find_all(["frame", "iframe"]) if attr(f, "src")][:10]
+    p.scripts = [urljoin(p.final_url, attr(s, "src"))
+                 for s in soup.find_all("script") if attr(s, "src")][:15]
+    p.forms = [urljoin(p.final_url, attr(f, "action")) or p.final_url
                for f in soup.find_all("form")][:10]
-    p.sample_links = [urljoin(p.final_url, a["href"])
+    p.sample_links = [urljoin(p.final_url, attr(a, "href"))
                       for a in soup.find_all("a", href=True)][:25]
     return p
 

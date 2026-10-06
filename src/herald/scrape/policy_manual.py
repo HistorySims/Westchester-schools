@@ -46,6 +46,8 @@ from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
 
+from herald.scrape.core import attr
+
 logger = logging.getLogger(__name__)
 
 #: Vendored jQuery, served in place of the CDN copy the portal asks for.
@@ -163,11 +165,11 @@ def split_export(html: str, *, portal_url: str = "") -> list[PolicyDoc]:
     base = portal_base(portal_url) if portal_url else ""
     out: list[PolicyDoc] = []
     for div in soup.select("div.export-section"):
-        title = (div.get("data-bookmark-title") or "").strip()
+        title = attr(div, "data-bookmark-title").strip()
         if not title:
             node = div.select_one("p.section-title")
             title = node.get_text(" ", strip=True) if node else ""
-        sid = (div.get("id") or "").strip()
+        sid = attr(div, "id").strip()
         m = _NUMBER_RE.match(title)
         out.append(
             PolicyDoc(
@@ -206,7 +208,8 @@ async def fetch_manual_export_async(
     Selects the whole manual in the table-of-contents tree, clicks Print, and
     captures the HTML the server hands to ``window.PrintDocument``.
     """
-    from playwright.async_api import async_playwright  # optional dependency
+    # Optional `browser` dependency group — see herald.browser_fetch.
+    from playwright.async_api import async_playwright  # type: ignore[import-not-found]
 
     opts = options or BrowserOptions()
     captured: list[str] = []
