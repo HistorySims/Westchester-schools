@@ -345,6 +345,32 @@ Treat the pre-2026-09 `extracted_at` stamps as weak evidence and re-run with
 
 ---
 
+### A grid's year lives in its caption, not in the grid (2026-10-05)
+
+A multi-year contract prints one salary grid per year, and the grid itself is
+only steps × lanes. The year is in the line above it — Greenburgh's
+"2025-2026 Salary Schedule (2024-2025 plus 1.5% Increase)", Ossining's
+"OTA 2026-2027 SALARY SCHEDULE". `extract_pdf` used to drop that line into the
+prose stream and leave the table unlabelled, so the model saw four identical
+grids headed "Table (p. 1)"… and the prompt told it to fall back to the title's
+contract term, whose *first* year is the only one a title can give. All four
+Greenburgh grids came back as 2024-25 and overwrote one another — the run's
+`duplicate_cell` flags showed four values per cell, each ~1.5% apart.
+
+Three layers now agree, so no one of them has to be perfect:
+
+* `pdf_text._caption_above` labels each PDF table with the nearest short text
+  block above it (≤ 80pt, ≤ 160 chars, horizontally overlapping, image and blank
+  blocks skipped — Ossining has an empty one between caption and grid).
+* The prompt ranks the Table heading above the document title for a grid's year.
+* The deterministic fallback reads the heading first, accepting only a
+  consecutive pair (`2026-2027`), so a contract term or a meeting date in a
+  heading is not mistaken for one grid's year.
+
+Existing chunks keep their old, unlabelled headings until re-derived: ingest
+with `tables_backfill` + `replace_tables` against a fresh crawl, then extract
+with `reextract`.
+
 ## 4. The router + analytical path (Ask)
 
 Ask gains a **router** that classifies each question:
