@@ -1,6 +1,6 @@
 # Westchester Schools — Project Status
 
-*Last updated: 2026-08-15*
+*Last updated: 2026-10-06* (salary-schedule thread paused — see the 📌 2026-10-06 pin)
 
 A semantic-research corpus of Westchester County public-school governance
 — board agendas, minutes, policy manuals, student handbooks, teacher
@@ -197,7 +197,109 @@ refresh is designed in [`REFRESH.md`](REFRESH.md) — one scheduled workflow,
 change-detected by extracted-text hash (drift-proof), that also retires the
 run-id hand-carrying between stages.
 
-### 📌 Pinned: where the salary thread stopped (2026-08-20)
+### 📌 Pinned: where the salary thread stopped (2026-10-06)
+
+**Paused as "good enough for now" by the operator.** This supersedes the
+2026-08-20 pin below, which is kept for history. Everything here was measured
+from workflow logs; the database itself has not been queried since the last
+extract (see "first thing on resume").
+
+**State of `salary_schedule`.** The table was emptied (`delete from
+salary_schedule`) and rebuilt by one full pass on 2026-10-06: extract,
+`doc_type: contract`, `reextract`, **114 candidate tables → 7,308 salary rows +
+1,888 stipend rows, 0 errors, 480 audit flags**, 355k tokens in / 767k out
+(about $12.50 on claude-sonnet-5). Per district, from that log:
+
+| district | what landed | currency | trust |
+|---|---|---|---|
+| elmsford | ETA 2024-2027 teacher grids (from the transcribed snapshot) | in term to 2027-06-30 | good; 5 flags are real defects in the printed contract |
+| greenburgh-central | GTF 2024-2028, all four annual grids + rate-increase stipends | in term to 2028-06-30 | good since the caption fix. **Check:** TA/TAA/TAL/TAPP lanes share the teachers' table, so they are probably filed under `bargaining_unit='teacher'` |
+| mount-vernon | **administrators only** (MVAG MOA 2022) | — | **no teacher grid.** The 2026 MVFT Teacher / TA Unit MOAs are ingested but yielded no extractable grid — unverified whether they contain one or only % raises |
+| ossining | OTA 2025-2029: 4 years × (teacher, clinician/counselor, OT/PT) + stipends | in term to 2029-06-30 | good since the caption fix |
+| peekskill | `TCH Salary Schedule` 2023-24, 2024-25, 2025-26; PTAO grid; PFA stipends | PFA expired 2026-06-30; **no 2026-27 schedule acquired** | good |
+| port-chester-rye | PCTA 2023-2027 Appendix A teachers + TAs, Appendix B stipends (snapshot) | in term to 2027-06-30 | good — round-trips exactly |
+| tarrytowns | TAT 2022-2025 teacher grids; TA grids **mis-dated** | expired 2025-06-30 | **TA rows wrong** — see below. The successor `TAT Contract MOA 2025-2027` is in the corpus (BoardDocs) but nothing was extracted from it |
+| white-plains | `2022-2026 Salary Schedule`, **`WPTA SALARY SCHEDULE 2027`**, summer-school hourly (`pay_basis='hourly'`), extracurricular stipends | 2027 schedule runs past the 2022-2026 CBA | good; 2 extracurricular chunks parse-failed, others of the same schedule landed |
+
+**Known-wrong data: Tarrytown teaching assistants.** The TAT contract is a pure
+scan, so its tables came from vision OCR. Appendix B prints three TA grids on
+one page, each under its own caption ("2024 - 25 Teacher Assistant Salary
+Schedule"); OCR dropped the captions into prose, all three were dated by the
+title (2022-23) and overwrote each other. The 480 audit flags are dominated by
+this (`duplicate_cell tarrytowns … 3 rows disagree`). Fixed in code
+(`ocr._caption_before`, commit `9ed91b2`) but **not yet re-run**. To finish:
+
+1. `delete from salary_schedule where district_id = (select id from districts where slug = 'tarrytowns');`
+2. **ocr**: `from_workflow: crawl-contracts`, `district: tarrytowns`, `engine: vision`, `reocr` ✓ (~58 pages, ~$2; dry run first is free). Needs a crawl-contracts run whose artifacts are < 14 days old — re-run the crawl first if not.
+3. **extract**: `district: tarrytowns`, `doc_type: contract`, `reextract` ✓ (~$1-2).
+
+**First thing on resume — the coverage check that has not been run yet:**
+
+```sql
+select di.slug, s.bargaining_unit, s.pay_basis, s.school_year, count(*) n,
+       min(s.salary) lo, max(s.salary) hi
+from salary_schedule s join districts di on di.id = s.district_id
+group by 1,2,3,4 order by 1,2,3,4;
+```
+
+Then re-ask the brief's original question through the `ask` workflow — *"How
+much would a teacher make in their third year with a masters and 0 credits?"* —
+which in August answered for Tarrytown alone.
+
+**What was fixed in this stretch (2026-09-10 → 10-06), all on `main` or on
+branch `claude/salary-schedules-task-31j1f0`:**
+
+* **Contract currency** (`contract_term.py`): every contract citation states
+  its term — expired figures are labelled, never dropped. Reads `2023-2027`,
+  `2023-27` and `20232027`.
+* **`pay_basis`** (migration `0008`): hourly / daily / per-session /
+  increment schedules no longer collide with annual salaries on the same
+  lane × step. White Plains' "$66" was a summer-school hourly rate that had
+  overwritten a $61,713 salary.
+* **Four collision bugs, one family** — distinct data sharing one upsert key:
+  pay basis (above); unrecognized lane headers all normalizing to `'other'`
+  (raw header now kept); job families inside one union (clinician, OT/PT are
+  not "teacher"); and **a grid's year**, below.
+* **A grid's year lives in its caption.** Multi-year contracts print one grid
+  per year with the year only in the line above it. `pdf_text._caption_above`
+  and `ocr._caption_before` now label tables with it; the prompt and the
+  fallback rank the table heading above the document title. Greenburgh's four
+  grids had all been stored as 2024-25. See STRUCTURED.md.
+* **Acquisition:** Drive downloads saved as `.bin` (magic-number sniffing now);
+  Drive seeds with no link text landing `doc_type='other'` (contracts crawler
+  default); a document first filed `other` could never be upgraded by a later,
+  better crawl (`find_or_insert_document` now upgrades `other` on conflict —
+  this is what hid White Plains' WPTA CBA, 196 chunks, from every
+  `doc_type: contract` pass).
+* **Extract ordering:** round-robin across districts and undated-first, so a
+  `--limit` run samples all eight instead of spending everything on Elmsford.
+* **New workflow inputs:** `extract` → `doc_type`; `ingest` → `replace_tables`
+  (with `tables_backfill`, re-derives table chunks after an extractor change);
+  `contracts-snapshot` for operator-transcribed scans.
+
+**Still open, in rough priority:**
+
+1. **Finish Tarrytown** (three steps above).
+2. **Mount Vernon teachers** — read the 2026 MVFT Teacher Unit MOA. If it has a
+   grid that the table detector misses, that is a `pdf_text` problem; if it is
+   percentages only, say so in the scope statement and stop.
+3. **Successors:** Tarrytown's `TAT Contract MOA 2025-2027` (BoardDocs) has not
+   been checked for a grid; Peekskill's PFA expired 2026-06-30 and no 2026-27
+   schedule is held; White Plains' 2027 schedule implies an extension or
+   successor that the scope statement does not yet name.
+4. **Drive titles.** The crawler ignores the `Content-Disposition` filename, so
+   every Drive file lands titled `document` (fixed by hand for Ossining and
+   Greenburgh). Titles feed citations, `contract_term` and the extract prompt.
+   Read the header at download time when the link gives no title.
+5. **Export for the renegotiation analysis** — the operator asked for one;
+   offered (`herald-export` → CSVs of salary/stipend rows with `pay_basis`,
+   `bargaining_unit` and contract status, plus a lane × step comparison
+   pivot), not built.
+6. **CI on `main` has been red** since before this work: ~189 pyright errors
+   and two failing `test_eval_schools` cases, none from this thread. Worth one
+   cleanup pass so a new failure is visible again.
+
+### Pinned earlier (2026-08-20) — superseded by the 2026-10-06 pin above
 
 Paused mid-flight to fix the policy gap below. To resume, this is the state:
 
@@ -821,14 +923,14 @@ What this corpus can be trusted to answer, as of 2026-09-05:
   bargaining agreement among them; Elmsford's *one* contract is a Data
   Protection Agreement; Mount Vernon's 37 include Student Device Agreements in
   nine languages and a run of architectural RFPs. Actual teacher agreements,
-  district by district (2026-09-09):
+  district by district (2026-09-09, rows refreshed 2026-10-06):
 
   | district | teacher agreement held | term |
   |---|---|---|
   | peekskill | PFA Agreement 2023-2026, plus standalone `TCH Salary Schedule 2025-2026` | expired 2026-06-30; **the salary schedule is current** |
-  | tarrytowns | Tarrytown-TAT-2022-2025 | expired 2025-06-30 |
-  | white-plains | WPTA2022-2026 | expired 2026-06-30 |
-  | mount-vernon | MVFT Teacher Unit MOA; full 2019-2023 CBA exists as a scan | superseded — a successor was ratified May 2026 |
+  | tarrytowns | Tarrytown-TAT-2022-2025; successor **TAT Contract MOA 2025-2027** found on BoardDocs (2026-09-23), not yet extracted | 2022-2025 expired 2025-06-30 |
+  | white-plains | WPTA2022-2026, plus `WPTA SALARY SCHEDULE 2027` (extracted 2026-10-06) | CBA expired 2026-06-30; a 2027 schedule exists — extension/successor unnamed |
+  | mount-vernon | 2026 MVFT Teacher Unit + TA Unit MOAs (finalsite, ingested); full 2019-2023 CBA exists as a scan | the 2026 MOAs are likely the May 2026 successor; no teacher grid extracted from them |
   | elmsford | **ETA 2024-2027** (operator-supplied; Appendix A transcribed into a snapshot) | **in term to 2027-06-30** |
   | greenburgh-central | **GTF 2024-2028** (Google Site; grids in a digital MOA) | **in term to 2028-06-30** |
   | ossining | **OTA 2025-2029** (Google Site; digital pdf) | **in term to 2029-06-30** |
@@ -1214,7 +1316,7 @@ this month is the thing worth writing about. Neither is optional to goal B.
    change shape substantially. Both need to run on the new corpus before any
    drift number means anything; drift measured across an acquisition jump
    reports the crawl, not the boards.
-4. **Acquire successor CBAs** — goal A's one unverified assumption is now
+4. **Acquire successor CBAs** *(partly overtaken — see the 📌 2026-10-06 pin for what has since turned up)* — goal A's one unverified assumption is now
    *visible* rather than fixed: citations state each agreement's term
    (`herald.contract_term`), so a superseded schedule no longer reads as
    today's rate. What remains is acquisition. Both CBAs we can name have run
@@ -1487,12 +1589,12 @@ this month is the thing worth writing about. Neither is optional to goal B.
 8. **Wire the analytical path into `/api/ask`** (web) — it's CLI-only today.
    Then the topic map and the salary/stipend query surface are both
    phone-usable, which the newsletter cycle needs.
-9. **`herald-extract` on the OCR-recovered tables** — land real per-unit
-   `salary_schedule` rows; read the `--dry-run` audit flags first (a flood =
-   garbled grid → tune `lane_crosswalk.csv`; a handful = real dips to confirm).
-10. **Fix the remaining acquisition gaps:** ossining still returns 0 contracts
-    (both seeds dead — needs a different source), and a Greenburgh download
-    saved as `.bin` PyMuPDF can't open (content-type sniffing at store time).
+9. **Salary schedules** — done for 7 of 8 districts as of 2026-10-06; the
+   remaining work (Tarrytown TA re-OCR, Mount Vernon teachers, successors,
+   Drive titles, the export) is listed in the 📌 2026-10-06 pin.
+10. ~~Fix the remaining acquisition gaps~~ — done: Ossining's current OTA
+    agreement was found on a Google Site (2026-09-17), and the `.bin` bug is
+    fixed (magic-number sniffing).
 11. **`years_service` over `step`** (STRUCTURED.md decision #6) — prefer
     `years_service` where a contract states it, per-district fallback.
 12. **Deferred by decision, not oversight:** meeting-video captions (Panopto,
@@ -1533,3 +1635,17 @@ this month is the thing worth writing about. Neither is optional to goal B.
   `herald-extract --doc-type contract`. `docs_from_seed` takes a
   `default_doc_type` that the contracts crawler sets to `contract`, applied
   only when the classifier abstains.
+- **Workflow artifacts expire after 14 days.** `ingest`, `ocr` and the
+  `tables_backfill` path all read a scrape run's artifacts; past two weeks,
+  re-run the crawl first (it is free). `tables-db` is the one path that
+  re-fetches from `source_url` instead.
+- **`extract` without `reextract` only sees never-extracted tables.** After
+  `delete from salary_schedule`, a run without it silently rebuilds only the
+  new chunks — the 2026-09-23 run did exactly that (32 candidates, not 114).
+- **`duplicate_cell` flags sort by district slug**, so the first district in
+  the detail list is the first one with collisions — every slug before it is
+  clean. A cheap way to read a 500-flag report.
+- **Extract costs ~ $0.11 per candidate table** on claude-sonnet-5 (2026-10-06:
+  114 tables ≈ $12.50). The candidate count is the first line of the log —
+  the moment to cancel if it is unexpectedly large.
+
