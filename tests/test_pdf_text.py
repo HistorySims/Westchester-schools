@@ -4,7 +4,7 @@ from pathlib import Path
 
 import fitz
 
-from herald.pdf_text import _caption_above, extract_pdf
+from herald.pdf_text import _caption_above, extract_pdf, sanitize
 
 
 def _grid_page(doc: fitz.Document, caption: str, first_salary: int) -> None:
@@ -55,3 +55,34 @@ def test_caption_skips_images_blanks_far_text_and_paragraphs():
     long_para = (100, 170, 400, 195, "This Agreement " * 20, 5, 0)
     assert _caption_above(table, [*blocks, long_para]) == "APPENDIX III"
     assert _caption_above(table, []) == ""
+
+
+def test_sanitize_strips_invisibles_that_break_word_counting() -> None:
+    """Zero-width spaces are the reason Tarrytowns' minutes were quarantined.
+
+    Their minutes are Google Docs exports carrying a zero-width space between
+    every pair of words -- 8,209 of them in one 23-page file. U+200B is *not*
+    whitespace to ``str.split()``, so it survives chunking and reaches the
+    quality scorer, which then counts almost no dictionary words and files the
+    passage as illegible OCR. Five of five sampled files were quarantined; all
+    five pass once these are gone.
+
+    Written with ``chr()`` on purpose: a test about invisible characters should
+    name them, not contain them where no reader can see them.
+    """
+    ZWSP, SHY, ZWNJ, ZWJ, WJ, BOM = (
+        chr(0x200B), chr(0x00AD), chr(0x200C), chr(0x200D), chr(0x2060), chr(0xFEFF)
+    )
+    NBSP = chr(0x00A0)
+
+    zw = ZWSP.join(["The", "Regular", "Meeting", "of", "the", "Board"])
+    assert sanitize(zw) == "TheRegularMeetingoftheBoard"
+
+    # the whole invisible family, including NUL, which Postgres rejects outright
+    noisy = "a\x00b" + SHY + "c" + ZWSP + "d" + ZWNJ + "e" + ZWJ + "f" + WJ + "g" + BOM + "h"
+    assert sanitize(noisy) == "abcdefgh"
+
+    # U+00A0 stays: Python already treats it as whitespace, so it collapses
+    # wherever text is split, and it really is a space.
+    assert sanitize("a" + NBSP + "b") == "a" + NBSP + "b"
+    assert ("a" + NBSP + "b").split() == ["a", "b"]

@@ -87,11 +87,43 @@ class ExtractedDoc:
         return len(self.text) + sum(len(t.markdown) for t in self.tables)
 
 
+#: Invisible characters that survive every other cleanup and corrupt
+#: everything that counts words. Tarrytowns' minutes — which are Google Docs
+#: exports — carry a U+200B between *every pair of words*: 8,209 of them in one
+#: 23-page file. Unlike U+00A0, a zero-width space is not whitespace to
+#: ``str.split()``, so it rides through chunking into the quality scorer, which
+#: sees almost no dictionary words and quarantines the chunk as illegible OCR.
+#: Measured 2026-10-10: five of five Tarrytowns minutes PDFs were quarantined,
+#: and all five pass once these are removed. They were the best narrative
+#: source in the corpus and none of it was reaching retrieval.
+#:
+#: U+00AD (soft hyphen) is here for the same reason — invisible, and it splits
+#: a word in two for anything counting them. U+200D is meaningful in some
+#: scripts but not in this corpus's English and Spanish.
+_INVISIBLE = str.maketrans({
+    "\x00": None,      # NUL — PostgreSQL text columns reject it outright
+    "\u00ad": None,    # soft hyphen
+    "\u200b": None,    # zero-width space
+    "\u200c": None,    # zero-width non-joiner
+    "\u200d": None,    # zero-width joiner
+    "\u2060": None,    # word joiner
+    "\ufeff": None,    # zero-width no-break space / BOM
+})
+
+
 def sanitize(text: str) -> str:
-    """Strip NUL (0x00) bytes: PyMuPDF occasionally emits them and
-    PostgreSQL text columns reject them (``DataError``). Nothing
-    downstream needs them."""
-    return text.replace("\x00", "")
+    """Remove characters that are invisible but not harmless.
+
+    NUL is here because PostgreSQL text columns reject it (``DataError``) and
+    PyMuPDF occasionally emits it. The rest are here because they are invisible
+    to a reader and *not* whitespace to ``str.split()``, so they reach the
+    quality scorer intact and make clean text look like garbage. See
+    ``_INVISIBLE``.
+
+    U+00A0 is deliberately left alone: Python already treats it as whitespace,
+    so it collapses wherever text is split, and it is semantically a space.
+    """
+    return text.translate(_INVISIBLE)
 
 
 def extract_pdf_text(path: str | Path) -> ExtractedText:
