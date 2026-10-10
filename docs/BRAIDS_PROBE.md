@@ -158,6 +158,65 @@ RESOLVED: That the Board of Education enters into Executive Session ...
 Mover, seconder and tally are all present and regular enough to parse
 deterministically — a vote line may not need a model call at all.
 
+## 7. Threads ARE recoverable semantically — but embed the subject, not the chunk
+
+The question this probe was really asked: can we track "the district is trying
+to improve safety — a study, some RFPs, a contract, then cameras and a security
+booth", where nothing is shared but the meaning?
+
+**Yes.** Tested on Port Chester with real Voyage embeddings over 139 agendas.
+But only one of two ways of doing it works.
+
+| candidate text | similarity spread | top-20 result |
+|---|---|---|
+| the whole chunk | 0.38 – 0.52 | noise scores as high as signal: "Approval of Meal Prices" at 0.496 beat "Appointment of the District Safety Team" at 0.407 |
+| **the item's subject line** | **0.116 – 0.506**, median 0.214 | nearly all on-topic |
+
+Embedding subjects recovered a five-year lifecycle with no identifier and no
+shared string:
+
+```
+2022-05-26  Public Comment – District-wide School Safety Plan
+2022-08-03  Approval of the District-wide Safety Plan
+2023-05-25  Commence a 30 Day Public Comment Period – District-wide Safety Plan
+2023-07-27  Approval of the District-wide Safety Plan
+2024-05-23  Commence a 30 Day Public Comment Period
+2024-08-15  Approval of the District-wide Safety Plan
+2025-05-29  Commence a 30 Day Public Comment Period
+2025-08-14  Approval of the District-wide Safety Plan
+2026-06-18  Commence a 30 Day Public Comment Period
+2026-08-27  Approval of the District-wide Safety Plan
+```
+
+and, in the same result set, the physical security work that belongs with it:
+
+```
+2022-03-21  SEQRA Type II for the JFK walkway and proposed lighting upgrades
+2024-01-18  SEQRA Type II Classification for Proposed Capital Improvements —
+            Security Vestibules and Lighting
+2025-10-16  Superintendent Report — ... Security Presentation
+```
+
+Different vocabulary at every step, correctly grouped.
+
+**Why the whole chunk fails.** Every BoardDocs item repeats the same
+scaffolding — meeting name, category, type, "BE IT RESOLVED that the Board of
+Education of the Port Chester-Rye Union Free School District". Literal
+scaffolding measures 22% of characters, and the A/B shows the effect on
+similarity is larger than that: two items about unrelated things land ~0.45
+apart because most of their text is identical. There is no threshold that
+separates signal from noise, which would make BRAIDS stage 2's "top-k above
+threshold" shortlist meaningless.
+
+**Recommendation for stage 2: track by subject, cite by chunk.** Assignment
+should match on an embedding of the item's distinctive line; the chunk stays
+the evidence that gets quoted. The subject is already recoverable with a
+regex over the chunk text (`Subject <n.n> <title> Meeting <date>`), and
+`chunking.py` could carry it as a field rather than re-deriving it.
+
+This also bears on `ask` and the topic map, which embed the full chunk today.
+Worth an A/B there before assuming it is only a braids concern.
+
 ## What this probe did not do
 
 - **No beats were extracted at volume, and Haiku was never run.** There is no
