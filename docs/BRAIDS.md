@@ -1,8 +1,22 @@
 # Blobs to Braids — narrative thread tracking
 
 *Status: design spec, not yet built. This is ROADMAP.md §6 ("storylines"),
-arriving with a real architecture. Build after the vision-OCR / salary-extract
-thread wraps.*
+arriving with a real architecture.*
+
+> **Gate passed, one prerequisite outstanding (2026-10-10).** The vision-OCR /
+> salary-extract thread this was told to wait for is paused as good enough
+> (see the 📌 pin in STATUS.md), so the build is unblocked — except that
+> **`herald-score` has still never run on this corpus.** Every one of ~54,000
+> chunks is `status='active'`, which means the quarantine this spec calls "a
+> prerequisite, not an option" has filtered nothing. Running it costs nothing
+> (`SUPABASE_DB_URL` only, no API keys) and it is the first move.
+>
+> Four corrections from what has been learned since drafting; see the notes
+> inline for each:
+> 1. The migration is **0009**, not 0006 — 0006 through 0008 are taken.
+> 2. Centroids are **`halfvec(1024)`**, not `vector(1024)` (migration 0007).
+> 3. Port Chester's minutes situation is **worse** than assumed here.
+> 4. The chunk count and cost estimate predate the agenda backfill.
 
 ## The problem
 
@@ -52,8 +66,23 @@ Three topologies a thread tracker must represent:
 State outcomes (`ADOPTED`, `FAILED`, `TABLED`) are recorded in **minutes**;
 agendas only say what will be discussed. Our minutes coverage is wildly
 uneven — Tarrytowns backs up nearly every consent item as its own attachment
-(7,587 chunks), while Port Chester's minutes are largely scanned images and
-Greenburgh has 339 chunks total. Two consequences:
+(7,587 chunks), while Greenburgh has 339 chunks total. Two consequences:
+
+> **Correction (2026-10-10): Port Chester is not "largely scanned images" —
+> it has no modern minutes at all.** Measured: 149 minutes documents dated
+> before 2021, exactly **1** since. Every other district is the mirror image
+> (none before 2021, plenty after) because theirs come from BoardDocs and Port
+> Chester's came from an older district-website source that stopped. No Port
+> Chester agenda across 104 of them carries an "Approval of Minutes" item
+> either, so they appear not to be produced, not merely unposted — a POL § 106
+> question in its own right (STATUS.md records it).
+>
+> For braids this is structural, not a coverage percentage: **Port Chester
+> threads can reach `PROPOSED` and essentially never a `VOTED_*` outcome**,
+> because the document type that records outcomes does not exist. Milestone 1
+> should check whether BoardDocs agendas are revised post-meeting with vote
+> results; if not, Port Chester lifecycles are permanently half-length and
+> `evidence_coverage` must say so loudly rather than implying a quiet death.
 
 - A thread whose last beat is `PROPOSED` must distinguish "died quietly"
   from "we don't have the minutes that would show what happened."
@@ -91,6 +120,22 @@ Chronological order matters: assignment (stage 2) links each beat to
 not reasoning. One call per chunk; a consent-agenda composite chunk may
 yield several beats. Full-corpus cost ≈ 23k prose chunks × ~1k tokens ≈
 **$30–40 one-time**; monthly increments are pennies.
+
+> **Re-size this before committing (2026-10-10).** The 23k figure predates the
+> agenda backfill — 443 agendas added for the four IP-blocked districts, the
+> corpus now ~54,000 chunks total. Count the actual candidates first, and do it
+> *after* `score`, since quarantine is what removes the procedural bulk that
+> agendas are full of:
+>
+> ```sql
+> select di.slug, count(*) as candidate_chunks
+> from chunks c
+> join documents d  on d.id  = c.document_id
+> join districts di on di.id = d.district_id
+> where c.kind = 'prose' and c.status = 'active'
+>   and c.doc_type in ('agenda','minutes')
+> group by di.slug order by 2 desc;
+> ```
 
 **Beat JSON the model emits** (raw labels only, normalization is ours):
 
@@ -174,7 +219,7 @@ never silently move; a discovered mistake is corrected by an explicit
 `superseded_by` edge, not a rewrite. Every assignment records *how* it was
 made (`anchor` / `similarity` / `adjudicated`) so mistakes are auditable.
 
-## 3. Schema (migration `0006_braids.sql`)
+## 3. Schema (migration `0009_braids.sql`)
 
 ```sql
 create table narrative_threads (
@@ -186,8 +231,8 @@ create table narrative_threads (
   last_seen     date not null,
   beat_count    int  not null default 0,
   evidence_coverage numeric,               -- share of active-window meetings with ingested minutes
-  centroid      vector(1024),              -- EMA of member-beat embeddings (see note)
-  centroid_first vector(1024),             -- frozen mean of the first beats (drift audit anchor)
+  centroid      halfvec(1024),             -- EMA of member-beat embeddings (see note)
+  centroid_first halfvec(1024),            -- frozen mean of the first beats (drift audit anchor)
   created_at    timestamptz not null default now()
 );
 
