@@ -1153,6 +1153,18 @@ adapted).
 
 ## Failures, weak spots & known issues
 
+- **The Supabase project pauses after 7 days without a connection (2026-10-05).**
+  The weekly refresh died in 7 seconds on `FATAL: (ENOTFOUND) tenant/user
+  postgres.<ref> not found`, which is the pooler's answer for a *paused*
+  project. The refresh was the only scheduled thing that connected, it runs
+  7 days apart, and GitHub starts it 8+ hours late by a varying amount; the
+  09-28 → 10-05 gap was 7 days 30 min and the first week with no manual run in
+  between. A paused project stays down until it is restored from the dashboard
+  (it was, before the 10-06 ingest). Fix: `db-keepalive.yml` connects
+  Mon/Wed/Fri and reports size against the 500 MB tier in its step summary,
+  failing at 450 MB. `refresh.yml` now puts the tail of a failed ingest's log
+  in its step summary. Logs are also readable via the GitHub MCP's
+  `get_job_logs`, which the earlier "logs are unreachable" assumption missed.
 - **BoardDocs now IP-blocks datacenter fetches.** The original July scrape
   downloaded BoardDocs files fine, but re-fetching them for the table backfill
   now 403s — even through headless Chromium (Playwright), which rules out

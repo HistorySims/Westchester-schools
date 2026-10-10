@@ -192,16 +192,25 @@ jobs:
           find data/artifacts -name manifest.jsonl -exec sh -c \
             'echo "  $(wc -l < "$1") entries in $1"' _ {} \;
       - name: Ingest
+        id: ingest
         # A wave is embedded and written as a unit, and a document is only
         # marked ingested once its chunks commit — so a smaller wave banks
         # progress more often and loses less when a run is killed. 512 was
         # chosen for throughput, before anything had been killed.
+        #
+        # tee: the 2026-10-05 failure was diagnosable only from the job log,
+        # and the step summary below said "(no report)". The tail of this log
+        # goes into the summary on failure, so the cause is one API read away.
+        # pipefail because the default `bash -e` shell does not set it, and
+        # without it tee's exit status would turn a failed ingest green.
         run: |
+          set -o pipefail
           uv run herald-ingest run \
             --root data/artifacts \
             --wave-size 128 \
             --report ingest-report.md \
-            ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }}
+            ${{ inputs.dry_run && '--dry-run' || '--no-dry-run' }} \
+            2>&1 | tee ingest.log
       - name: Resources after ingest
         if: always()
         run: |
@@ -213,6 +222,16 @@ jobs:
           {
             echo '## ingest'
             cat ingest-report.md 2>/dev/null || echo '(no report)'
+            if [ "${{ steps.ingest.outcome }}" = "failure" ]; then
+              # A database that cannot be reached shows up here as
+              # "tenant/user ... not found": the Supabase project is paused
+              # (see db-keepalive.yml). Strip rich's colour codes.
+              echo ''
+              echo '### ingest failed — last 40 lines'
+              echo '```'
+              tail -n 40 ingest.log 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' || echo '(no log)'
+              echo '```'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   # A run where some districts failed still ends green on the ingest job, and

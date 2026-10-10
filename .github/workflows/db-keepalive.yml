@@ -1,0 +1,105 @@
+name: db-keepalive
+
+# Touch the database three times a week so Supabase never pauses it, and
+# report how close it is to the tier limit while we're there.
+#
+# Why this exists: the 2026-10-05 refresh died in 7 seconds on
+#
+#   FATAL: (ENOTFOUND) tenant/user postgres.<project-ref> not found
+#
+# which is what Supabase's pooler says for a project that is PAUSED. Free-tier
+# projects pause after 7 days with no database activity. The weekly refresh is
+# the only scheduled thing that connects, and it is exactly 7 days apart — plus
+# GitHub's scheduler starts it 8+ hours late, by a different amount each week.
+# Every earlier week happened to have a manual ingest/extract/migrate in
+# between; the week of 09-28 → 10-05 did not, and the gap came to 7 days 30
+# minutes. A paused project stays paused until someone restores it from the
+# dashboard, so the refresh does not recover on its own.
+#
+# Mon/Wed/Fri rather than twice a week: GitHub occasionally drops a scheduled
+# run outright, and with three a week losing any one still leaves a gap of at
+# most 5 days.
+#
+# ⚠️  Like every scheduled workflow, this only fires from main, and GitHub
+#     disables it after 60 days with no commits to the repo. If that happens
+#     the database pauses a week later — so the first symptom of a stale repo
+#     will be a refresh that dies in seconds with the error above.
+#
+# The headroom report is the query nobody had run for a month (296 MB against
+# 500 MB on 2026-09-07). The step summary is readable through the API, so the
+# number is available without a browser. Over HEADROOM_FAIL_MB the job fails —
+# deliberately, because a failed scheduled run is what emails the owner, and
+# Supabase pauses a project that stays over quota.
+#
+# Required secret: SUPABASE_DB_URL
+
+on:
+  schedule:
+    # 05:41 UTC Mon/Wed/Fri. Off the hour: GitHub's scheduler delays :00 runs.
+    - cron: "41 5 * * 1,3,5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TIER_MB: 500
+  HEADROOM_WARN_MB: 400
+  HEADROOM_FAIL_MB: 450
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+    steps:
+      - name: Check secret
+        run: |
+          [ -n "$SUPABASE_DB_URL" ] || { echo "SUPABASE_DB_URL secret is missing"; exit 1; }
+      # psql ships on the ubuntu runner image, so this needs no checkout or
+      # uv sync — the whole job is a few seconds.
+      - name: Query size and chunk count
+        id: size
+        run: |
+          set -o pipefail
+          # count(*), not n_live_tup: that reads 0 on a never-analyzed table.
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "
+            select pg_database_size(current_database()) / (1024 * 1024),
+                   (select count(*) from chunks),
+                   (select count(*) from documents)
+          " 2>&1 | tee size.txt
+          read -r MB CHUNKS DOCS < size.txt
+          echo "mb=$MB"         >> "$GITHUB_OUTPUT"
+          echo "chunks=$CHUNKS" >> "$GITHUB_OUTPUT"
+          echo "docs=$DOCS"     >> "$GITHUB_OUTPUT"
+      - name: Publish headroom
+        if: always()
+        run: |
+          MB="${{ steps.size.outputs.mb }}"
+          {
+            echo '## database headroom'
+            echo ''
+            if [ -z "$MB" ]; then
+              echo '**Could not query the database.** If the error below says'
+              echo '`tenant/user ... not found`, the Supabase project is paused:'
+              echo 'restore it from the Supabase dashboard.'
+              echo ''
+              echo '```'
+              cat size.txt 2>/dev/null || echo '(no output)'
+              echo '```'
+            else
+              echo "| | |"
+              echo "|---|---:|"
+              echo "| database | **${MB} MB** of ${TIER_MB} MB ($(( MB * 100 / TIER_MB ))%) |"
+              echo "| chunks | ${{ steps.size.outputs.chunks }} |"
+              echo "| documents | ${{ steps.size.outputs.docs }} |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ -n "$MB" ] || exit 0
+          if [ "$MB" -ge "$HEADROOM_FAIL_MB" ]; then
+            echo "::error::Database is ${MB} MB of ${TIER_MB} MB. Supabase pauses projects that stay over quota — see docs/DISK_SPACE.md."
+            exit 1
+          elif [ "$MB" -ge "$HEADROOM_WARN_MB" ]; then
+            echo "::warning::Database is ${MB} MB of ${TIER_MB} MB."
+          fi
