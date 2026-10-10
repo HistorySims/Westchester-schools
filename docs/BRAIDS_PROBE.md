@@ -158,6 +158,188 @@ RESOLVED: That the Board of Education enters into Executive Session ...
 Mover, seconder and tally are all present and regular enough to parse
 deterministically — a vote line may not need a model call at all.
 
+## 7. Threads ARE recoverable semantically — but embed the subject, not the chunk
+
+The question this probe was really asked: can we track "the district is trying
+to improve safety — a study, some RFPs, a contract, then cameras and a security
+booth", where nothing is shared but the meaning?
+
+**Yes.** Tested on Port Chester with real Voyage embeddings over 139 agendas.
+But only one of two ways of doing it works.
+
+| candidate text | similarity spread | top-20 result |
+|---|---|---|
+| the whole chunk | 0.38 – 0.52 | noise scores as high as signal: "Approval of Meal Prices" at 0.496 beat "Appointment of the District Safety Team" at 0.407 |
+| **the item's subject line** | **0.116 – 0.506**, median 0.214 | nearly all on-topic |
+
+Embedding subjects recovered a five-year lifecycle with no identifier and no
+shared string:
+
+```
+2022-05-26  Public Comment – District-wide School Safety Plan
+2022-08-03  Approval of the District-wide Safety Plan
+2023-05-25  Commence a 30 Day Public Comment Period – District-wide Safety Plan
+2023-07-27  Approval of the District-wide Safety Plan
+2024-05-23  Commence a 30 Day Public Comment Period
+2024-08-15  Approval of the District-wide Safety Plan
+2025-05-29  Commence a 30 Day Public Comment Period
+2025-08-14  Approval of the District-wide Safety Plan
+2026-06-18  Commence a 30 Day Public Comment Period
+2026-08-27  Approval of the District-wide Safety Plan
+```
+
+and, in the same result set, the physical security work that belongs with it:
+
+```
+2022-03-21  SEQRA Type II for the JFK walkway and proposed lighting upgrades
+2024-01-18  SEQRA Type II Classification for Proposed Capital Improvements —
+            Security Vestibules and Lighting
+2025-10-16  Superintendent Report — ... Security Presentation
+```
+
+Different vocabulary at every step, correctly grouped.
+
+**Why the whole chunk fails.** Every BoardDocs item repeats the same
+scaffolding — meeting name, category, type, "BE IT RESOLVED that the Board of
+Education of the Port Chester-Rye Union Free School District". Literal
+scaffolding measures 22% of characters, and the A/B shows the effect on
+similarity is larger than that: two items about unrelated things land ~0.45
+apart because most of their text is identical. There is no threshold that
+separates signal from noise, which would make BRAIDS stage 2's "top-k above
+threshold" shortlist meaningless.
+
+**Recommendation for stage 2: track by subject, cite by chunk.** Assignment
+should match on an embedding of the item's distinctive line; the chunk stays
+the evidence that gets quoted. The subject is already recoverable with a
+regex over the chunk text (`Subject <n.n> <title> Meeting <date>`), and
+`chunking.py` could carry it as a field rather than re-deriving it.
+
+This also bears on `ask` and the topic map, which embed the full chunk today.
+Worth an A/B there before assuming it is only a braids concern.
+
+## 8. Worked example: Port Chester's safety plan, 2022-2026
+
+Run because the question "can we track a safety initiative" deserved a real
+answer rather than a mechanism demo. Three plans fetched from BoardDocs.
+
+| plan | pages | characters |
+|---|---:|---:|
+| 2022-23 | 45 | 74,248 |
+| 2023-24 | 54 | 91,057 |
+| 2024-25 | 69 | 108,420 |
+
+**It only ever grows.** Across both transitions, terms added: 18 then 22.
+Terms dropped: **zero, both times.** The document accretes and never prunes —
+a 53% growth in two years.
+
+### The misreading, recorded because it is the newsletter's main hazard
+
+The 2024-25 plan introduces *shooting, simulations, props, actors, mimic,
+tactics, trauma-informed*. Read as a word list that says Port Chester added
+full-scale active-shooter simulation drills. The actual sentence:
+
+> "...shall be conducted in a trauma-informed, developmentally, and
+> age-appropriate manner and **shall not include props, actors, simulations,
+> or other tactics intended to mimic a school shooting**..."
+
+It *bans* them. The vocabulary diff was exactly backwards on the substance.
+Same with *panic*, which reads like a purchase and is §2801-a(2)(f) requiring
+districts to **consider** silent panic alarms.
+
+What is actually happening: **the plan grows by absorbing new Albany mandates
+verbatim** — 2023 added remote-instruction definitions and the panic-alarm
+consideration, 2024 added the trauma-informed drill requirements. Almost none
+of the growth is local decision-making.
+
+**The lesson for the newsletter is structural, not incidental.** Change
+detection by vocabulary finds *that* something changed and reliably
+misattributes *who decided it*. A brief claiming "Port Chester adds
+active-shooter simulations" would be the precise opposite of the truth, sourced
+from a real diff of real documents. Any year-over-year feature needs the
+sentence, not the term — and needs to distinguish a mandate absorbed from a
+choice made.
+
+### A finding in its own right
+
+Port Chester attached the plan to its agenda in 2022, 2023 and 2024, and
+**stopped**. The 2025-08-14 and 2026-08-27 approvals carry no safety-plan
+attachment — the 2026 agenda has 32 attachments and none is the plan. The board
+still adopts it annually, as Education Law 2801 requires; it is no longer
+published alongside the vote. (Not posted *to BoardDocs* — it may live on the
+district site; worth checking before the claim is made in print.)
+
+### The security trail exists, in attachments
+
+The storyline that prompted this is real and fetchable, just not in agenda
+prose:
+
+```
+2022-06-23  Security Services Backup.pdf
+2023-07-06  Security Guard Services Backup.pdf
+2023-10-19  John Pontillo Cameras Donation High School Backup.pdf
+2025-03-20  Security Vestibules JFK Bid Backup.pdf
+2025-03-20  Security Vestibules MS & King Street Bid Backup.pdf
+```
+
+Altaris is Mount Vernon's, not Port Chester's: `Altaris Consulting Group
+2022-23 Proposal.pdf`, 2022-05-17.
+
+**None of these attachments is in the corpus.** The agenda snapshot captured
+agenda HTML only. So the documents that carry the substance of this storyline
+are one fetch away and currently absent — which is the strongest argument yet
+for an attachment backfill alongside the minutes one.
+
+## 9. Three-way A/B: what text should assignment embed?
+
+The obvious fix for §7 was "strip the boilerplate". Measured, it is not.
+
+147 Port Chester agenda items labelled into 8 topics by regex over their
+subject lines, then embedded three ways and scored on the operation
+assignment actually performs — nearest neighbour, document to document.
+
+```
+baseline (always guess the biggest class)      41.8%
+
+A  raw chunk            nearest-neighbour 74.7%   precision@5 66.6%
+B  scaffold-stripped    nearest-neighbour 79.5%   precision@5 66.8%
+C  subject only         nearest-neighbour 95.9%   precision@5 95.2%
+```
+
+**Stripping scaffolding is not worth doing.** Arm B gains 5 points on nearest
+neighbour and 0.2 on precision@5 — nothing, against the cost of re-embedding
+~66,000 chunks.
+
+**Subject-only takes precision@5 from 67% to 95%**, which is the difference
+between a stage-2 shortlist that is a third wrong and one that is almost pure.
+
+### Two caveats on this number, both mine
+
+**A leak.** Topic labels came from a regex over subject lines, and arm C
+embeds those same subject lines — so C sees the labelling signal undiluted
+while A and B see it buried in body text. That is partly the finding (dilution
+is the mechanism) and partly a rigged comparison. Trust the direction; treat
+the 29-point gap as flattered. A cleaner run would label from something other
+than the text being embedded.
+
+**I measured this three times and got three answers.** An eyeball of a seed
+query's top-20 said "night and day". A within-topic vs between-topic mean
+similarity test said +0.014, i.e. nothing. The kNN test says it is decisive.
+The middle one was the wrong statistic: absolute similarities here all sit
+between 0.68 and 0.85, so the *mean* gap is uninformative while the *ranking*
+is not — and ranking is what assignment consumes. Worth remembering before
+trusting any single embedding metric in this corpus.
+
+### What follows
+
+- Do **not** re-embed `chunks.embedding` to strip scaffolding. No evidence it
+  helps, and it is the most expensive change available.
+- Put the subject embedding where assignment happens — on the beat or thread
+  row, not on every chunk. Beats number in the thousands; chunks in the tens of
+  thousands, and the storage is `halfvec` either way.
+- `ask` is untouched by this. It does query→document retrieval with a short
+  query, which is a different operation from document→document clustering and
+  needs its own A/B before anyone changes it.
+
 ## What this probe did not do
 
 - **No beats were extracted at volume, and Haiku was never run.** There is no
