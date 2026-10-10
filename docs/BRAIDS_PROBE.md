@@ -289,6 +289,57 @@ agenda HTML only. So the documents that carry the substance of this storyline
 are one fetch away and currently absent — which is the strongest argument yet
 for an attachment backfill alongside the minutes one.
 
+## 9. Three-way A/B: what text should assignment embed?
+
+The obvious fix for §7 was "strip the boilerplate". Measured, it is not.
+
+147 Port Chester agenda items labelled into 8 topics by regex over their
+subject lines, then embedded three ways and scored on the operation
+assignment actually performs — nearest neighbour, document to document.
+
+```
+baseline (always guess the biggest class)      41.8%
+
+A  raw chunk            nearest-neighbour 74.7%   precision@5 66.6%
+B  scaffold-stripped    nearest-neighbour 79.5%   precision@5 66.8%
+C  subject only         nearest-neighbour 95.9%   precision@5 95.2%
+```
+
+**Stripping scaffolding is not worth doing.** Arm B gains 5 points on nearest
+neighbour and 0.2 on precision@5 — nothing, against the cost of re-embedding
+~66,000 chunks.
+
+**Subject-only takes precision@5 from 67% to 95%**, which is the difference
+between a stage-2 shortlist that is a third wrong and one that is almost pure.
+
+### Two caveats on this number, both mine
+
+**A leak.** Topic labels came from a regex over subject lines, and arm C
+embeds those same subject lines — so C sees the labelling signal undiluted
+while A and B see it buried in body text. That is partly the finding (dilution
+is the mechanism) and partly a rigged comparison. Trust the direction; treat
+the 29-point gap as flattered. A cleaner run would label from something other
+than the text being embedded.
+
+**I measured this three times and got three answers.** An eyeball of a seed
+query's top-20 said "night and day". A within-topic vs between-topic mean
+similarity test said +0.014, i.e. nothing. The kNN test says it is decisive.
+The middle one was the wrong statistic: absolute similarities here all sit
+between 0.68 and 0.85, so the *mean* gap is uninformative while the *ranking*
+is not — and ranking is what assignment consumes. Worth remembering before
+trusting any single embedding metric in this corpus.
+
+### What follows
+
+- Do **not** re-embed `chunks.embedding` to strip scaffolding. No evidence it
+  helps, and it is the most expensive change available.
+- Put the subject embedding where assignment happens — on the beat or thread
+  row, not on every chunk. Beats number in the thousands; chunks in the tens of
+  thousands, and the storage is `halfvec` either way.
+- `ask` is untouched by this. It does query→document retrieval with a short
+  query, which is a different operation from document→document clustering and
+  needs its own A/B before anyone changes it.
+
 ## What this probe did not do
 
 - **No beats were extracted at volume, and Haiku was never run.** There is no
