@@ -217,6 +217,78 @@ regex over the chunk text (`Subject <n.n> <title> Meeting <date>`), and
 This also bears on `ask` and the topic map, which embed the full chunk today.
 Worth an A/B there before assuming it is only a braids concern.
 
+## 8. Worked example: Port Chester's safety plan, 2022-2026
+
+Run because the question "can we track a safety initiative" deserved a real
+answer rather than a mechanism demo. Three plans fetched from BoardDocs.
+
+| plan | pages | characters |
+|---|---:|---:|
+| 2022-23 | 45 | 74,248 |
+| 2023-24 | 54 | 91,057 |
+| 2024-25 | 69 | 108,420 |
+
+**It only ever grows.** Across both transitions, terms added: 18 then 22.
+Terms dropped: **zero, both times.** The document accretes and never prunes —
+a 53% growth in two years.
+
+### The misreading, recorded because it is the newsletter's main hazard
+
+The 2024-25 plan introduces *shooting, simulations, props, actors, mimic,
+tactics, trauma-informed*. Read as a word list that says Port Chester added
+full-scale active-shooter simulation drills. The actual sentence:
+
+> "...shall be conducted in a trauma-informed, developmentally, and
+> age-appropriate manner and **shall not include props, actors, simulations,
+> or other tactics intended to mimic a school shooting**..."
+
+It *bans* them. The vocabulary diff was exactly backwards on the substance.
+Same with *panic*, which reads like a purchase and is §2801-a(2)(f) requiring
+districts to **consider** silent panic alarms.
+
+What is actually happening: **the plan grows by absorbing new Albany mandates
+verbatim** — 2023 added remote-instruction definitions and the panic-alarm
+consideration, 2024 added the trauma-informed drill requirements. Almost none
+of the growth is local decision-making.
+
+**The lesson for the newsletter is structural, not incidental.** Change
+detection by vocabulary finds *that* something changed and reliably
+misattributes *who decided it*. A brief claiming "Port Chester adds
+active-shooter simulations" would be the precise opposite of the truth, sourced
+from a real diff of real documents. Any year-over-year feature needs the
+sentence, not the term — and needs to distinguish a mandate absorbed from a
+choice made.
+
+### A finding in its own right
+
+Port Chester attached the plan to its agenda in 2022, 2023 and 2024, and
+**stopped**. The 2025-08-14 and 2026-08-27 approvals carry no safety-plan
+attachment — the 2026 agenda has 32 attachments and none is the plan. The board
+still adopts it annually, as Education Law 2801 requires; it is no longer
+published alongside the vote. (Not posted *to BoardDocs* — it may live on the
+district site; worth checking before the claim is made in print.)
+
+### The security trail exists, in attachments
+
+The storyline that prompted this is real and fetchable, just not in agenda
+prose:
+
+```
+2022-06-23  Security Services Backup.pdf
+2023-07-06  Security Guard Services Backup.pdf
+2023-10-19  John Pontillo Cameras Donation High School Backup.pdf
+2025-03-20  Security Vestibules JFK Bid Backup.pdf
+2025-03-20  Security Vestibules MS & King Street Bid Backup.pdf
+```
+
+Altaris is Mount Vernon's, not Port Chester's: `Altaris Consulting Group
+2022-23 Proposal.pdf`, 2022-05-17.
+
+**None of these attachments is in the corpus.** The agenda snapshot captured
+agenda HTML only. So the documents that carry the substance of this storyline
+are one fetch away and currently absent — which is the strongest argument yet
+for an attachment backfill alongside the minutes one.
+
 ## What this probe did not do
 
 - **No beats were extracted at volume, and Haiku was never run.** There is no
