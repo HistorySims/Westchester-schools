@@ -1714,3 +1714,44 @@ Gotchas this pilot bought:
   private security MOU (Tarrytowns and Summit Security Services, 2020-21), and
   one district's own student-reunification design (Elmsford 2026-27). These are
   the roots worth tracing into the agenda corpus.
+
+### Second class: codes of conduct (2026-10-11)
+
+Ran the same detector over codes of conduct to test whether it is a method or a
+lucky corpus. **Detection generalizes; the mandate/local label does not.** Full
+write-up in the second half of `docs/DRIFT_PILOT.md`; corpus is
+`data/snapshots/code-of-conducts.jsonl.gz` (25 filings, 7 districts).
+
+- **Coverage has to be measured per document class.** An unfiltered search of
+  all 721 committed agendas finds **zero** code-of-conduct attachments for
+  port-chester-rye, 3 for peekskill (Nov-Dec 2021 only) and 3 for mount-vernon
+  (Aug-Sep 2023 only). Districts adopt the code by resolution and post it on
+  their website. Port Chester files its safety plan every year and its code
+  never. Only white-plains, tarrytowns and greenburgh-central have a usable
+  consecutive series.
+- **Centroid drift fails again**, independently: every adjacent year pair lands
+  between 0.0000 and 0.0003, including 2025-26 → 2026-27, which contains the
+  §2803 phone-free-schools mandate.
+- **Section distance ranking works on an untuned class.** Greenburgh's phone-law
+  section ranks 4th of 180 at 0.172 against a 0.0020 median.
+- **The peer gate broke, structurally.** That same section matched peers at
+  **0.79** against a 0.80 gate and came back `local`. Ossining implemented the
+  same law by writing a separate policy (**5695 — Student Use of Internet
+  Enabled Devices**) and cross-referencing it from the code, so there was no
+  comparable section to agree with; its own phone text is a footnote at
+  character 820 of a 1,374-character section about firearms and explosives, and
+  its 0.85 "agreement" is generic disciplinary-code similarity. **One mandate,
+  two document classes** — so mandate detection has to search across classes,
+  and within a class you report `best_peer`, not the binary. Pinned as a
+  counter-example in `tests/test_drift_schools.py`.
+- **Re-filing is the dominant behaviour and the cheapest real signal** — no
+  embeddings needed. White Plains' 2026-27 code is 99.9967% character-identical
+  to its 2025-26 and contains zero occurrences of "internet-enabled",
+  "bell-to-bell" or §2803; Greenburgh's 2023-24 and 2024-25 differ by 4
+  characters in 223,000; Elmsford re-attached the same 18.8 MB file for 2018-19
+  and 2019-20. "Who rewrote their code this year and who re-filed" is closer to
+  a newsletter paragraph than any similarity score.
+- **Acquisition is now generic**: `scripts/drift_pilot/acquire.py --doc-class`,
+  then `extract.py`, then `snapshot.py`. The BoardDocs attachment listings are
+  cached in `agenda_files.json`, so the first class costs ~40 minutes of
+  crawling and every later class is a regex over data already on disk.

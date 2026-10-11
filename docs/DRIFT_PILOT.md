@@ -200,3 +200,133 @@ centroid attempt, kept because its failure is the finding), `novelty.py` (the
 count attempt), `edits.py` (the working magnitude version). They write to a
 scratch directory and need `VOYAGE_API_KEY`; Tesseract is required for the four
 scanned plans.
+
+---
+
+# Second document class: codes of conduct
+
+Run to test whether the method is a method or a lucky corpus. Every district
+must adopt a code of conduct annually under Education Law §2801, and there is a
+clean validation target: New York's Distraction-Free Schools Law (§2803)
+restricts internet-enabled devices bell-to-bell from the 2025-26 school year.
+
+**Result: detection generalizes, classification does not, and the reason is
+worth more than the test.**
+
+## Coverage is much thinner, and that is the first finding
+
+25 filings, 7 districts, 2015-16 … 2026-27 — but spread so thin that most
+school years hold one or two districts, against five or six for safety plans:
+
+| school year | districts |
+|---|---|
+| 2021-22 | 4 — ossining, peekskill, tarrytowns, white-plains |
+| 2023-24 | 4 — greenburgh-central, mount-vernon, tarrytowns, white-plains |
+| 2019-20, 2026-27 | 2–3 |
+| 2015-16 … 2018-19, 2022-23, 2024-25, 2025-26 | 1–2 |
+
+Only three districts have a usable consecutive series: white-plains (6 years),
+tarrytowns (5), greenburgh-central (4). Peekskill and Mount Vernon have one
+filing each, so neither can be compared with itself at all.
+
+This is not the filters being too strict. An **unfiltered** search for "code of
+conduct" across all 721 committed agendas finds **zero** attachments for
+port-chester-rye, three for peekskill (all November–December 2021) and three
+for mount-vernon (all August–September 2023). Districts adopt the code by
+resolution and publish the document on their own website; the safety plan gets
+attached to the agenda and the code frequently does not. **Which document
+classes are reachable through BoardDocs has to be measured per class, not
+assumed from one.**
+
+## Centroid drift fails again, independently
+
+| transition | districts in both | consensus moved |
+|---|---|---|
+| 2023-24 → 2024-25 | 2 | 0.0002 |
+| 2024-25 → 2025-26 | 2 | 0.0003 |
+| **2025-26 → 2026-27** | 2 | **0.0001** |
+
+Every adjacent pair lands between 0.0000 and 0.0003, including the pair that
+contains the phone law. A second mandated class, a second near-zero reading.
+
+## Section-level detection generalizes
+
+Greenburgh wrote the mandate into its 2026-27 code as prose, and the detector
+puts that section **4th of 180** at 0.172 against a median of 0.0020 — about
+86× the noise floor, comfortably above p90 of 0.0902:
+
+> Law § 2803 In compliance with New York State Education Phone Free School Law
+> where no unsanctioned use of smartphones and other internet-enabled personal
+> devices on school grounds in K-12 schools for the entire school day (from
+> "bell to bell"), including classroom time and other settings like lunch and
+> study hall periods…
+
+That is the whole detection claim, and it holds on a class the thresholds were
+not tuned on.
+
+## The peer test does not transfer — districts put one mandate in different documents
+
+Greenburgh's phone section scored a best peer match of **0.79**, one hundredth
+under the 0.80 gate, and was labelled a *local* decision when it is the
+clearest mandate in the corpus. Ossining's phone language *was* labelled
+mandate at 0.85 — but for the wrong reason, and that is the instructive part.
+
+Ossining's vocabulary sits at character 820 of a 1,374-character section whose
+first 820 characters are about firearms, firecrackers and explosives, because
+it is a footnote hung on a row of a disciplinary matrix. The section's vector
+is dominated by weapons language, and its 0.85 agreement with peers is generic
+disciplinary-code similarity, not agreement about phones. The footnote names
+where the rule actually lives:
+
+> *In accordance with the Distraction-Free Schools Law implemented by New York
+> State, the Ossining Union Free School District developed an Internet-enabled
+> Device Policy: (New Policy 5695 — Student Use of Internet Enabled Devices
+> During the School Day…
+
+**So the same mandate was filed in two different document classes.** Greenburgh
+put it in the code of conduct; Ossining wrote a new standalone policy and
+cross-referenced it. Nudging the threshold to 0.78 would "fix" this one case
+and would be overfitting: the honest reading is that a within-class peer test
+asks whether two districts changed *the same document* in the same way, and for
+a mandate that is simply not guaranteed. Mandate detection has to search across
+classes. Within a class, the **distance ranking transfers and the binary label
+does not.**
+
+A second reason the label is fragile here: codes of conduct mix prose with
+behavior–consequence matrices, and a matrix row is not a section. Section
+comparison assumes the two districts write at comparable granularity, which
+holds for safety plans and does not hold here.
+
+## The most useful output on this class: who actually changed anything
+
+Re-filing is the dominant behaviour, and it is detected trivially and
+reliably — no thresholds involved.
+
+- **white-plains** 2026-27 is **99.9967% character-identical** to its 2025-26
+  code (the PDFs differ, 370 KB against 484 KB, so it was regenerated rather
+  than re-uploaded) and contains **zero** occurrences of "internet-enabled",
+  "bell-to-bell" or "§2803". The report says so in one line: *"Nothing above
+  the floor — this filing restates the previous one."*
+- **greenburgh-central** 2023-24 and 2024-25 differ by **4 characters** out of
+  223,000.
+- **elmsford** 2018-19 and 2019-20 are the same 18.8 MB file re-attached a year
+  apart — the same pattern as its safety plan, which went four years unchanged.
+
+"Which districts rewrote their code this year, and which re-filed last year's"
+is a question this answers cheaply and exactly, and it is closer to a
+newsletter paragraph than any similarity score.
+
+## What the two classes together say
+
+1. **Centroid-per-document is dead** on mandated filings — two independent
+   classes, both near zero across every transition.
+2. **Section distance ranking is the transferable part.** It found the 155.17
+   drill amendments and the §2803 phone law on classes with different
+   structure and different thresholds.
+3. **The mandate/local label is class-specific** and depends on peers writing
+   the same rule into the same document at a similar granularity. Report the
+   peer score, do not report the binary.
+4. **Coverage must be measured per class.** Port Chester files its safety plan
+   every year and its code of conduct never.
+5. **Re-file detection is the cheapest real signal in the whole pipeline** and
+   needs no embeddings at all.

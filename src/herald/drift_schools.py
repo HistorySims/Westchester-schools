@@ -175,9 +175,26 @@ def classify_change(change: SectionChange, *, peer_match: float = DEFAULT_PEER_M
 
     "Unchanged" covers the great majority: a filing that re-states last year's
     template, where the distance is re-extraction noise. Of the two that remain,
-    ``local`` is the one worth a human's attention — on the pilot corpus it
+    ``local`` is the one worth a human's attention — on the safety plans it
     surfaced inter-agency police agreements, a private security contract and one
     district's own student-reunification design, none of which any peer filed.
+
+    **This label is calibrated per document class and does not transfer; the
+    distance ranking does.** On safety plans the separation is wide, because
+    districts absorbing a regulation paste near-identical text and agree at
+    0.90-0.97 while genuinely local passages sit at 0.67-0.79. Run against codes
+    of conduct it broke: Greenburgh's section implementing the §2803
+    phone-free-schools law — the clearest mandate in that corpus — matched peers
+    at 0.79 and came back ``local``.
+
+    The cause is structural rather than a threshold worth nudging. Ossining
+    implemented the same law by writing a *separate* policy (5695) and
+    cross-referencing it from the code, so there was no comparable section to
+    agree with; what agreement there was came from generic disciplinary
+    language. A within-class peer test asks whether two districts changed the
+    same document in the same way, and for a mandate that is not guaranteed.
+    Prefer reporting ``best_peer`` to a caller over reporting this label, and
+    re-measure the gate on any new class before trusting it.
     """
     if change.distance < 0.12:
         return "unchanged"

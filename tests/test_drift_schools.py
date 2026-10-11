@@ -150,3 +150,31 @@ class TestConsensusMovement:
         # d2 has no 'a' filing, so one district remains: no group to speak of
         assert consensus_movement(a, b) == 0.0
         assert consensus_movement({}, {}) == 0.0
+
+
+class TestClassLabelDoesNotTransfer:
+    """The measured counter-example, pinned so the gate is not quietly trusted.
+
+    Greenburgh's 2026-27 code of conduct implements the §2803 phone-free-schools
+    law in a prose section the detector ranks 4th of 180 at 0.172 against a
+    median of 0.0020. It is the clearest mandate in that corpus and the peer
+    gate calls it local, because Ossining implemented the same law as a separate
+    policy (5695) cross-referenced from its code rather than as a comparable
+    section. The distance ranking is the part that transfers between document
+    classes; this label is not.
+    """
+
+    def test_the_phone_law_section_is_found_by_distance(self) -> None:
+        change = SectionChange(index=3, distance=0.172, best_peer=0.79, text="x")
+        # 86x a 0.0020 median: detection is not in question
+        assert change.distance / 0.0020 > 50
+        assert classify_change(change) != "unchanged"
+
+    def test_and_is_mislabelled_by_the_safety_plan_gate(self) -> None:
+        change = SectionChange(index=3, distance=0.172, best_peer=0.79, text="x")
+        assert classify_change(change) == "local"   # it is a mandate
+
+    def test_a_class_specific_gate_recovers_it(self) -> None:
+        """Re-measuring per class is the documented remedy, not a global nudge."""
+        change = SectionChange(index=3, distance=0.172, best_peer=0.79, text="x")
+        assert classify_change(change, peer_match=0.78) == "mandate"
