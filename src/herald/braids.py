@@ -27,6 +27,7 @@ Two facts from the probe (docs/BRAIDS_PROBE.md) shape this:
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from herald.taxonomy import normalize_state
@@ -69,7 +70,13 @@ _TAIL = re.compile(
 
 #: A subject may be labelled ("Subject 8.1 Approval of ...") or bare ("Open
 #: Meeting"). Strip the label and number when they are there.
-_SUBJECT_LABEL = re.compile(r"^.*?\bSubject\s+(?:(?P<num>\d+(?:\.\d+)*)\s+)?", re.I | re.S)
+#: Port Chester numbers items "8.1", Greenburgh "3." — the trailing period
+#: has to be optional, or the number is never stripped and rides along in
+#: the subject ("3. Business Contract: Benetech, Inc"), where it pollutes
+#: both the embedding and the phrase anchors.
+_SUBJECT_LABEL = re.compile(
+    r"^.*?\bSubject\s+(?:(?P<num>\d+(?:\.\d+)*)\.?\s+)?", re.I | re.S
+)
 
 #: How far back from a stamp a bare subject may reach. Long enough for a real
 #: title, short enough that an unlabelled item does not drag in the whole
@@ -126,7 +133,9 @@ def _attachments(body: str) -> tuple[str, ...]:
 
 
 def split_agenda_items(text: str) -> list[AgendaItem]:
-    """Split one chunk's text into the agenda items it contains.
+    """Split a document's text into the agenda items it contains.
+
+    Pass the whole document, not a chunk. See ``items_with_chunks``.
 
     Returns ``[]`` for text with no meeting stamp — a bare section title, a
     district-goals preamble, or minutes prose. That is the signal to fall back
@@ -177,6 +186,45 @@ def split_agenda_items(text: str) -> list[AgendaItem]:
             body=flat[body_from:max(body_from, body_to)].strip(),
             attachments=_attachments(flat[body_from:max(body_from, body_to)]),
         ))
+    return out
+
+
+def items_with_chunks(
+    doc_text: str, chunks: Sequence[tuple[str, str]]
+) -> list[tuple[AgendaItem, str | None]]:
+    """Items split from the whole document, each paired with the chunk citing it.
+
+    Beats are document-level and chunks are a retrieval unit, and the two do
+    not line up: the chunker splits a Greenburgh agenda so that "3. Business
+    Contract: Benetech, Inc." ends one chunk and its resolution text starts the
+    next. Splitting per chunk therefore saw a bare title and lost the sentence
+    that says what the contract is for. Measured on the snapshot, splitting per
+    document instead took Greenburgh from 593 items to 6,324 — most of the
+    agenda was being dropped at chunk seams.
+
+    Provenance still has to point at a chunk, since that is what retrieval and
+    citations address, so each item is matched back to the first chunk
+    containing its subject line. ``None`` means no chunk claimed it, which
+    happens when the subject itself straddles a seam.
+
+    ``chunks`` is ``(chunk_id, content)`` in document order.
+    """
+    normalized = [(cid, re.sub(r"\s+", " ", content or "")) for cid, content in chunks]
+    out: list[tuple[AgendaItem, str | None]] = []
+    cursor = 0
+    for item in split_agenda_items(doc_text):
+        needle = item.subject[:60]
+        found: str | None = None
+        for i in range(cursor, len(normalized)):
+            if needle and needle in normalized[i][1]:
+                found, cursor = normalized[i][0], i
+                break
+        else:
+            for i, (cid, content) in enumerate(normalized):
+                if needle and needle in content:
+                    found, cursor = cid, i
+                    break
+        out.append((item, found))
     return out
 
 

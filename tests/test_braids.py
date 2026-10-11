@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from herald.braids import (
     AgendaItem,
+    items_with_chunks,
     split_agenda_items,
     state_for_item,
     state_from_type,
@@ -174,3 +175,43 @@ def test_state_falls_back_to_the_text_when_type_is_absent() -> None:
 
     silent = AgendaItem(number="", subject="qqq", category="", item_type="", body="zzz")
     assert state_for_item(silent) == "OTHER"
+
+
+def test_items_are_split_per_document_and_mapped_back_to_chunks() -> None:
+    """The chunker splits mid-item, so per-chunk splitting loses the body.
+
+    Greenburgh's agenda ends one chunk on "3. Business Contract: Benetech,
+    Inc." and starts the next with its resolution text. Splitting each chunk
+    alone saw a bare title; splitting the document took that district from
+    593 items to 6,324. Citations still have to name a chunk, so each item is
+    matched back to the one holding its subject.
+    """
+    doc = (
+        "Subject 2. Contract: GunHill Basketball Meeting Jul 31, 2023 - Special Meeting "
+        "Category 13. Business Type Action BE IT RESOLVED that the Board approves the "
+        "contract at a cost not to exceed $1,400.00. "
+        "Subject 3. Business Contract: Benetech, Inc. Meeting Jul 31, 2023 - Special Meeting "
+        "Category 13. Business Type Action BE IT RESOLVED that the Board approves the "
+        "Benetech agreement for assistive technology services."
+    )
+    # the seam falls inside the Benetech item, exactly as the chunker places it
+    seam = doc.index("Subject 3.") + len("Subject 3. Business Contract: Benetech, Inc. ")
+    chunks = [("c1", doc[:seam]), ("c2", doc[seam:])]
+
+    # Per chunk the item disappears outright: its title sits at the end of c1
+    # with the meeting stamp that identifies it now in c2, so neither half
+    # parses as an item at all.
+    per_chunk = [i for _cid, text in chunks for i in split_agenda_items(text)]
+    assert not [i for i in per_chunk if "Benetech" in i.subject]
+
+    paired = items_with_chunks(doc, chunks)
+    assert [i.number for i, _ in paired] == ["2", "3"]
+    whole = next(i for i, _ in paired if "Benetech" in i.subject)
+    assert "assistive technology" in whole.body
+    assert dict((i.number, c) for i, c in paired)["3"] == "c1"   # cited where its title is
+
+
+def test_an_item_no_chunk_claims_reports_none_rather_than_guessing() -> None:
+    doc = ("Subject 1. Roof Replacement at King Street Meeting Jan 5, 2026 - Regular Meeting "
+           "Category 8. Action Type Action BE IT RESOLVED that the Board approves it.")
+    assert items_with_chunks(doc, [("c1", "something else entirely")])[0][1] is None
