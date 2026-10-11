@@ -53,6 +53,62 @@ _UNIT_RULES: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
+#: Where a beat sits in an issue's life (docs/BRAIDS.md §1). Locked, like
+#: CANONICAL_LANES: a wrong state silently corrupts a whole lifecycle, so an
+#: unrecognized label becomes OTHER rather than a guess, and the raw text is
+#: always kept beside it.
+CANONICAL_STATES: tuple[str, ...] = (
+    "PROPOSED", "DISCUSSED", "PUBLIC_COMMENT", "REFERRED", "REVISED",
+    "TABLED", "VOTED_ADOPTED", "VOTED_FAILED", "WITHDRAWN", "IMPLEMENTED",
+    "OTHER",
+)
+
+#: Order matters: an outcome wins over the motion that produced it, because
+#: "moved, seconded and carried" is one sentence describing one adopted thing.
+#: Tarrytowns writes outcomes as "CARRIED 6-0-0" and Port Chester as "carried
+#: 4-3"; a tally with more ayes than noes is an adoption either way, and a
+#: unanimous-sounding "carried" with no tally is still an adoption.
+_STATE_RULES: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bfail(?:ed|s)?\b|\bdefeat|\bnot (?:approved|adopted|carried)\b"
+                r"|\bmotion (?:fails|failed)\b|\bdid not carry\b", re.I), "VOTED_FAILED"),
+    (re.compile(r"\bwithdraw", re.I), "WITHDRAWN"),
+    (re.compile(r"\btabl(?:e|ed|ing)\b|\bpostpon|\bdeferr?ed\b|\bhold(?:ing)? over\b",
+                re.I), "TABLED"),
+    (re.compile(r"\brefer(?:red|ral)?\b.{0,30}committee|\bsent to committee\b"
+                r"|\bremand", re.I), "REFERRED"),
+    (re.compile(r"\bcarr(?:ied|ies)\b|\badopt(?:ed|s)\b|\bapproved\b|\bpassed\b"
+                r"|\bratified\b|\bunanimously\b", re.I), "VOTED_ADOPTED"),
+    (re.compile(r"\bimplement|\bcommenc(?:ed|ing)\b|\bin effect\b"
+                r"|\bexecuted\b", re.I), "IMPLEMENTED"),
+    (re.compile(r"\bsecond reading\b|\brevis(?:ed|ion)\b|\bamend(?:ed|ment)\b"
+                r"|\bredlin", re.I), "REVISED"),
+    (re.compile(r"\bpublic (?:comment|hearing)\b|\bcomment period\b", re.I),
+     "PUBLIC_COMMENT"),
+    (re.compile(r"\bfirst reading\b|\bproposed?\b|\brecommend(?:s|ed)?\b"
+                r"|\bmoves? that\b|\bresolved\b|\bbe it resolved\b", re.I), "PROPOSED"),
+    (re.compile(r"\bdiscuss|\bpresent(?:ation|ed)\b|\bupdate\b|\breport\b"
+                r"|\breview", re.I), "DISCUSSED"),
+]
+
+
+def normalize_state(raw: str | None) -> str:
+    """Map free text about what happened to a canonical beat state.
+
+    Prefers OTHER to a guess. The raw text is stored alongside on every beat,
+    so a miss here is recoverable by re-running with a better rule rather than
+    by re-reading the document.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return "OTHER"
+    if s.upper() in CANONICAL_STATES:
+        return s.upper()
+    for pat, state in _STATE_RULES:
+        if pat.search(s):
+            return state
+    return "OTHER"
+
+
 def normalize_unit(raw: str | None) -> str:
     """Map a bargaining-unit label to a canonical unit; default 'teacher'.
 
