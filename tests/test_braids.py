@@ -9,7 +9,12 @@ failure that corrupts every thread it touches.
 
 from __future__ import annotations
 
-from herald.braids import AgendaItem, split_agenda_items, state_from_type
+from herald.braids import (
+    AgendaItem,
+    split_agenda_items,
+    state_for_item,
+    state_from_type,
+)
 from herald.taxonomy import CANONICAL_STATES, normalize_state
 
 # Shaped exactly like a BoardDocs section once the chunker has flattened it.
@@ -127,3 +132,45 @@ class TestNormalizeState:
 def test_agenda_item_is_hashable_and_frozen() -> None:
     a = AgendaItem(number="1.1", subject="x", category="c", item_type="Action", body="b")
     assert hash(a)
+
+
+PEEKSKILL = (
+    "Open Meeting Meeting Jan 13, 2026 - BUSINESS MEETING/WORK SESSION "
+    "Category 2. Proposed Executive Session Subject to Board Approval 6:00 p.m. "
+    "Type (Note: The Board will enter into Executive Session.)"
+)
+
+
+def test_an_item_with_no_subject_label_is_still_found() -> None:
+    """Peekskill writes items with no label, and puts "Subject" in its category.
+
+    Anchoring on the literal word found nothing for 75% of its chunks. The
+    meeting stamp is the invariant; the subject is read backwards from it.
+    """
+    items = split_agenda_items(PEEKSKILL)
+    assert len(items) == 1
+    assert items[0].subject == "Open Meeting"
+    # "Subject to Board Approval" is part of the category, not a new item
+    assert "Subject to Board Approval" in items[0].category
+    # an unrecognized Type matches nothing rather than swallowing the body
+    assert items[0].item_type == ""
+
+
+def test_state_falls_back_to_the_text_when_type_is_absent() -> None:
+    """Greenburgh leaves Type empty on 399 of 565 items.
+
+    That is how the district uses BoardDocs, not a parse failure, and the
+    state is sitting in the body in plain sight.
+    """
+    typed = AgendaItem(number="8.1", subject="x", category="", item_type="Action", body="")
+    assert state_for_item(typed) == "PROPOSED"
+
+    untyped = AgendaItem(
+        number="", subject="Approve the agreement", category="", item_type="",
+        body="BE IT RESOLVED that as recommended by the Superintendent the Board approves.",
+    )
+    # text wins only because Type was empty; "approves" reads as an adoption
+    assert state_for_item(untyped) != "OTHER"
+
+    silent = AgendaItem(number="", subject="qqq", category="", item_type="", body="zzz")
+    assert state_for_item(silent) == "OTHER"

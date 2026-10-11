@@ -29,6 +29,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from herald.taxonomy import normalize_state
+
 #: BoardDocs renders an item as:
 #:
 #:     Subject 8.1 Approval of the Services Agreement with Blooming Pathways
@@ -39,22 +41,40 @@ from dataclasses import dataclass
 #:     File Attachments foo.pdf (12 KB)
 #:
 #: flattened to one line by the chunker. The preamble is rigid; the body is not.
-_ITEM = re.compile(
-    r"Subject\s+(?P<num>\d+(?:\.\d+)*)?\s*(?P<subject>.+?)\s+"
-    r"Meeting\s+\w{3}\s+\d{1,2},\s+\d{4}\s*-\s*"
-    # The meeting name runs until the next labelled field. Without these
-    # lookaheads the optional Category/Type groups are trivially satisfied by
-    # matching nothing, the meeting name swallows them, and every item comes
-    # back with no Type — which silently makes every state OTHER.
-    r"(?P<meeting>.+?)(?=\s+Category\s|\s+Type\s|\s+Subject\s|$)"
-    r"(?:\s+Category\s+(?P<category>.+?)(?=\s+Type\s|\s+Subject\s|$))?"
-    r"(?:\s+Type\s+(?P<type>Action \(Consent\)|Action|Discussion|Information|"
-    # `\\b` cannot match after "Action (Consent)" — a ")" followed by a space is
-    # not a word boundary, so the engine backtracked to bare "Action" and every
-    # consent item quietly lost its consent flag.
-    r"Procedural|Report|Presentation|Info)(?=[\s,]|$)[, ]*)?",
-    re.I,
+#: The one thing every BoardDocs item has is a meeting stamp. The "Subject"
+#: label does not qualify: Peekskill renders items as "Open Meeting Meeting
+#: Jan 13, 2026 - ..." with no label at all, and puts the *word* Subject inside
+#: its category ("Proposed Executive Session Subject to Board Approval"). So
+#: anchor on the stamp and read the subject backwards from it.
+_MEETING_STAMP = re.compile(r"Meeting\s+\w{3}\s+\d{1,2},\s+\d{4}\s*-\s*", re.I)
+
+#: The labels BoardDocs uses in an item's Type field.
+_TYPE_TOKEN = (
+    r"(?:Action \(Consent\)|Action|Discussion|Information|Info|"
+    r"Procedural|Report|Presentation)"
 )
+
+#: What follows the stamp, in order, each field running to the next label.
+_TAIL = re.compile(
+    r"(?P<meeting>.*?)(?=\s+Category\s|\s+Type\s|$)"
+    r"(?:\s+Category\s+(?P<category>.*?)(?=\s+Type\s|$))?"
+    # Type is a short label, and Mount Vernon combines them ("Discussion,
+    # Information, Presentation"). Matching free text instead ran to the end of
+    # the chunk whenever an item had no Recommended Action to stop at. An
+    # unrecognized label matches nothing here and becomes OTHER downstream,
+    # which is the right answer for Peekskill's "(Note: the Board will...)".
+    r"(?:\s+Type\s+(?P<type>" + _TYPE_TOKEN + r"(?:\s*,\s*" + _TYPE_TOKEN + r")*))?",
+    re.I | re.S,
+)
+
+#: A subject may be labelled ("Subject 8.1 Approval of ...") or bare ("Open
+#: Meeting"). Strip the label and number when they are there.
+_SUBJECT_LABEL = re.compile(r"^.*?\bSubject\s+(?:(?P<num>\d+(?:\.\d+)*)\s+)?", re.I | re.S)
+
+#: How far back from a stamp a bare subject may reach. Long enough for a real
+#: title, short enough that an unlabelled item does not drag in the whole
+#: preceding paragraph.
+_SUBJECT_LOOKBACK = 140
 
 #: A BoardDocs attachment renders as "<name>.pdf (123 KB)", and the name may
 #: contain spaces ("Services Agreement with Blooming Pathways 2025-26.pdf"), so
@@ -108,29 +128,54 @@ def _attachments(body: str) -> tuple[str, ...]:
 def split_agenda_items(text: str) -> list[AgendaItem]:
     """Split one chunk's text into the agenda items it contains.
 
-    Returns ``[]`` for text with no item preamble — a meeting header, a bare
-    section title, or minutes prose. That is the signal to fall back to a model
-    rather than a defect.
+    Returns ``[]`` for text with no meeting stamp — a bare section title, a
+    district-goals preamble, or minutes prose. That is the signal to fall back
+    to a model rather than a defect.
+
+    Two passes, because the spans interlock: between one item's preamble and
+    the next item's stamp sit *both* the first item's body and the second
+    item's subject. Locating every subject first lets each body stop where the
+    next subject starts, instead of swallowing it.
     """
     flat = re.sub(r"\s+", " ", text or "").strip()
-    matches = list(_ITEM.finditer(flat))
-    if not matches:
+    stamps = list(_MEETING_STAMP.finditer(flat))
+    if not stamps:
         return []
 
+    # Pass 1 — where the preamble after each stamp ends.
+    tails = []
+    for i, st in enumerate(stamps):
+        limit = stamps[i + 1].start() if i + 1 < len(stamps) else len(flat)
+        tails.append(_TAIL.match(flat, st.end(), limit))
+
+    # Pass 2 — where each subject starts, bounded by the previous preamble.
+    starts = []
+    floor = 0
+    for i, st in enumerate(stamps):
+        lo = max(floor, st.start() - _SUBJECT_LOOKBACK)
+        window = flat[lo:st.start()]
+        lab = _SUBJECT_LABEL.match(window)
+        starts.append((lo + lab.end()) if lab else lo)
+        floor = tails[i].end() if tails[i] else st.end()
+
     out: list[AgendaItem] = []
-    for i, m in enumerate(matches):
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(flat)
-        body = flat[m.end():end].strip()
-        subject = _SUBJECT_TAIL.sub("", _tidy(m.group("subject")))
+    for i, st in enumerate(stamps):
+        lo = max(0, starts[i] - 60)
+        lab = _SUBJECT_LABEL.match(flat[lo:st.start()])
+        number = _tidy(lab.group("num")) if lab and lab.group("num") else ""
+        subject = _SUBJECT_TAIL.sub("", _tidy(flat[starts[i]:st.start()]))
         if not subject:
             continue
+        tail = tails[i]
+        body_from = tail.end() if tail else st.end()
+        body_to = starts[i + 1] if i + 1 < len(stamps) else len(flat)
         out.append(AgendaItem(
-            number=_tidy(m.group("num")),
+            number=number,
             subject=subject,
-            category=_tidy(m.group("category")),
-            item_type=_tidy(m.group("type")),
-            body=body,
-            attachments=_attachments(body),
+            category=_tidy(tail.group("category")) if tail else "",
+            item_type=_tidy(tail.group("type")) if tail else "",
+            body=flat[body_from:max(body_from, body_to)].strip(),
+            attachments=_attachments(flat[body_from:max(body_from, body_to)]),
         ))
     return out
 
@@ -155,3 +200,18 @@ TYPE_TO_STATE: dict[str, str] = {
 def state_from_type(item_type: str) -> str:
     """Prior state for an agenda item, from its declared Type."""
     return TYPE_TO_STATE.get(_tidy(item_type).lower(), "OTHER")
+
+
+def state_for_item(item: AgendaItem) -> str:
+    """The item's state: its Type when the district fills that in, else its text.
+
+    Greenburgh leaves Type empty on 399 of 565 items — a property of how the
+    district uses BoardDocs, not a parse failure — and the state is then
+    sitting in plain sight in the body ("BE IT RESOLVED that...", "I move that
+    we adjourn"). Falling back to ``normalize_state`` over the text recovers
+    those without a model call.
+    """
+    state = state_from_type(item.item_type)
+    if state != "OTHER":
+        return state
+    return normalize_state(f"{item.subject} {item.body[:400]}")
