@@ -1,0 +1,65 @@
+name: Plan drift
+
+# Where districts broke from the template in a class of compliance filing.
+# Compares each filing's sections against the same district's previous one,
+# ranks by how far each moved, then asks whether a peer filed the same thing
+# that year — shared is the state, unshared is a decision. Method and its
+# validation against the 2024-25 Chapter 155.17 amendments: docs/DRIFT_PILOT.md
+#
+# Reads the committed text snapshot, not BoardDocs: runner IP ranges are
+# blocked, which is why data/snapshots/ exists. No database, so this runs
+# while Supabase is asleep.
+#
+# Required secrets:
+#   VOYAGE_API_KEY  - embeddings
+
+on:
+  workflow_dispatch:
+    inputs:
+      year:
+        description: "Only report this school year, e.g. 2024-25. Blank for all."
+        required: false
+        default: ""
+      top:
+        description: "Passages to quote per district-year"
+        required: false
+        default: "4"
+      floor:
+        description: "Minimum section movement to report (template noise is ~0.01)"
+        required: false
+        default: "0.12"
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install runtime deps
+        run: uv sync --frozen
+
+      - name: Report plan drift
+        env:
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+        run: |
+          ARGS=(--top "${{ inputs.top }}" --floor "${{ inputs.floor }}")
+          if [ -n "${{ inputs.year }}" ]; then
+            ARGS+=(--year "${{ inputs.year }}")
+          fi
+          uv run scripts/plan_drift.py "${ARGS[@]}"
+
+      - name: Upload Markdown report
+        uses: actions/upload-artifact@v4
+        with:
+          name: herald-plan-drift
+          path: scripts/plan_drift_*.md
+          if-no-files-found: error
+          retention-days: 30

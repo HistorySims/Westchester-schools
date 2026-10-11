@@ -1661,3 +1661,56 @@ this month is the thing worth writing about. Neither is optional to goal B.
   114 tables ≈ $12.50). The candidate count is the first line of the log —
   the moment to cancel if it is unexpectedly large.
 
+
+## Centroid drift as a hot-spot detector — pilot result (2026-10-11)
+
+Full report: `docs/DRIFT_PILOT.md`. Working code: `src/herald/drift_schools.py`,
+`scripts/plan_drift.py`, `.github/workflows/plan-drift.yml`. Corpus:
+`data/snapshots/safety-plans.jsonl.gz` (30 district-wide safety plans, 7 of 8
+districts, 2019-20 … 2026-27).
+
+The premise holds — a document class every peer must file lets you separate
+"Albany moved" from "this district chose something" — but **one centroid per
+document does not work on a mandated document.** Chapter 155.17 was amended for
+2024-25 and three districts rewrote their drill sections to match, tripling
+their use of "trauma" and importing the ban on drills using "props, actors,
+simulations". Whole-document centroid distance for that transition came out at
+**0.0008, the second smallest movement in the six-year series.** A mandated
+filing is ~95% template, so a change in three sections of eighty moves the
+mean-pooled vector by about a fortieth of its length — inside the gap between
+two districts' boilerplate. Mean-pooling measures what the documents share, and
+what they share is the part the state wrote.
+
+What works is per-section: pair each section with its closest counterpart in the
+same district's previous filing, rank by distance (untouched template
+re-extracts at ~0.01, a rewrite lands at 0.15+), then ask whether a peer filed
+the same passage that year. Shared is the mandate, unshared is a decision. That
+recovers the 2024-25 amendments at 0.18–0.26 with peer agreement 0.90–0.97, and
+shows that **Greenburgh and Mount Vernon had not adopted the new language a
+year after it took effect** (Mount Vernon's median section distance from its own
+prior filing is 0.0000). The compliance lag is as detectable as the change.
+
+Gotchas this pilot bought:
+
+- **Count the magnitude, not the sections.** Counting sections with no near
+  neighbour in the prior year found *zero* changes in 2024-25: the mandate
+  arrived as sentences inserted into existing sections, whose nearest neighbour
+  is still their own prior version at ~0.85.
+- **A document that extracts to garbage reads as a policy reversal.** Peekskill
+  2026-27 gave 107k characters of mojibake from a broken font encoding, and its
+  mandate-vocabulary counts all came back zero — i.e. "district deleted the
+  state's language". OCR of the same pages matches its 2025-26.
+- **OCR provenance must travel with the text**, since OCR noise inflates
+  section distance exactly like real change does. Do not infer it from file
+  size: Peekskill 2026-27 is a 5.8 MB PDF with a fine text layer.
+- **Elmsford re-filed one plan for four years** — 99.76% character-identical
+  2019-20 → 2021-22, every difference a page footer shifting — and did not carry
+  the 2024 drill language until 2026-27.
+- **Ossining files no plan in BoardDocs.** 444 meetings, zero hits, and 10 of 10
+  agendas fetched cleanly when probed with errors surfaced; it attaches 0-3
+  files per meeting where peers attach dozens. Its plan is a `site.py` target.
+- **The hot spots are mostly appended inter-agency agreements** — police SRO
+  contracts (White Plains 2023-24, Elmsford 2020-21, Peekskill 2026-27), a
+  private security MOU (Tarrytowns and Summit Security Services, 2020-21), and
+  one district's own student-reunification design (Elmsford 2026-27). These are
+  the roots worth tracing into the agenda corpus.
