@@ -181,10 +181,11 @@ def test_items_are_split_per_document_and_mapped_back_to_chunks() -> None:
     """The chunker splits mid-item, so per-chunk splitting loses the body.
 
     Greenburgh's agenda ends one chunk on "3. Business Contract: Benetech,
-    Inc." and starts the next with its resolution text. Splitting each chunk
-    alone saw a bare title; splitting the document took that district from
-    593 items to 6,324. Citations still have to name a chunk, so each item is
-    matched back to the one holding its subject.
+    Inc." and starts the next with its resolution text. Across its 200
+    agendas, splitting per chunk left 34% of items with any body and 37% with
+    a resolvable state; per document those become 100% and 91%. Citations
+    still have to name a chunk, so each item is matched back to the one
+    holding its subject.
     """
     doc = (
         "Subject 2. Contract: GunHill Basketball Meeting Jul 31, 2023 - Special Meeting "

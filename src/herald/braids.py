@@ -198,9 +198,11 @@ def items_with_chunks(
     not line up: the chunker splits a Greenburgh agenda so that "3. Business
     Contract: Benetech, Inc." ends one chunk and its resolution text starts the
     next. Splitting per chunk therefore saw a bare title and lost the sentence
-    that says what the contract is for. Measured on the snapshot, splitting per
-    document instead took Greenburgh from 593 items to 6,324 — most of the
-    agenda was being dropped at chunk seams.
+    that says what the contract is for. Measured across the same 200 Greenburgh
+    agendas, per chunk against per document: items carrying any body text go
+    from 34% to 100%, and items with a resolvable state from 37% to 91%. The
+    other three districts were already near 100% on body, so this is largely a
+    Greenburgh fix — but the bug is structural, not district-specific.
 
     Provenance still has to point at a chunk, since that is what retrieval and
     citations address, so each item is matched back to the first chunk
