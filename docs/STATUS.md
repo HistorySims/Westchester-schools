@@ -1755,3 +1755,63 @@ write-up in the second half of `docs/DRIFT_PILOT.md`; corpus is
   then `extract.py`, then `snapshot.py`. The BoardDocs attachment listings are
   cached in `agenda_files.json`, so the first class costs ~40 minutes of
   crawling and every later class is a regex over data already on disk.
+
+### Board policies: parameter divergence, not drift (2026-10-12)
+
+Full write-up: `docs/POLICY_DIVERGENCE.md`. Code: `src/herald/policy_compare.py`,
+`scripts/policy_divergence.py`, `.github/workflows/policy-divergence.yml`.
+Corpus: `data/snapshots/boarddocs-policies.jsonl.gz` (1,071 policies, **4 of 8
+districts**).
+
+Policies are licensed, not written, so two manuals run identical for pages and
+differ in the figure that decides something. **This is the one case the drift
+detector cannot see** — "eighteen (18) absences" against "twenty (20)
+absences" in identical text is cosine ~0.999, closer than two paraphrases of
+the same rule, so `drift_schools` would report agreement exactly where the
+districts disagree most. Exact extraction, not geometry.
+
+**A parameter is a quantity with a unit.** That single decision cut the sweep
+from 21 findings (mostly citation formatting: `8 N.Y.C.R.R. 200.2(c)` against
+`(8NYCRR 200.2(c))`) to 9, nearly all real — with no special case for
+citations. Units must include the local term of art: Tarrytowns states its
+whole attendance rule in **ATEDs**, and omitting that unit read the district as
+having no credit rule when it has an explicit 18.
+
+Loss of credit for absence, `--rule credit`:
+
+| district | policy | parameter | standard |
+|---|---|---|---|
+| greenburgh-central | 7110 | 18 absences | bright line |
+| mount-vernon | 7110 | 20 absences | bright line |
+| tarrytowns | 5100 | 18 ATEDs | bright line |
+| white-plains | 5100 | — | administrator discretion |
+
+- **The number is not the rule.** Greenburgh's 18 counts *all* absences excused
+  and unexcused with listed exceptions; Tarrytowns' 18 counts **only
+  unexcused**. Nineteen excused absences cost credit in one and not the other —
+  a wider gap than 18 against 20.
+- **"No number" is not "no policy."** White Plains leaves the call to the House
+  Administrator with an appeal to the Principal.
+- **Districts disagree on the policy number** — attendance is 7110 in two
+  districts and 5100 in the other two, so aligning by number alone splits the
+  peer set.
+- **Two tools are needed.** The sweep (same clause, different quantity) found
+  petition deadlines of 90 against 60 days for the annual election (policy
+  1050, wording identical to 1.000), FOIL notice of 10 against 5 working days
+  (1120), parental designation valid 12 against 6 months (7260), and three
+  same-value/different-unit pairs (30 *school* days against 30 days for IEP
+  implementation, 7613). It cannot see the attendance rule at all, because
+  Greenburgh wrote a sentence and Mount Vernon a bulleted table — hence the
+  targeted probe.
+- **The largest number near a phrase is not the parameter.** Mount Vernon puts
+  "20 consecutive absences … can be discharged" two sentences from its "no
+  credit" language; the first version reported the discharge figure with the
+  discharge sentence as evidence, and that figure *equals* the real credit
+  threshold — the output looked right while its provenance was wrong. Numbers
+  are now attributed to whichever consequence is nearest; a fixed exclusion
+  window cannot work, since the discharge verb sits ~75 characters past its
+  number and a window that reaches it also reaches the "summer school" clause
+  after the genuine credit table.
+- **Coverage gap:** Ossining, Peekskill, Port Chester and Elmsford publish via
+  Blazor portals needing the `browser` group. Every finding above is about four
+  districts, and the attendance table is missing Port Chester.
