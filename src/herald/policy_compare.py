@@ -254,6 +254,54 @@ class RuleParameter:
         return self.value is None
 
 
+#: Ways a policy says a student loses course credit. Kept here rather than in
+#: the CLI because it is domain vocabulary that took reading eight manuals to
+#: get right, and because each addition came from a district the previous
+#: version got wrong:
+#:
+#: * "will not receive credit **for that course**" — four districts phrase it
+#:   this way; requiring "course credit" adjacent read Tarrytowns, Port Chester
+#:   and Elmsford as having no rule when each states an explicit threshold.
+#: * "may be **denied** credit" — Peekskill's active voice. It also carries a
+#:   discretion clause, so missing this did not merely lose the figure, it
+#:   reported the district as having no bright line at all.
+CREDIT_DENIAL = re.compile(
+    r"(?:(?:may|will|shall|can)\s+(?:not\s+)?(?:be\s+)?"
+    r"(?:receive|earn|be\s+given|denied|deny)(?:\s+course)?\s+credit"
+    r"|credit\s+will\s+not\s+be\s+(?:given|granted|earned|awarded)"
+    r"|no\s+credit|denial\s+of\s+course\s+credit|denied\s+credit"
+    r"|loss\s+of\s+credit|lose\s+credit|withhold\w*\s+credit"
+    r"|forfeit\w*\s+credit)",
+    re.I,
+)
+
+#: Other consequences that live in the same paragraphs and carry their own
+#: numbers: discharge from enrollment, a CPS referral, summer-school
+#: ineligibility, suspension. See ``rule_parameter``'s ``exclude``.
+COMPETING_CONSEQUENCE = re.compile(
+    r"discharg|CPS|child\s+protective|summer\s+school|suspen|detention"
+    r"|expel|truan",
+    re.I,
+)
+
+#: A district may set no figure and leave the call to a person. White Plains
+#: holds the same vendor template as four peers with the threshold sentence
+#: simply absent: "the decision to deny course credit to a student will be made
+#: by the House Administrator". That is a discretionary standard, not a missing
+#: policy, and the two must not be reported alike.
+CREDIT_DISCRETION = re.compile(
+    r"decision\s+to\s+deny\s+course\s+credit[^.]{0,80}will\s+be\s+made\s+by"
+    r"|at\s+the\s+discretion\s+of\s+the\s+(?:principal|administrator|"
+    r"house\s+administrator)",
+    re.I,
+)
+
+#: Units a credit threshold is stated in. "ATED" is New York's term of art for
+#: Absence, Tardiness or Early Departure and four districts state the whole
+#: rule in it.
+CREDIT_UNITS = ("absence", "ated", "day", "class", "class period")
+
+
 def _nearest(position: int, matches: Sequence[tuple[int, int]]) -> int:
     """Characters from ``position`` to the closest span, or a large number."""
     if not matches:

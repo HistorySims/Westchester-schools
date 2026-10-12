@@ -40,24 +40,27 @@ wording matches and whose quantities do not. No question asked in advance, no
 threshold to calibrate against ground truth, and it finds things nobody was
 looking for. Across **299 policies held by two or more districts**:
 
-**Different value**
+Across **588 policies held by two or more districts**: **72 value divergences
+and 41 unit divergences**. The ones that bear on this project directly:
 
-| policy | district | value |
+| policy | what it sets | districts |
 |---|---|---|
-| 1050 Annual District Election and Budget Vote | tarrytowns | petitions **90 days** in advance |
-| | white-plains | petitions **60 days** in advance |
-| 1120 School District Records | mount-vernon | FOIL notice to employees within **10 working days** |
-| | white-plains | **5 working days** |
-| 7260 Designation of Person in Parental Relation | greenburgh-central | designation valid up to **12 months** |
-| | mount-vernon | **6 months** |
+| **2342 Agenda Preparation and Dissemination** | how far ahead the agenda is public | elmsford **2/5 days**, port-chester-rye **3/5**, ossining **7/14**, white-plains **7** |
+| 1050 Annual District Election and Budget Vote | petition deadline | tarrytowns **90 days**, white-plains / elmsford **60**, elmsford also **30** |
+| 1741-R Home Instruction Regulation | required instructional hours | ossining **900 hours**, port-chester-rye **990** |
+| 1925 Interpreters for Hearing-Impaired Parents | notice required | port-chester-rye **5 working days**, elmsford / ossining **10** |
+| 1120 School District Records | FOIL notice to employees | mount-vernon **10 working days**, ossining / white-plains **5** |
+| 0100-R Non-Discrimination Regulation | complaint investigation clock | mount-vernon **15 days**, port-chester-rye **15 school days + 30 calendar days** |
+| 7260 Designation of Person in Parental Relation | how long a designation lasts | greenburgh-central **12 months**, mount-vernon **6** |
 
-The election clause is identical in both manuals to 1.000 but for the figure,
-and it decides who can get onto a school board ballot.
+Policy 2342 is the one worth a newsletter paragraph on its own: it is the
+public-notice window for the agendas this whole corpus is built from, and it
+runs from two days to a fortnight depending on the district.
 
 **Same value, different unit** — easier to read past, and sometimes the larger
 difference:
 
-| policy | greenburgh / tarrytowns | mount-vernon / white-plains |
+| policy | one district | the other |
 |---|---|---|
 | 7613 Implementing a student's IEP | 30 **school** days | 30 days |
 | 7512 Student Physicals | 90 **calendar** days | 90 days |
@@ -76,14 +79,33 @@ pairs those, so the best-known parameter in the corpus is invisible to the
 sweep. The probe instead names the *consequence* — loss of credit — and reads
 the quantity attached to it, whatever the surrounding wording.
 
-`uv run scripts/policy_divergence.py --rule credit`:
+`uv run scripts/policy_divergence.py --rule credit`, all eight districts:
 
 | district | policy | parameter | standard |
 |---|---|---|---|
+| elmsford | 5100 STUDENT ATTENDANCE | **28 ATEDs** | bright line |
 | greenburgh-central | 7110 Comprehensive Student Attendance Policy | **18 absences** | bright line |
 | mount-vernon | 7110 COMPREHENSIVE STUDENT ATTENDANCE POLICY | **20 absences** | bright line |
+| ossining | 5100 STUDENT ATTENDANCE: COMPREHENSIVE ATTENDANCE POLICY | — | **no provision** |
+| peekskill | 5100 PEEKSKILL'S COMPREHENSIVE ATTENDANCE POLICY | **20 absences** | bright line |
+| port-chester-rye | 5100 ATTENDANCE | **18 ATEDs** | bright line |
 | tarrytowns | 5100 Student Attendance | **18 ATEDs** | bright line |
 | white-plains | 5100 ATTENDANCE | — | administrator discretion |
+
+Four districts share one licensed sentence and fill in three different numbers:
+
+> At the high school level, any student with more than **nine** unexcused ATEDs
+> for one-half year or **18** unexcused ATEDs for a full year will not receive
+> credit for that course.
+
+That is Tarrytowns and Port Chester verbatim. Elmsford's copy reads
+**fourteen** and **28** — twice the allowance for the same rule. White Plains
+holds the same template with the threshold sentence **absent**, replaced by
+"the decision to deny course credit to a student will be made by the House
+Administrator". Ossining's attendance policy contains the word "credit" **zero
+times**; across all 432 of its policies none ties credit to absence, and its
+4710 Grading Systems refers to "course credit policies" given to parents, so
+the threshold — if there is one — lives in a handbook and not in board policy.
 
 Three things in that table are worth more than the numbers:
 
@@ -124,17 +146,47 @@ Three things in that table are worth more than the numbers:
   within five (5) school days" sits inside its credit paragraph and is not a
   threshold; requiring the unit to be an absence-like one drops it.
 
-## Coverage
+## Coverage: all eight districts
 
-The policy snapshot holds **4 of 8 districts** — greenburgh-central (302),
-mount-vernon (338), tarrytowns (241), white-plains (190), 1,071 policies in all.
-Ossining, Peekskill, Port Chester and Elmsford publish through Blazor policy
-portals whose text only exists after client render, which is what the
-`browser` dependency group and `policy_manual.py` are for (see
-`docs/SCRAPING.md`). Completing the peer set is an acquisition job, not a
-change to this tool: both functions take district-labelled text and nothing
-else.
+The districts split across two publishers, so the corpus is two snapshots:
 
-Until then, every finding here is a statement about four districts. The
-attendance comparison in particular is missing Port Chester, which is the
-district most of this project is pointed at.
+| snapshot | districts | policies | how |
+|---|---|---|---|
+| `boarddocs-policies.jsonl.gz` | greenburgh-central, mount-vernon, tarrytowns, white-plains | 1,071 | BoardDocs policy console |
+| `policy-manuals.jsonl.gz` | port-chester-rye, peekskill, ossining, elmsford | 1,484 | BoardPolicyOnline portals |
+
+**2,555 policies, 1,013 policy numbers, 588 held by two or more districts.**
+
+The four portal districts are Blazor Server apps with no fetchable API — the
+page is a ~5 KB shell and every byte of policy text arrives over a WebSocket —
+so `herald-scrape policy-fetch` drives a real browser and uses the portal's own
+bulk export. That is `herald.scrape.policy_manual`, which already existed;
+completing the acquisition meant running it, not writing it.
+
+Rebuilding the snapshot:
+
+```bash
+uv sync --group browser
+uv run herald-scrape policy-fetch --out <dir> \
+    --chromium /opt/pw-browsers/chromium --proxy "$HTTPS_PROXY"
+uv run scripts/drift_pilot/policy_snapshot.py --raw <dir>
+```
+
+The snapshot stores **extracted text, not markup**: the 1,500 fetched policies
+are 19 MB of Kendo widget wrappers that `extract_html_text` would only throw
+away, against 1.5 MB gzipped as text. Each row keeps the portal's section
+permalink (`/b/<slug>/s/<id>`), so a finding still cites the live manual.
+
+**In a container, Chromium needs the egress proxy's CA in its own store.** It
+reads NSS, not the system bundle, and NSS was empty here, so every navigation
+failed with `ERR_CERT_AUTHORITY_INVALID` — including `example.com`, which is
+how to tell this apart from a blocked host:
+
+```bash
+apt-get install -y libnss3-tools
+certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n ccr-agent-proxy \
+    -i /root/.ccr/agent-proxy-ca.crt
+```
+
+GitHub runners have no such proxy, so `.github/workflows/policy-fetch.yml`
+needs none of this.

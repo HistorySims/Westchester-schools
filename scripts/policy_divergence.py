@@ -26,11 +26,16 @@ import pathlib
 import re
 import sys
 from collections import defaultdict
+from collections.abc import Sequence
 
 import typer
 
 from herald.html_text import extract_html_text
 from herald.policy_compare import (
+    COMPETING_CONSEQUENCE,
+    CREDIT_DENIAL,
+    CREDIT_DISCRETION,
+    CREDIT_UNITS,
     Divergence,
     clauses,
     divergences,
@@ -40,7 +45,15 @@ from herald.policy_compare import (
 
 app = typer.Typer(add_completion=False)
 
-SNAPSHOT = pathlib.Path("data/snapshots/boarddocs-policies.jsonl.gz")
+#: Two snapshots, because the districts split across two publishers. Four serve
+#: their manual through BoardDocs' policy console and four through the
+#: BoardPolicyOnline portals, which are Blazor Server apps that need a real
+#: browser (see `herald.scrape.policy_manual`). Rows from the first carry
+#: `html`, from the second `text`; nothing else differs.
+SNAPSHOTS = (
+    pathlib.Path("data/snapshots/boarddocs-policies.jsonl.gz"),
+    pathlib.Path("data/snapshots/policy-manuals.jsonl.gz"),
+)
 
 #: Named rules for the targeted probe: the consequence to look for, and the
 #: units its parameter is allowed to carry. The units matter as much as the
@@ -49,51 +62,46 @@ SNAPSHOT = pathlib.Path("data/snapshots/boarddocs-policies.jsonl.gz")
 RULES: dict[str, dict] = {
     "credit": {
         "label": "Loss of course credit for absence",
-        "consequence": re.compile(
-            r"(?:(?:may|will|shall|can)\s+not\s+(?:be\s+)?(?:receive|earn|be\s+given)"
-            r"(?:\s+course)?\s+credit"
-            r"|credit\s+will\s+not\s+be\s+(?:given|granted|earned|awarded)"
-            r"|no\s+credit|denial\s+of\s+course\s+credit|loss\s+of\s+credit"
-            r"|lose\s+credit|withhold\w*\s+credit|forfeit\w*\s+credit)",
-            re.I,
-        ),
-        "units": ("absence", "ated", "day", "class", "class period"),
-        # Mount Vernon's attendance policy states its discharge rule — "a
-        # student with 20 consecutive absences ... can be discharged" — two
-        # sentences from its "no credit" language, and a CPS referral threshold
-        # beside that. Without this the probe reported the discharge figure and
-        # quoted the discharge sentence as its evidence for a credit threshold.
-        "exclude": re.compile(
-            r"discharg|CPS|child\s+protective|summer\s+school|suspen|detention"
-            r"|expel|truan", re.I),
+        "consequence": CREDIT_DENIAL,
+        "units": CREDIT_UNITS,
+        "exclude": COMPETING_CONSEQUENCE,
+        "discretion": CREDIT_DISCRETION,
         "title_hint": re.compile(r"attendance", re.I),
-        # A district may set no number and leave the call to a person. White
-        # Plains does: "the decision to deny course credit to a student will be
-        # made by the House Administrator". That is a discretionary standard,
-        # not a missing policy, and the two must not be reported alike.
-        "discretion": re.compile(
-            r"decision\s+to\s+deny\s+course\s+credit[^.]{0,80}will\s+be\s+made\s+by"
-            r"|at\s+the\s+discretion\s+of\s+the\s+(?:principal|administrator|"
-            r"house\s+administrator)",
-            re.I,
-        ),
     },
 }
 
 
-def load() -> list[dict]:
-    with gzip.open(SNAPSHOT, "rt", encoding="utf-8") as fh:
-        return [json.loads(line) for line in fh]
+def _sources() -> str:
+    return ", ".join(f"`{s}`" for s in SNAPSHOTS if s.exists())
+
+
+def load(snapshots: Sequence[pathlib.Path]) -> list[dict]:
+    rows: list[dict] = []
+    for path in snapshots:
+        if not path.exists():
+            typer.echo(f"note: no snapshot at {path}, skipping", err=True)
+            continue
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            rows += [json.loads(line) for line in fh]
+    return rows
 
 
 def text_of(row: dict) -> str:
+    """The policy's text, whichever form its snapshot stored.
+
+    The portal snapshot holds extracted text — the markup is Kendo widget
+    wrappers that `extract_html_text` would only throw away, and five times the
+    bytes to commit.
+    """
+    if row.get("text"):
+        return row["text"]
     return extract_html_text(row["html"]).text if row.get("html") else ""
 
 
 def run_rule(rows: list[dict], name: str, out: pathlib.Path) -> int:
     spec = RULES[name]
     lines = [f"# {spec['label']}", "",
-             f"Generated {dt.date.today()} from `{SNAPSHOT}`.", "",
+             f"Generated {dt.date.today()} from {_sources()}.", "",
              "| district | policy | parameter | standard |", "|---|---|---|---|"]
     detail: list[str] = []
     districts = sorted({r["district"] for r in rows})
@@ -149,10 +157,10 @@ def main(
     out: pathlib.Path = typer.Option(
         pathlib.Path(f"scripts/policy_divergence_{dt.date.today():%Y%m%d}.md")),
 ) -> None:
-    if not SNAPSHOT.exists():
-        typer.echo(f"no policy snapshot at {SNAPSHOT}", err=True)
+    rows = load(SNAPSHOTS)
+    if not rows:
+        typer.echo(f"no policy snapshot found at any of {SNAPSHOTS}", err=True)
         raise typer.Exit(1)
-    rows = load()
     out.parent.mkdir(parents=True, exist_ok=True)
 
     if rule:
@@ -186,7 +194,7 @@ def main(
     unit = [d for d in found if d.kind == "unit"]
     lines = [
         "# Board policies: same wording, different number", "",
-        f"Generated {dt.date.today()} from `{SNAPSHOT}` — "
+        f"Generated {dt.date.today()} from {_sources()} — "
         f"{len(shared)} policies held by two or more of "
         f"{len({r['district'] for r in rows})} districts.", "",
         "Districts license model policy from the same vendors, so a clause can "

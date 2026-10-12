@@ -1815,3 +1815,70 @@ Loss of credit for absence, `--rule credit`:
 - **Coverage gap:** Ossining, Peekskill, Port Chester and Elmsford publish via
   Blazor portals needing the `browser` group. Every finding above is about four
   districts, and the attendance table is missing Port Chester.
+
+### Policy acquisition completed — all 8 districts (2026-10-12)
+
+`herald-scrape policy-fetch` pulled the four BoardPolicyOnline manuals that
+were missing: **1,484 policies** (port-chester-rye 519, ossining 432, peekskill
+294, elmsford 239), committed as `data/snapshots/policy-manuals.jsonl.gz`
+(1.5 MB). With the BoardDocs four that is **2,555 policies, 1,013 numbers, 588
+held by two or more districts** — up from 299. The machinery already existed;
+completing the acquisition meant running it.
+
+**Two environment facts worth keeping:**
+
+- **Chromium needs the egress proxy's CA in its own NSS store**, which was
+  empty here, so every navigation failed `ERR_CERT_AUTHORITY_INVALID` —
+  including `example.com`, which is how to tell this apart from a blocked host.
+  `apt-get install libnss3-tools` then
+  `certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n ccr-agent-proxy -i /root/.ccr/agent-proxy-ca.crt`.
+  GitHub runners have no such proxy, so `policy-fetch.yml` needs none of it.
+- The snapshot stores **extracted text, not markup** — 19 MB of Kendo widget
+  wrappers against 1.5 MB gzipped, and `policy_divergence` ran
+  `extract_html_text` over it anyway. Each row keeps the portal permalink
+  (`/b/<slug>/s/<id>`).
+- Installing the `browser` group surfaced a latent type error: `BrowserOptions.proxy`
+  was a bare `dict`, which only type-checked while playwright's stubs were
+  unresolvable. Now `Mapping[str, str]` with a `TYPE_CHECKING` cast to
+  `ProxySettings` at the call site, so the module still imports without the group.
+
+**Loss of credit for absence, complete:**
+
+| district | parameter | standard |
+|---|---|---|
+| elmsford | 28 ATEDs | bright line |
+| greenburgh-central | 18 absences | bright line |
+| mount-vernon | 20 absences | bright line |
+| ossining | — | **no provision** |
+| peekskill | 20 absences | bright line |
+| port-chester-rye | 18 ATEDs | bright line |
+| tarrytowns | 18 ATEDs | bright line |
+| white-plains | — | administrator discretion |
+
+Four districts share one licensed sentence and fill in three different numbers:
+Tarrytowns and Port Chester 18, **Elmsford 28** (twice the allowance for the
+same rule), and White Plains the same template with the threshold sentence
+**deleted** and replaced by House Administrator discretion. Ossining's
+attendance policy contains "credit" **zero times** and none of its 432 policies
+ties credit to absence; its 4710 Grading Systems points at "course credit
+policies" given to parents, so any threshold lives in a handbook.
+
+**Two false negatives the new districts exposed**, both now pinned in
+`tests/test_policy_compare.py`:
+
+- `CREDIT_DENIAL` missed the active voice. Peekskill writes "may be **denied
+  credit** for courses when they exceed, in total, 20 absences" *and* carries a
+  discretion clause, so the gap did not merely lose the figure — it reported the
+  district as having no bright line at all.
+- The rule vocabulary moved from the CLI into `herald.policy_compare`
+  (`CREDIT_DENIAL`, `CREDIT_DISCRETION`, `COMPETING_CONSEQUENCE`,
+  `CREDIT_UNITS`). It took reading eight manuals to get right and every
+  addition came from a district an earlier version got wrong, so it belongs
+  somewhere testable.
+
+**The sweep at 8 districts** found 72 value divergences. The one that bears on
+this project directly is **2342 Agenda Preparation and Dissemination** — the
+public-notice window for the agendas this corpus is built from — at 2/5 days in
+Elmsford, 3/5 in Port Chester, 7/14 in Ossining and 7 in White Plains. Also
+1741-R home instruction at 900 against 990 hours, and 1925 interpreter notice
+at 5 against 10 working days.

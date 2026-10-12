@@ -10,6 +10,10 @@ from __future__ import annotations
 import re
 
 from herald.policy_compare import (
+    COMPETING_CONSEQUENCE,
+    CREDIT_DENIAL,
+    CREDIT_DISCRETION,
+    CREDIT_UNITS,
     Quantity,
     clauses,
     divergences,
@@ -229,3 +233,71 @@ class TestCompetingRulesInOneParagraph:
                              consequence=re.compile(r"not\s+receive\s+credit", re.I),
                              units=("ated",))
         assert got is not None and str(got) == "18 ATEDs"
+
+
+class TestCreditDenialVocabulary:
+    """The eight districts' phrasings, each one a district an earlier version missed.
+
+    Every entry here was a false negative first: the pattern reported the
+    district as having no credit rule when its policy states an explicit
+    threshold, which is the worst failure available for a tool whose job is
+    telling "no threshold" apart from "no policy".
+    """
+
+    def test_every_districts_phrasing_is_recognized(self) -> None:
+        for phrasing in (
+            # Greenburgh
+            "any student with more than 18 absences in a course may not receive credit",
+            # Greenburgh, the other form in the same policy
+            "Class credit will not be given when a student exceeds eighteen (18) absences",
+            # Tarrytowns, Port Chester, Elmsford — "credit for that course"
+            "18 unexcused ATEDs for a full year will not receive credit for that course",
+            # Mount Vernon
+            'guidelines apply to student receiving "no credit": 20 absences',
+            # Peekskill — active voice, and it also carries a discretion clause
+            "high school students may be denied credit for courses when they exceed, "
+            "in total, 20 absences",
+        ):
+            assert CREDIT_DENIAL.search(phrasing), phrasing
+
+    def test_peekskills_threshold_survives_its_discretion_clause(self) -> None:
+        """Both appear in one policy, and the bright line is the real answer."""
+        peekskill = (
+            "high school students may be denied credit for courses when they exceed, "
+            "in total, 20 absences for which make-up assignments were not submitted in "
+            "a timely manner. The decision to deny course credit to a student will be "
+            "made by the Principal or his/her designee."
+        )
+        assert CREDIT_DISCRETION.search(peekskill)
+        got = rule_parameter("peekskill", "5100", peekskill,
+                             consequence=CREDIT_DENIAL, units=CREDIT_UNITS,
+                             exclude=COMPETING_CONSEQUENCE)
+        assert got is not None and got.value == 20
+
+    def test_white_plains_states_no_threshold_at_all(self) -> None:
+        """It holds the same vendor template as four peers, minus the threshold.
+
+        The sentence the others carry is absent, replaced by discretion. That is
+        the "deleted the policy" case, and it must not read as a parse failure.
+        """
+        white_plains = (
+            "unexcused ATEDs will affect a student's class participation grade for the "
+            "marking period. Further, absences could disqualify high school students "
+            "from attending summer school. The decision to deny course credit to a "
+            "student will be made by the House Administrator."
+        )
+        assert CREDIT_DISCRETION.search(white_plains)
+        assert rule_parameter("white-plains", "5100", white_plains,
+                              consequence=CREDIT_DENIAL, units=CREDIT_UNITS,
+                              exclude=COMPETING_CONSEQUENCE) is None
+
+    def test_the_vendor_sentence_yields_each_districts_own_figure(self) -> None:
+        """One licensed clause, four parameters: 18, 18, 28 and none."""
+        template = ("At the high school level, any student with more than {half} "
+                    "unexcused ATEDs for one-half year or {full} unexcused ATEDs for a "
+                    "full year will not receive credit for that course.")
+        for half, full, expected in (("nine", 18, 18), ("fourteen", 28, 28)):
+            got = rule_parameter("d", "5100", template.format(half=half, full=full),
+                                 consequence=CREDIT_DENIAL, units=CREDIT_UNITS,
+                                 exclude=COMPETING_CONSEQUENCE)
+            assert got is not None and got.value == expected
