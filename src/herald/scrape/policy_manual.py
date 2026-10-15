@@ -48,8 +48,12 @@ from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
 
-if TYPE_CHECKING:  # playwright is the optional `browser` group
-    from playwright.async_api import ProxySettings
+if TYPE_CHECKING:
+    # playwright is the optional `browser` group, and CI installs only the
+    # default dependencies, so this name is unresolvable there. Same ignore as
+    # the runtime import below — without it, a type annotation that passes
+    # locally fails pyright in CI.
+    from playwright.async_api import ProxySettings  # type: ignore[import-not-found]
 
 from herald.scrape.core import attr
 
