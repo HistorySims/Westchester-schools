@@ -1882,3 +1882,54 @@ public-notice window for the agendas this corpus is built from — at 2/5 days i
 Elmsford, 3/5 in Port Chester, 7/14 in Ossining and 7 in White Plains. Also
 1741-R home instruction at 900 against 990 hours, and 1925 interpreter notice
 at 5 against 10 working days.
+
+### What the new work does and does not need from the pipeline (2026-10-15)
+
+Checked after merging #110, because "we changed things, does the refresh need
+updating" deserves an answer rather than an assumption.
+
+**The weekly refresh needs no change.** `refresh.yml` (Mondays 07:17 UTC)
+crawls BoardDocs agendas/minutes/attachments with `herald-scrape crawl` and
+ingests them. Everything added this week is deliberately **database-free**:
+`scripts/plan_drift.py` and `scripts/policy_divergence.py` read committed
+snapshots, take no secrets beyond `VOYAGE_API_KEY` (and the policy one takes
+none), and run while Supabase is asleep. Nothing new touches the schema, the
+ingest path, or `chunks`.
+
+**Nothing periodically re-crawls policies, and half of it cannot be.** The
+three scheduled workflows are `refresh.yml` (weekly, agendas), `scrape.yml`
+(monthly, 1st), and `db-keepalive.yml` (Mon/Wed/Fri). `policy-fetch.yml`,
+`policy-boarddocs.yml` and `policy-probe.yml` are **manual only**, and
+`runner.py` has no policy path at all, so the weekly crawl never sees a policy.
+
+The two halves differ in whether a scheduled run is even possible:
+
+| half | districts | policies | schedulable on a runner? |
+|---|---|---|---|
+| BoardDocs console | greenburgh-central, mount-vernon, tarrytowns, white-plains | 1,071 | **No.** BoardDocs caps an anonymous datacenter IP at ~20 policy fetches before 403ing the whole host — 19 per run against 1,071, and pacing does not move it (measured 19 at 2s, 20 at 1s). This is why the snapshot exists. |
+| BoardPolicyOnline portals | port-chester-rye, peekskill, ossining, elmsford | 1,484 | **Yes, cheaply.** The bulk export is one request per district, so four requests total, not 1,484. Needs the `browser` group and a Chromium. |
+
+**So the policy corpus is point-in-time**, and every divergence finding in
+`docs/POLICY_DIVERGENCE.md` is "as of" one of two dates: the BoardDocs half was
+fetched **2026-08-20**, the portal half **2026-10-12**. A policy amended since
+then reads here as unchanged.
+
+**Closing that gap properly needs a decision, not just a cron line.** Adding a
+schedule to `policy-fetch.yml` would ingest current policies into the corpus —
+useful for `ask`, and the obvious cheap win — but it would **not** refresh the
+committed snapshots, which is what `policy_divergence.py` reads. Making the
+comparison notice a change over time means either committing a refreshed
+snapshot from CI or re-running acquisition by hand, and it also implies keeping
+*old* snapshots so there is something to compare against. Deliberately left
+undone pending that call.
+
+**Migration 0009 is inert, so its status does not block anything.** It creates
+`narrative_threads`, `thread_beats` and `thread_edges`, and **no merged code
+references any of them** — the beat layer computes beats in memory and persists
+nothing. If 0009 never applied (007 and 008 did), nothing breaks today; it
+matters the moment a writer is built.
+
+Still open from earlier, unchanged: re-tune the quality gate for structured
+documents, backfill Greenburgh/Peekskill minutes, backfill agenda attachments,
+presentations acquisition, the unrun Panopto probe. `delete_branch_on_merge` is
+still `false` on the repository, which is why nine merged branches accumulated.
