@@ -1,0 +1,64 @@
+name: Policy divergence
+
+# Where districts' board policies share wording and disagree on a number —
+# 18 absences before a student loses course credit, or 20, or no figure at all.
+#
+# No database and no embeddings, deliberately: two numbers inside otherwise
+# identical text sit at cosine ~0.999, so this is an exact-extraction problem
+# and the drift detector would report agreement precisely where the districts
+# disagree most. See docs/POLICY_DIVERGENCE.md.
+#
+# Reads data/snapshots/boarddocs-policies.jsonl.gz, so it needs no secrets and
+# runs while Supabase is asleep.
+
+on:
+  workflow_dispatch:
+    inputs:
+      rule:
+        description: "Targeted probe for one named rule (e.g. credit). Blank for the broad sweep."
+        required: false
+        default: ""
+      policy:
+        description: "Sweep one policy number only (e.g. 7110). Blank for all."
+        required: false
+        default: ""
+      same_wording:
+        description: "Clause similarity floor for the sweep (0.86 default)"
+        required: false
+        default: "0.86"
+
+jobs:
+  divergence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install runtime deps
+        run: uv sync --frozen
+
+      - name: Compare policies
+        run: |
+          ARGS=(--same-wording "${{ inputs.same_wording }}")
+          if [ -n "${{ inputs.rule }}" ]; then
+            ARGS+=(--rule "${{ inputs.rule }}")
+          fi
+          if [ -n "${{ inputs.policy }}" ]; then
+            ARGS+=(--policy "${{ inputs.policy }}")
+          fi
+          uv run scripts/policy_divergence.py "${ARGS[@]}"
+
+      - name: Upload Markdown report
+        uses: actions/upload-artifact@v4
+        with:
+          name: herald-policy-divergence
+          path: scripts/policy_divergence_*.md
+          if-no-files-found: error
+          retention-days: 30

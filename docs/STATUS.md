@@ -1661,3 +1661,224 @@ this month is the thing worth writing about. Neither is optional to goal B.
   114 tables ≈ $12.50). The candidate count is the first line of the log —
   the moment to cancel if it is unexpectedly large.
 
+
+## Centroid drift as a hot-spot detector — pilot result (2026-10-11)
+
+Full report: `docs/DRIFT_PILOT.md`. Working code: `src/herald/drift_schools.py`,
+`scripts/plan_drift.py`, `.github/workflows/plan-drift.yml`. Corpus:
+`data/snapshots/safety-plans.jsonl.gz` (30 district-wide safety plans, 7 of 8
+districts, 2019-20 … 2026-27).
+
+The premise holds — a document class every peer must file lets you separate
+"Albany moved" from "this district chose something" — but **one centroid per
+document does not work on a mandated document.** Chapter 155.17 was amended for
+2024-25 and three districts rewrote their drill sections to match, tripling
+their use of "trauma" and importing the ban on drills using "props, actors,
+simulations". Whole-document centroid distance for that transition came out at
+**0.0008, the second smallest movement in the six-year series.** A mandated
+filing is ~95% template, so a change in three sections of eighty moves the
+mean-pooled vector by about a fortieth of its length — inside the gap between
+two districts' boilerplate. Mean-pooling measures what the documents share, and
+what they share is the part the state wrote.
+
+What works is per-section: pair each section with its closest counterpart in the
+same district's previous filing, rank by distance (untouched template
+re-extracts at ~0.01, a rewrite lands at 0.15+), then ask whether a peer filed
+the same passage that year. Shared is the mandate, unshared is a decision. That
+recovers the 2024-25 amendments at 0.18–0.26 with peer agreement 0.90–0.97, and
+shows that **Greenburgh and Mount Vernon had not adopted the new language a
+year after it took effect** (Mount Vernon's median section distance from its own
+prior filing is 0.0000). The compliance lag is as detectable as the change.
+
+Gotchas this pilot bought:
+
+- **Count the magnitude, not the sections.** Counting sections with no near
+  neighbour in the prior year found *zero* changes in 2024-25: the mandate
+  arrived as sentences inserted into existing sections, whose nearest neighbour
+  is still their own prior version at ~0.85.
+- **A document that extracts to garbage reads as a policy reversal.** Peekskill
+  2026-27 gave 107k characters of mojibake from a broken font encoding, and its
+  mandate-vocabulary counts all came back zero — i.e. "district deleted the
+  state's language". OCR of the same pages matches its 2025-26.
+- **OCR provenance must travel with the text**, since OCR noise inflates
+  section distance exactly like real change does. Do not infer it from file
+  size: Peekskill 2026-27 is a 5.8 MB PDF with a fine text layer.
+- **Elmsford re-filed one plan for four years** — 99.76% character-identical
+  2019-20 → 2021-22, every difference a page footer shifting — and did not carry
+  the 2024 drill language until 2026-27.
+- **Ossining files no plan in BoardDocs.** 444 meetings, zero hits, and 10 of 10
+  agendas fetched cleanly when probed with errors surfaced; it attaches 0-3
+  files per meeting where peers attach dozens. Its plan is a `site.py` target.
+- **The hot spots are mostly appended inter-agency agreements** — police SRO
+  contracts (White Plains 2023-24, Elmsford 2020-21, Peekskill 2026-27), a
+  private security MOU (Tarrytowns and Summit Security Services, 2020-21), and
+  one district's own student-reunification design (Elmsford 2026-27). These are
+  the roots worth tracing into the agenda corpus.
+
+### Second class: codes of conduct (2026-10-11)
+
+Ran the same detector over codes of conduct to test whether it is a method or a
+lucky corpus. **Detection generalizes; the mandate/local label does not.** Full
+write-up in the second half of `docs/DRIFT_PILOT.md`; corpus is
+`data/snapshots/code-of-conducts.jsonl.gz` (25 filings, 7 districts).
+
+- **Coverage has to be measured per document class.** An unfiltered search of
+  all 721 committed agendas finds **zero** code-of-conduct attachments for
+  port-chester-rye, 3 for peekskill (Nov-Dec 2021 only) and 3 for mount-vernon
+  (Aug-Sep 2023 only). Districts adopt the code by resolution and post it on
+  their website. Port Chester files its safety plan every year and its code
+  never. Only white-plains, tarrytowns and greenburgh-central have a usable
+  consecutive series.
+- **Centroid drift fails again**, independently: every adjacent year pair lands
+  between 0.0000 and 0.0003, including 2025-26 → 2026-27, which contains the
+  §2803 phone-free-schools mandate.
+- **Section distance ranking works on an untuned class.** Greenburgh's phone-law
+  section ranks 4th of 180 at 0.172 against a 0.0020 median.
+- **The peer gate broke, structurally.** That same section matched peers at
+  **0.79** against a 0.80 gate and came back `local`. Ossining implemented the
+  same law by writing a separate policy (**5695 — Student Use of Internet
+  Enabled Devices**) and cross-referencing it from the code, so there was no
+  comparable section to agree with; its own phone text is a footnote at
+  character 820 of a 1,374-character section about firearms and explosives, and
+  its 0.85 "agreement" is generic disciplinary-code similarity. **One mandate,
+  two document classes** — so mandate detection has to search across classes,
+  and within a class you report `best_peer`, not the binary. Pinned as a
+  counter-example in `tests/test_drift_schools.py`.
+- **Re-filing is the dominant behaviour and the cheapest real signal** — no
+  embeddings needed. White Plains' 2026-27 code is 99.9967% character-identical
+  to its 2025-26 and contains zero occurrences of "internet-enabled",
+  "bell-to-bell" or §2803; Greenburgh's 2023-24 and 2024-25 differ by 4
+  characters in 223,000; Elmsford re-attached the same 18.8 MB file for 2018-19
+  and 2019-20. "Who rewrote their code this year and who re-filed" is closer to
+  a newsletter paragraph than any similarity score.
+- **Acquisition is now generic**: `scripts/drift_pilot/acquire.py --doc-class`,
+  then `extract.py`, then `snapshot.py`. The BoardDocs attachment listings are
+  cached in `agenda_files.json`, so the first class costs ~40 minutes of
+  crawling and every later class is a regex over data already on disk.
+
+### Board policies: parameter divergence, not drift (2026-10-12)
+
+Full write-up: `docs/POLICY_DIVERGENCE.md`. Code: `src/herald/policy_compare.py`,
+`scripts/policy_divergence.py`, `.github/workflows/policy-divergence.yml`.
+Corpus: `data/snapshots/boarddocs-policies.jsonl.gz` (1,071 policies, **4 of 8
+districts**).
+
+Policies are licensed, not written, so two manuals run identical for pages and
+differ in the figure that decides something. **This is the one case the drift
+detector cannot see** — "eighteen (18) absences" against "twenty (20)
+absences" in identical text is cosine ~0.999, closer than two paraphrases of
+the same rule, so `drift_schools` would report agreement exactly where the
+districts disagree most. Exact extraction, not geometry.
+
+**A parameter is a quantity with a unit.** That single decision cut the sweep
+from 21 findings (mostly citation formatting: `8 N.Y.C.R.R. 200.2(c)` against
+`(8NYCRR 200.2(c))`) to 9, nearly all real — with no special case for
+citations. Units must include the local term of art: Tarrytowns states its
+whole attendance rule in **ATEDs**, and omitting that unit read the district as
+having no credit rule when it has an explicit 18.
+
+Loss of credit for absence, `--rule credit`:
+
+| district | policy | parameter | standard |
+|---|---|---|---|
+| greenburgh-central | 7110 | 18 absences | bright line |
+| mount-vernon | 7110 | 20 absences | bright line |
+| tarrytowns | 5100 | 18 ATEDs | bright line |
+| white-plains | 5100 | — | administrator discretion |
+
+- **The number is not the rule.** Greenburgh's 18 counts *all* absences excused
+  and unexcused with listed exceptions; Tarrytowns' 18 counts **only
+  unexcused**. Nineteen excused absences cost credit in one and not the other —
+  a wider gap than 18 against 20.
+- **"No number" is not "no policy."** White Plains leaves the call to the House
+  Administrator with an appeal to the Principal.
+- **Districts disagree on the policy number** — attendance is 7110 in two
+  districts and 5100 in the other two, so aligning by number alone splits the
+  peer set.
+- **Two tools are needed.** The sweep (same clause, different quantity) found
+  petition deadlines of 90 against 60 days for the annual election (policy
+  1050, wording identical to 1.000), FOIL notice of 10 against 5 working days
+  (1120), parental designation valid 12 against 6 months (7260), and three
+  same-value/different-unit pairs (30 *school* days against 30 days for IEP
+  implementation, 7613). It cannot see the attendance rule at all, because
+  Greenburgh wrote a sentence and Mount Vernon a bulleted table — hence the
+  targeted probe.
+- **The largest number near a phrase is not the parameter.** Mount Vernon puts
+  "20 consecutive absences … can be discharged" two sentences from its "no
+  credit" language; the first version reported the discharge figure with the
+  discharge sentence as evidence, and that figure *equals* the real credit
+  threshold — the output looked right while its provenance was wrong. Numbers
+  are now attributed to whichever consequence is nearest; a fixed exclusion
+  window cannot work, since the discharge verb sits ~75 characters past its
+  number and a window that reaches it also reaches the "summer school" clause
+  after the genuine credit table.
+- **Coverage gap:** Ossining, Peekskill, Port Chester and Elmsford publish via
+  Blazor portals needing the `browser` group. Every finding above is about four
+  districts, and the attendance table is missing Port Chester.
+
+### Policy acquisition completed — all 8 districts (2026-10-12)
+
+`herald-scrape policy-fetch` pulled the four BoardPolicyOnline manuals that
+were missing: **1,484 policies** (port-chester-rye 519, ossining 432, peekskill
+294, elmsford 239), committed as `data/snapshots/policy-manuals.jsonl.gz`
+(1.5 MB). With the BoardDocs four that is **2,555 policies, 1,013 numbers, 588
+held by two or more districts** — up from 299. The machinery already existed;
+completing the acquisition meant running it.
+
+**Two environment facts worth keeping:**
+
+- **Chromium needs the egress proxy's CA in its own NSS store**, which was
+  empty here, so every navigation failed `ERR_CERT_AUTHORITY_INVALID` —
+  including `example.com`, which is how to tell this apart from a blocked host.
+  `apt-get install libnss3-tools` then
+  `certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n ccr-agent-proxy -i /root/.ccr/agent-proxy-ca.crt`.
+  GitHub runners have no such proxy, so `policy-fetch.yml` needs none of it.
+- The snapshot stores **extracted text, not markup** — 19 MB of Kendo widget
+  wrappers against 1.5 MB gzipped, and `policy_divergence` ran
+  `extract_html_text` over it anyway. Each row keeps the portal permalink
+  (`/b/<slug>/s/<id>`).
+- Installing the `browser` group surfaced a latent type error: `BrowserOptions.proxy`
+  was a bare `dict`, which only type-checked while playwright's stubs were
+  unresolvable. Now `Mapping[str, str]` with a `TYPE_CHECKING` cast to
+  `ProxySettings` at the call site, so the module still imports without the group.
+
+**Loss of credit for absence, complete:**
+
+| district | parameter | standard |
+|---|---|---|
+| elmsford | 28 ATEDs | bright line |
+| greenburgh-central | 18 absences | bright line |
+| mount-vernon | 20 absences | bright line |
+| ossining | — | **no provision** |
+| peekskill | 20 absences | bright line |
+| port-chester-rye | 18 ATEDs | bright line |
+| tarrytowns | 18 ATEDs | bright line |
+| white-plains | — | administrator discretion |
+
+Four districts share one licensed sentence and fill in three different numbers:
+Tarrytowns and Port Chester 18, **Elmsford 28** (twice the allowance for the
+same rule), and White Plains the same template with the threshold sentence
+**deleted** and replaced by House Administrator discretion. Ossining's
+attendance policy contains "credit" **zero times** and none of its 432 policies
+ties credit to absence; its 4710 Grading Systems points at "course credit
+policies" given to parents, so any threshold lives in a handbook.
+
+**Two false negatives the new districts exposed**, both now pinned in
+`tests/test_policy_compare.py`:
+
+- `CREDIT_DENIAL` missed the active voice. Peekskill writes "may be **denied
+  credit** for courses when they exceed, in total, 20 absences" *and* carries a
+  discretion clause, so the gap did not merely lose the figure — it reported the
+  district as having no bright line at all.
+- The rule vocabulary moved from the CLI into `herald.policy_compare`
+  (`CREDIT_DENIAL`, `CREDIT_DISCRETION`, `COMPETING_CONSEQUENCE`,
+  `CREDIT_UNITS`). It took reading eight manuals to get right and every
+  addition came from a district an earlier version got wrong, so it belongs
+  somewhere testable.
+
+**The sweep at 8 districts** found 72 value divergences. The one that bears on
+this project directly is **2342 Agenda Preparation and Dissemination** — the
+public-notice window for the agendas this corpus is built from — at 2/5 days in
+Elmsford, 3/5 in Port Chester, 7/14 in Ossining and 7 in White Plains. Also
+1741-R home instruction at 900 against 990 hours, and 1925 interpreter notice
+at 5 against 10 working days.

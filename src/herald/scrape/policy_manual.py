@@ -40,11 +40,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
+
+if TYPE_CHECKING:
+    # playwright is the optional `browser` group, and CI installs only the
+    # default dependencies, so this name is unresolvable there. Same ignore as
+    # the runtime import below — without it, a type annotation that passes
+    # locally fails pyright in CI.
+    from playwright.async_api import ProxySettings  # type: ignore[import-not-found]
 
 from herald.scrape.core import attr
 
@@ -114,7 +123,11 @@ class BrowserOptions:
     #: Explicit Chromium binary (e.g. a preinstalled ``/opt`` browser).
     executable_path: str | None = None
     #: ``{"server": "http://127.0.0.1:8080"}`` — Playwright proxy config.
-    proxy: dict | None = None
+    #: Typed as a string map rather than a bare ``dict`` so it satisfies
+    #: Playwright's ``ProxySettings``, which is a TypedDict; a bare dict only
+    #: type-checked while the ``browser`` group was absent and pyright could
+    #: not resolve the stubs.
+    proxy: Mapping[str, str] | None = None
     #: Cap TLS at 1.2. Some egress middleboxes reset Chromium's TLS 1.3
     #: ClientHello (post-quantum key share) while other clients are fine.
     tls12: bool = False
@@ -219,7 +232,9 @@ async def fetch_manual_export_async(
         browser = await pw.chromium.launch(
             headless=opts.headless,
             executable_path=opts.executable_path,
-            proxy=opts.proxy,
+            # ProxySettings is a TypedDict; the dataclass keeps a plain
+            # Mapping so this module imports without playwright installed.
+            proxy=cast("ProxySettings", dict(opts.proxy)) if opts.proxy else None,
             args=opts.launch_args(),
         )
         try:
