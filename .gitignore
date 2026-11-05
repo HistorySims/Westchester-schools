@@ -66,3 +66,6 @@ scripts/cluster_labels_*.md
 /agenda-import.md
 /ingest-report.md
 /crawl-report.md
+
+# Pilot embedding cache (regenerable)
+scripts/.action_subjects.npz
